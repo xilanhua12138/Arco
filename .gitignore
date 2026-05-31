@@ -1,0 +1,10 @@
+# Secrets — never commit your real key
+.env
+
+# Compiled recorder (build it locally with bin/build.sh)
+recorder
+
+# macOS / Python noise
+.DS_Store
+__pycache__/
+*.pyc

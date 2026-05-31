@@ -1,0 +1,68 @@
+---
+name: arco
+description: Listen to a meeting and produce a real-time transcript with multi-speaker diarization. Captures system audio (the remote side of an online call) plus the microphone (you), mixes them, and runs Deepgram real-time ASR with diarization to label every line as Speaker 1/2/3..., writing it live to transcript.md that Claude Code can read at any time to summarize, extract action items, or answer questions grounded in the meeting. Use this when the user says things like "listen to the meeting", "take meeting notes", "start meeting transcription", "record this meeting", "听会", "监听会议", or "记录这次会议". Always STOP the listener (bin/stop.sh) as soon as the user signals the meeting is over ("stop listening", "会议结束", "结束监听", "好了用完了", "停止记录") or asks for a final summary — do not leave it running.
+---
+
+# Arco — Meeting Listener (multi-speaker diarization)
+
+Turns a live meeting into a timestamped, speaker-labeled transcript you can read and analyze at any moment.
+
+## Architecture
+
+```
+recorder (Swift / ScreenCaptureKit)              listen.py
+system audio (remote) + mic (you), mixed → 16k PCM ──stdout|stdin──► Deepgram realtime ASR
+                                                                     (diarize=true, multi-speaker)
+                                                                          │
+                                                  appended live ◄─────────┘
+                                       ~/.claude/meeting-transcripts/current.md
+```
+
+## Usage
+
+### 1. Start listening
+
+```bash
+bash ~/.claude/skills/arco/bin/start.sh both
+```
+
+`both` (default — system audio + mic mixed, Deepgram separates all speakers) · `system` (remote only) · `mic` (mic only, in-person meeting).
+
+First run, macOS asks for **Screen Recording** and **Microphone** permission. The command-line `recorder` binary may need to be ticked manually under *System Settings → Privacy & Security → Screen Recording*, then re-run once. **Do not mute system output**, or system audio can't be captured.
+
+### 2. Read the transcript (core: Claude Code reads it directly)
+
+```
+Read ~/.claude/meeting-transcripts/current.md
+```
+
+Format: `**[HH:MM:SS] Speaker N:** spoken text`, updated live. While the meeting runs you can ask things like "how is the X we just discussed implemented in the code?", "summarize the key points so far", or "list the action items".
+
+### 3. Status / Stop
+
+```bash
+bash ~/.claude/skills/arco/bin/status.sh   # running state + recent lines
+bash ~/.claude/skills/arco/bin/stop.sh     # stop listening (kills recorder + listen.py)
+```
+
+**Auto-stop (important for Claude Code):** the listener keeps running in the
+background until it is explicitly stopped — it will not end on its own. As soon
+as the user indicates the meeting is finished (e.g. "会议结束了", "结束监听",
+"好了用完了", "stop listening", "停止记录") or asks for a final wrap-up/summary,
+run `bin/stop.sh` automatically before doing anything else, then read the final
+transcript and answer. Never leave the recorder running after the user is done.
+The stopped session is preserved at `meeting-<timestamp>.md` for later reference.
+
+## Config (BYOK)
+
+`~/.claude/skills/arco/.env`:
+- `DEEPGRAM_API_KEY` (required — get a free key at https://deepgram.com, $200 credit)
+- optional `DEEPGRAM_MODEL` (default `nova-3`), `DEEPGRAM_LANG` (default `zh-Hans` — nova-3 Mandarin Simplified; use `en` for English meetings)
+
+Requires `uv` (it auto-pulls `websockets` via `--with`, no manual install).
+
+## Notes
+
+- **Multi-speaker diarization** is done by Deepgram (`diarize=true`), labeling lines as `Speaker 1/2/3...`, kept consistent over time.
+- Why Deepgram and not Doubao: Doubao's speaker diarization only exists in its **file (offline) recognition** API (`additions.speaker`), not the streaming endpoint — so it can't do real-time multi-speaker labeling. Deepgram does it live in one WebSocket.
+- Transcripts are saved at `~/.claude/meeting-transcripts/meeting-<timestamp>.md`; `current.md` always points to the latest session.
