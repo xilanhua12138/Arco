@@ -33,6 +33,6 @@ nohup bash -c "'$SKILL_DIR/recorder' '$MODE' | uv run --no-project --with websoc
 sleep 2
 echo "Started (mode=$MODE, Deepgram multi-speaker diarization)"
 echo "Transcript: $TRANSCRIPT"
-echo "Claude Code reads: $TDIR/current.md"
+echo "Assistant reads: $TDIR/current.md"
 echo "Stop: bash $SKILL_DIR/bin/stop.sh"
 echo "(First run: grant Screen Recording + Microphone in System Settings; do not mute system output)"

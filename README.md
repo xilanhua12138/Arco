@@ -1,8 +1,11 @@
 # Arco
 
-A Claude Code skill that listens to a meeting and keeps a live, speaker-labeled
-transcript on disk — so you can ask Claude to summarize, pull action items, or
-answer questions about what was just said, grounded in the actual words.
+An [agent skill](https://agentskills.io) that listens to a meeting and keeps a
+live, speaker-labeled transcript on disk — so you can ask your assistant to
+summarize, pull action items, or answer questions about what was just said,
+grounded in the actual words. It works with any agent that runs skills with
+local shell access (Claude Code, or anything that follows the Agent Skills
+standard).
 
 It captures **system audio** (whoever you're on a call with) and your
 **microphone**, mixes them, and runs [Deepgram](https://deepgram.com)'s
@@ -35,11 +38,11 @@ system audio + mic, mixed → 16k mono PCM ──stdout│stdin──► Deepgra
   and writes raw bytes to stdout.
 - `listen.py` pipes that into Deepgram over a WebSocket and appends each
   finalized utterance to the transcript.
-- Claude Code reads `current.md` whenever you ask it something.
+- your assistant reads `current.md` whenever you ask it something.
 
 ## Install
 
-Clone into your Claude Code skills directory:
+Clone into your skills directory (`~/.claude/skills/` for Claude Code):
 
 ```bash
 git clone https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
@@ -78,9 +81,9 @@ bash bin/stop.sh           # stop
 ```
 
 While it runs, the transcript lives at
-`~/.claude/meeting-transcripts/current.md` and updates line by line. Inside
-Claude Code you can just say "summarize the meeting so far" or "what did they
-ask me to follow up on?" and it reads the file.
+`~/.claude/meeting-transcripts/current.md` and updates line by line. You can
+just ask your assistant "summarize the meeting so far" or "what did they ask me
+to follow up on?" and it reads the file.
 
 When you tell Claude the meeting is over (or ask for a final summary), the skill
 stops the listener automatically — it won't keep recording in the background.

@@ -1,6 +1,6 @@
 ---
 name: arco
-description: Listen to a meeting and produce a real-time transcript with multi-speaker diarization. Captures system audio (the remote side of an online call) plus the microphone (you), mixes them, and runs Deepgram real-time ASR with diarization to label every line as Speaker 1/2/3..., writing it live to transcript.md that Claude Code can read at any time to summarize, extract action items, or answer questions grounded in the meeting. Use this when the user says things like "listen to the meeting", "take meeting notes", "start meeting transcription", "record this meeting", "听会", "监听会议", or "记录这次会议". Always STOP the listener (bin/stop.sh) as soon as the user signals the meeting is over ("stop listening", "会议结束", "结束监听", "好了用完了", "停止记录") or asks for a final summary — do not leave it running.
+description: Listen to a meeting and produce a real-time transcript with multi-speaker diarization. Captures system audio (the remote side of an online call) plus the microphone (you), mixes them, and runs Deepgram real-time ASR with diarization to label every line as Speaker 1/2/3..., writing it live to transcript.md that Claude can read at any time to summarize, extract action items, or answer questions grounded in the meeting. Use this when the user says things like "listen to the meeting", "take meeting notes", "start meeting transcription", "record this meeting", "听会", "监听会议", or "记录这次会议". Always STOP the listener (bin/stop.sh) as soon as the user signals the meeting is over ("stop listening", "会议结束", "结束监听", "好了用完了", "停止记录") or asks for a final summary — do not leave it running.
 ---
 
 # Arco — Meeting Listener (multi-speaker diarization)
@@ -30,7 +30,7 @@ bash ~/.claude/skills/arco/bin/start.sh both
 
 First run, macOS asks for **Screen Recording** and **Microphone** permission. The command-line `recorder` binary may need to be ticked manually under *System Settings → Privacy & Security → Screen Recording*, then re-run once. **Do not mute system output**, or system audio can't be captured.
 
-### 2. Read the transcript (core: Claude Code reads it directly)
+### 2. Read the transcript (core: Claude reads it directly)
 
 ```
 Read ~/.claude/meeting-transcripts/current.md
@@ -45,7 +45,7 @@ bash ~/.claude/skills/arco/bin/status.sh   # running state + recent lines
 bash ~/.claude/skills/arco/bin/stop.sh     # stop listening (kills recorder + listen.py)
 ```
 
-**Auto-stop (important for Claude Code):** the listener keeps running in the
+**Auto-stop (important):** the listener keeps running in the
 background until it is explicitly stopped — it will not end on its own. As soon
 as the user indicates the meeting is finished (e.g. "会议结束了", "结束监听",
 "好了用完了", "stop listening", "停止记录") or asks for a final wrap-up/summary,
