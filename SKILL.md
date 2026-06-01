@@ -30,6 +30,8 @@ bash ~/.claude/skills/arco/bin/start.sh both
 
 First run, macOS asks for **Screen Recording** and **Microphone** permission. The command-line `recorder` binary may need to be ticked manually under *System Settings → Privacy & Security → Screen Recording*, then re-run once. **Do not mute system output**, or system audio can't be captured.
 
+> **Before starting, check whether Deepgram needs a proxy on your network** — see [Network / proxy](#network--proxy). If you're on a restricted network (e.g. mainland China), export the proxy env vars in the same shell *before* `start.sh`, otherwise the transcript stays empty or shows only stray single words.
+
 ### 2. Read the transcript (core: Claude reads it directly)
 
 ```
@@ -60,6 +62,30 @@ The stopped session is preserved at `meeting-<timestamp>.md` for later reference
 - optional `DEEPGRAM_MODEL` (default `nova-3`), `DEEPGRAM_LANG` (default `zh-Hans` — nova-3 Mandarin Simplified; use `en` for English meetings)
 
 Requires `uv` (it auto-pulls `websockets` via `--with`, no manual install).
+
+## Network / proxy
+
+Deepgram's ASR runs on its own servers, reached over the public internet
+(`api.deepgram.com`). **From networks that can't reach it directly (e.g. mainland
+China), check whether you need a proxy before starting** — the symptom is a
+transcript that stays empty or shows only stray single words even though the mic
+and audio are fine. (Diagnostically, the offline REST API returns
+`SLOW_UPLOAD: Request upload timeout`, and the realtime WebSocket silently drops
+most audio packets, so only fragments get transcribed.) The bottleneck is the
+network to Deepgram, not the audio capture.
+
+If Deepgram is **not** directly reachable, export proxy env vars in the *same
+shell that launches the listener*, then start it — `listen.py` uses `websockets`
+(≥14), which picks up `HTTPS_PROXY` automatically:
+
+```bash
+export HTTPS_PROXY=http://<your-local-proxy-host>:<port>
+export HTTP_PROXY=http://<your-local-proxy-host>:<port>
+bash ~/.claude/skills/arco/bin/start.sh both
+```
+
+Use your own local proxy address/port — don't hardcode one. If Deepgram is
+directly reachable on your network, skip this entirely; no proxy is needed.
 
 ## Notes
 
