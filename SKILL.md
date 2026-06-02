@@ -32,11 +32,20 @@ First run, macOS asks for **Screen Recording** and **Microphone** permission. Th
 
 > **Before starting, check whether Deepgram needs a proxy on your network** — see [Network / proxy](#network--proxy). If you're on a restricted network (e.g. mainland China), export the proxy env vars in the same shell *before* `start.sh`, otherwise the transcript stays empty or shows only stray single words.
 
-### 2. Read the transcript (core: Claude reads it directly)
+### 2. Read the transcript (core: Claude reads it incrementally)
 
+Use the incremental reader instead of `Read`-ing the whole file each time — it
+keeps a byte-offset pointer and prints **only the lines appended since your last
+read**, so a long meeting never re-floods the context:
+
+```bash
+bash ~/.claude/skills/arco/bin/read.sh            # new lines since last read (advances pointer)
+bash ~/.claude/skills/arco/bin/read.sh --all      # whole transcript, pointer untouched
+bash ~/.claude/skills/arco/bin/read.sh --reset    # print from the start and reset the pointer
 ```
-Read ~/.claude/meeting-transcripts/current.md
-```
+
+The pointer is reset automatically when a new session starts. For a one-off full
+read you can still `Read ~/.claude/meeting-transcripts/current.md` directly.
 
 Format: `**[HH:MM:SS] Speaker N:** spoken text`, updated live. While the meeting runs you can ask things like "how is the X we just discussed implemented in the code?", "summarize the key points so far", or "list the action items".
 
@@ -53,7 +62,7 @@ as the user indicates the meeting is finished (e.g. "会议结束了", "结束�
 "好了用完了", "stop listening", "停止记录") or asks for a final wrap-up/summary,
 run `bin/stop.sh` automatically before doing anything else, then read the final
 transcript and answer. Never leave the recorder running after the user is done.
-The stopped session is preserved at `meeting-<timestamp>.md` for later reference.
+The stopped session is preserved at `transcript-<timestamp>.md` for later reference.
 
 ## Config (BYOK)
 
@@ -91,4 +100,4 @@ directly reachable on your network, skip this entirely; no proxy is needed.
 
 - **Multi-speaker diarization** is done by Deepgram (`diarize=true`), labeling lines as `Speaker 1/2/3...`, kept consistent over time.
 - Why Deepgram and not Doubao: Doubao's speaker diarization only exists in its **file (offline) recognition** API (`additions.speaker`), not the streaming endpoint — so it can't do real-time multi-speaker labeling. Deepgram does it live in one WebSocket.
-- Transcripts are saved at `~/.claude/meeting-transcripts/meeting-<timestamp>.md`; `current.md` always points to the latest session.
+- Transcripts are saved at `~/.claude/meeting-transcripts/transcript-<timestamp>.md`; `current.md` always points to the latest session.

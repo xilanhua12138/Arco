@@ -23,10 +23,10 @@ sleep 1
 
 MODE="${1:-both}"   # both (system + mic) | system | mic
 TS=$(date +%Y%m%d-%H%M%S)
-TRANSCRIPT="$TDIR/meeting-$TS.md"
+TRANSCRIPT="$TDIR/transcript-$TS.md"
 ln -sf "$TRANSCRIPT" "$TDIR/current.md"
 printf '# Meeting Transcript\n\n> Started: %s (live)\n\n' "$(date '+%Y-%m-%d %H:%M:%S')" > "$TRANSCRIPT"
-rm -f "$TDIR/.log"
+rm -f "$TDIR/.log" "$TDIR/.read-pos"   # reset incremental-read pointer for the new session
 
 nohup bash -c "'$SKILL_DIR/recorder' '$MODE' | uv run --no-project --with websockets python '$SKILL_DIR/listen.py' '$TRANSCRIPT'" >>"$TDIR/.log" 2>&1 &
 
