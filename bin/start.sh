@@ -26,7 +26,7 @@ TS=$(date +%Y%m%d-%H%M%S)
 TRANSCRIPT="$TDIR/transcript-$TS.md"
 ln -sf "$TRANSCRIPT" "$TDIR/current.md"
 printf '# Meeting Transcript\n\n> Started: %s (live)\n\n' "$(date '+%Y-%m-%d %H:%M:%S')" > "$TRANSCRIPT"
-rm -f "$TDIR/.log" "$TDIR/.read-pos"   # reset incremental-read pointer for the new session
+rm -f "$TDIR/.log"
 
 nohup bash -c "'$SKILL_DIR/recorder' '$MODE' | uv run --no-project --with websockets python '$SKILL_DIR/listen.py' '$TRANSCRIPT'" >>"$TDIR/.log" 2>&1 &
 

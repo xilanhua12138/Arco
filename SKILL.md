@@ -32,20 +32,19 @@ First run, macOS asks for **Screen Recording** and **Microphone** permission. Th
 
 > **Before starting, check whether Deepgram needs a proxy on your network** — see [Network / proxy](#network--proxy). If you're on a restricted network (e.g. mainland China), export the proxy env vars in the same shell *before* `start.sh`, otherwise the transcript stays empty or shows only stray single words.
 
-### 2. Read the transcript (core: Claude reads it incrementally)
+### 2. Read the transcript (read it incrementally — don't re-read the whole file)
 
-Use the incremental reader instead of `Read`-ing the whole file each time — it
-keeps a byte-offset pointer and prints **only the lines appended since your last
-read**, so a long meeting never re-floods the context:
+The transcript grows continuously, so **don't `Read` the whole file every turn** —
+it re-floods your context with lines you've already seen. Instead, remember how far
+you've read and pull only what's new:
 
-```bash
-bash ~/.claude/skills/arco/bin/read.sh            # new lines since last read (advances pointer)
-bash ~/.claude/skills/arco/bin/read.sh --all      # whole transcript, pointer untouched
-bash ~/.claude/skills/arco/bin/read.sh --reset    # print from the start and reset the pointer
-```
+- **First read:** `wc -l ~/.claude/meeting-transcripts/current.md` to get the
+  current line count `N` (read the file itself if you need the backlog).
+- **Each later read:** `tail -n +$((N+1)) ~/.claude/meeting-transcripts/current.md`
+  to get only the lines appended since last time, then update `N` to the new total.
 
-The pointer is reset automatically when a new session starts. For a one-off full
-read you can still `Read ~/.claude/meeting-transcripts/current.md` directly.
+A new session truncates the file, so reset `N` to 0 whenever the listener is
+restarted.
 
 Format: `**[HH:MM:SS] Speaker N:** spoken text`, updated live. While the meeting runs you can ask things like "how is the X we just discussed implemented in the code?", "summarize the key points so far", or "list the action items".
 
