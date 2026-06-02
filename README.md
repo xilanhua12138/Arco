@@ -1,5 +1,7 @@
 # Arco
 
+![Arco — the meeting becomes live context](./assets/banner.png)
+
 An [agent skill](https://agentskills.io) that listens to a meeting and keeps a
 live, speaker-labeled transcript on disk — so you can ask your assistant to
 summarize, pull action items, or answer questions about what was just said,
