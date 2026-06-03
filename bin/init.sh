@@ -34,6 +34,12 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "Created $ENV_FILE from .env.example"
 fi
 
+if bash "$SKILL_DIR/bin/mic-id.sh" --write-env --quiet; then
+  echo "Default microphone ID refreshed in $ENV_FILE"
+else
+  echo "Warning: could not resolve default microphone ID; recorder will use the system default input."
+fi
+
 echo "Preparing Python dependency: websockets"
 uv run --no-project --with websockets python -c "import websockets; print('websockets ready')"
 

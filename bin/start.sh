@@ -4,6 +4,16 @@ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TDIR="$HOME/.claude/meeting-transcripts"
 mkdir -p "$TDIR"
 
+MODE="${1:-both}"   # both (system + mic) | system | mic
+
+if [ "$MODE" = "both" ] || [ "$MODE" = "mic" ]; then
+  if bash "$SKILL_DIR/bin/mic-id.sh" --write-env --quiet; then
+    echo "Default microphone ID refreshed."
+  else
+    echo "Warning: could not resolve default microphone ID; continuing with system default input."
+  fi
+fi
+
 if [ -f "$SKILL_DIR/.env" ]; then set -a; . "$SKILL_DIR/.env"; set +a; fi
 if [ -z "$DEEPGRAM_API_KEY" ]; then
   echo "Missing DEEPGRAM_API_KEY (get a free key at https://deepgram.com, put it in $SKILL_DIR/.env)"
@@ -21,7 +31,6 @@ pkill -f "skills/arco/recorder" 2>/dev/null
 pkill -f "arco/listen" 2>/dev/null
 sleep 1
 
-MODE="${1:-both}"   # both (system + mic) | system | mic
 TS=$(date +%Y%m%d-%H%M%S)
 TRANSCRIPT="$TDIR/transcript-$TS.md"
 ln -sf "$TRANSCRIPT" "$TDIR/current.md"

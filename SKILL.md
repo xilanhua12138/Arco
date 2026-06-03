@@ -31,8 +31,10 @@ bash ~/.claude/skills/arco/bin/init.sh
 
 This checks the macOS toolchain, creates `~/.claude/meeting-transcripts`,
 creates `.env` from `.env.example` if needed, preloads `websockets`, and
-builds/signs the `recorder` binary. If it reports a missing
-`DEEPGRAM_API_KEY`, fill `~/.claude/skills/arco/.env` and rerun `init.sh`.
+refreshes `ARCO_MIC_DEVICE_ID` / `ARCO_MIC_DEVICE_NAME` to the current macOS
+default microphone. It also builds/signs the `recorder` binary. If it reports a
+missing `DEEPGRAM_API_KEY`, fill `~/.claude/skills/arco/.env` and rerun
+`init.sh`.
 
 On restricted networks, export proxy env vars in the same shell before
 `init.sh` and `start.sh`; see [Network / proxy](#network--proxy).
@@ -44,6 +46,19 @@ bash ~/.claude/skills/arco/bin/start.sh both
 ```
 
 `both` (default — system audio + mic mixed, Deepgram separates all speakers) · `system` (remote only) · `mic` (mic only, in-person meeting).
+
+For `both` or `mic`, `start.sh` automatically refreshes the current default
+microphone ID before launching. If the transcript stays empty, emits only stray
+single words, or logs microphone-device errors, the agent should autonomously
+run:
+
+```bash
+bash ~/.claude/skills/arco/bin/mic-id.sh --write-env
+bash ~/.claude/skills/arco/bin/start.sh both
+```
+
+Do this without asking the user unless selecting a non-default microphone is
+actually required.
 
 First start after initialization, macOS asks for **Screen Recording** and
 **Microphone** permission. The command-line `recorder` binary may need to be

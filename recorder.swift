@@ -1,9 +1,12 @@
-// Meeting recorder: ScreenCaptureKit captures system audio (the remote side) + microphone (you),
-// mixes them into 16kHz / 16-bit / mono PCM and writes it to stdout for listen.py (Deepgram ASR).
+// Meeting recorder: ScreenCaptureKit captures system audio (the remote side),
+// AVAudioEngine captures the microphone, and the recorder mixes them into
+// 16kHz / 16-bit / mono PCM for listen.py (Deepgram ASR).
 // Usage: recorder [both|system|mic]   (default both)
 // Requires Screen Recording + Microphone permission.
 
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import ScreenCaptureKit
 import Foundation
 
@@ -76,6 +79,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     func startMicCapture(queue: DispatchQueue) {
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        configureMicDevice(input: input)
         let format = input.outputFormat(forBus: 0)
         let channels = max(1, Int(format.channelCount))
         FileHandle.standardError.write("mic engine format sampleRate=\(format.sampleRate) channels=\(channels)\n".data(using: .utf8)!)
@@ -108,6 +112,44 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         } catch {
             FileHandle.standardError.write("mic engine failed: \(error)\n".data(using: .utf8)!)
             exit(1)
+        }
+    }
+
+    func configureMicDevice(input: AVAudioInputNode) {
+        let env = ProcessInfo.processInfo.environment
+        let requestedID = (env["ARCO_MIC_DEVICE_ID"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedName = (env["ARCO_MIC_DEVICE_NAME"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if requestedID.isEmpty {
+            if let mic = AVCaptureDevice.default(for: .audio) {
+                FileHandle.standardError.write("using system default microphone: \(mic.localizedName) id=\(mic.uniqueID)\n".data(using: .utf8)!)
+            } else {
+                FileHandle.standardError.write("using system default microphone: no AVCaptureDevice default found\n".data(using: .utf8)!)
+            }
+            return
+        }
+
+        guard var deviceID = Self.audioDeviceID(forUID: requestedID) else {
+            FileHandle.standardError.write("requested microphone not found: \(requestedName) id=\(requestedID); using system default input\n".data(using: .utf8)!)
+            return
+        }
+        guard let audioUnit = input.audioUnit else {
+            FileHandle.standardError.write("input audio unit unavailable; using system default input\n".data(using: .utf8)!)
+            return
+        }
+
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status == noErr {
+            let label = requestedName.isEmpty ? requestedID : "\(requestedName) id=\(requestedID)"
+            FileHandle.standardError.write("using configured microphone: \(label)\n".data(using: .utf8)!)
+        } else {
+            FileHandle.standardError.write("failed to set microphone id=\(requestedID) status=\(status); using system default input\n".data(using: .utf8)!)
         }
     }
 
@@ -219,6 +261,43 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         }
 
         return floatToInt16(resample(mono, from: asbd.mSampleRate))
+    }
+
+    static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else {
+            return nil
+        }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var devices = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices) == noErr else {
+            return nil
+        }
+        return devices.first { device in
+            stringProperty(kAudioDevicePropertyDeviceUID, device: device) == uid
+        }
+    }
+
+    static func stringProperty(_ selector: AudioObjectPropertySelector, device: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr else {
+            return nil
+        }
+        var value: CFString = "" as CFString
+        let status = withUnsafeMutablePointer(to: &value) { ptr in
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, ptr)
+        }
+        return status == noErr ? (value as String) : nil
     }
 
     static func floatToInt16(_ samples: [Float]) -> [Int16] {

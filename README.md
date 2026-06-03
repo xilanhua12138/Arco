@@ -68,12 +68,13 @@ bash bin/init.sh
 bash bin/init.sh
 ```
 
-`init.sh` checks the local toolchain, creates `.env` when needed, preloads the
-Python `websockets` dependency, and compiles/signs the recorder. The first
-`start.sh` after initialization asks macOS for **Screen Recording** and
-**Microphone** permission — grant both. The command-line `recorder` binary
-sometimes has to be ticked by hand under *System Settings → Privacy & Security
-→ Screen Recording*; do that once and start it again.
+`init.sh` checks the local toolchain, creates `.env` when needed, refreshes
+`ARCO_MIC_DEVICE_ID` / `ARCO_MIC_DEVICE_NAME` to the current macOS default
+microphone, preloads the Python `websockets` dependency, and compiles/signs the
+recorder. The first `start.sh` after initialization asks macOS for **Screen
+Recording** and **Microphone** permission — grant both. The command-line
+`recorder` binary sometimes has to be ticked by hand under *System Settings →
+Privacy & Security → Screen Recording*; do that once and start it again.
 
 ## Use
 
@@ -82,6 +83,7 @@ bash bin/start.sh both     # system audio + mic (default)
 bash bin/start.sh system   # only the other side of the call
 bash bin/start.sh mic      # in-person meeting, mic only
 
+bash bin/mic-id.sh --write-env  # refresh the current default mic ID in .env
 bash bin/status.sh         # is it running + the last few lines
 bash bin/stop.sh           # stop
 ```
