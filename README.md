@@ -57,19 +57,21 @@ You need:
 - [`uv`](https://docs.astral.sh/uv/) (it pulls in `websockets` on the fly, nothing to `pip install`)
 - a Deepgram API key — the free tier comes with enough credit to run this for a long time
 
-Set the key:
+Initialize the checkout:
 
 ```bash
 cd ~/.claude/skills/arco
-cp .env.example .env
-# edit .env and paste your DEEPGRAM_API_KEY
+bash bin/init.sh
+# if init.sh created .env or reports a missing key, edit .env and paste your DEEPGRAM_API_KEY
+bash bin/init.sh
 ```
 
-The first `start.sh` compiles the recorder for you. macOS will then ask for
-**Screen Recording** and **Microphone** permission — grant both. The
-command-line `recorder` binary sometimes has to be ticked by hand under
-*System Settings → Privacy & Security → Screen Recording*; do that once and
-start it again.
+`init.sh` checks the local toolchain, creates `.env` when needed, preloads the
+Python `websockets` dependency, and compiles/signs the recorder. The first
+`start.sh` after initialization asks macOS for **Screen Recording** and
+**Microphone** permission — grant both. The command-line `recorder` binary
+sometimes has to be ticked by hand under *System Settings → Privacy & Security
+→ Screen Recording*; do that once and start it again.
 
 ## Use
 

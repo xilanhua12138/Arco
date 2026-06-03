@@ -20,6 +20,22 @@ system audio (remote) + mic (you), mixed → 16k PCM ──stdout|stdin──►
 
 ## Usage
 
+### 0. First-time initialization
+
+Before the first start in a fresh checkout, run:
+
+```bash
+bash ~/.claude/skills/arco/bin/init.sh
+```
+
+This checks the macOS toolchain, creates `~/.claude/meeting-transcripts`,
+creates `.env` from `.env.example` if needed, preloads `websockets`, and
+builds/signs the `recorder` binary. If it reports a missing
+`DEEPGRAM_API_KEY`, fill `~/.claude/skills/arco/.env` and rerun `init.sh`.
+
+On restricted networks, export proxy env vars in the same shell before
+`init.sh` and `start.sh`; see [Network / proxy](#network--proxy).
+
 ### 1. Start listening
 
 ```bash
@@ -28,7 +44,11 @@ bash ~/.claude/skills/arco/bin/start.sh both
 
 `both` (default — system audio + mic mixed, Deepgram separates all speakers) · `system` (remote only) · `mic` (mic only, in-person meeting).
 
-First run, macOS asks for **Screen Recording** and **Microphone** permission. The command-line `recorder` binary may need to be ticked manually under *System Settings → Privacy & Security → Screen Recording*, then re-run once. **Do not mute system output**, or system audio can't be captured.
+First start after initialization, macOS asks for **Screen Recording** and
+**Microphone** permission. The command-line `recorder` binary may need to be
+ticked manually under *System Settings → Privacy & Security → Screen
+Recording*, then re-run once. **Do not mute system output**, or system audio
+can't be captured.
 
 > **Before starting, check whether Deepgram needs a proxy on your network** — see [Network / proxy](#network--proxy). If you're on a restricted network (e.g. mainland China), export the proxy env vars in the same shell *before* `start.sh`, otherwise the transcript stays empty or shows only stray single words.
 
