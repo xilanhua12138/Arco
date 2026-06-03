@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import json
 import os
+import json
+import select
 import sys
 import time
 from datetime import datetime
@@ -72,9 +73,20 @@ async def run(path: str) -> None:
         loop = asyncio.get_event_loop()
 
         async def reader() -> None:
+            fd = sys.stdin.buffer.fileno()
+            os.set_blocking(fd, False)
+            silence = b"\0" * 3200
             while True:
-                chunk = await loop.run_in_executor(None, sys.stdin.buffer.read, 3200)
-                if not chunk:
+                ready, _, _ = await loop.run_in_executor(None, select.select, [fd], [], [], 1.0)
+                if not ready:
+                    await ws.send(silence)
+                    continue
+                try:
+                    chunk = os.read(fd, 3200)
+                except BlockingIOError:
+                    await ws.send(silence)
+                    continue
+                if chunk == b"":
                     await ws.send(json.dumps({"type": "CloseStream"}))
                     return
                 await ws.send(chunk)

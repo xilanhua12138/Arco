@@ -10,12 +10,13 @@ Turns a live meeting into a timestamped, speaker-labeled transcript you can read
 ## Architecture
 
 ```
-recorder (Swift / ScreenCaptureKit)              listen.py
-system audio (remote) + mic (you), mixed → 16k PCM ──stdout|stdin──► Deepgram realtime ASR
-                                                                     (diarize=true, multi-speaker)
-                                                                          │
-                                                  appended live ◄─────────┘
-                                       ~/.claude/meeting-transcripts/current.md
+recorder (Swift)                                      listen.py
+ScreenCaptureKit system audio + AVAudioEngine mic
+mixed/resampled → 16k PCM ──stdout|stdin────────────► Deepgram realtime ASR
+                                                        (diarize=true, multi-speaker)
+                                                             │
+                             appended live ◄─────────────────┘
+                  ~/.claude/meeting-transcripts/current.md
 ```
 
 ## Usage

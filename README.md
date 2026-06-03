@@ -28,16 +28,18 @@ switch to, no bot to invite into the call.
 ## How it works
 
 ```
-recorder (Swift / ScreenCaptureKit)                 listen.py
-system audio + mic, mixed → 16k mono PCM ──stdout│stdin──► Deepgram realtime ASR
-                                                            (diarize=true)
-                                                                 │
-                                       appended live ◄───────────┘
-                            ~/.claude/meeting-transcripts/current.md
+recorder (Swift)                                         listen.py
+ScreenCaptureKit system audio + AVAudioEngine mic
+mixed/resampled → 16k mono PCM ──stdout│stdin──────────► Deepgram realtime ASR
+                                                           (diarize=true)
+                                                                │
+                                      appended live ◄───────────┘
+                           ~/.claude/meeting-transcripts/current.md
 ```
 
-- `recorder.swift` taps system output and the mic, downmixes to 16 kHz mono PCM,
-  and writes raw bytes to stdout.
+- `recorder.swift` taps system output through ScreenCaptureKit, captures the
+  mic through AVAudioEngine, mixes/resamples both to 16 kHz mono PCM, and writes
+  raw bytes to stdout.
 - `listen.py` pipes that into Deepgram over a WebSocket and appends each
   finalized utterance to the transcript.
 - your assistant reads `current.md` whenever you ask it something.
