@@ -54,7 +54,7 @@ git clone https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
 - macOS（版本要新到支持 ScreenCaptureKit 麦克风采集）
 - Swift 工具链（`swiftc`——随 Xcode / Command Line Tools 一起提供）
 - [`uv`](https://docs.astral.sh/uv/)（它会按需拉取 `websockets`，不用手动 `pip install`）
-- 一个 Deepgram API key——**注册账号即送 $200 免费额度**，足够用很久（见下方「成本估算」）
+- 一个 Deepgram API key——[**点此注册 Deepgram**](https://console.deepgram.com/signup)，**注册账号即送 $200 免费额度**，足够用很久（见下方「成本估算」）
 
 初始化 checkout：
 
@@ -107,7 +107,9 @@ bash bin/stop.sh           # 停止
 
 ## 成本估算：$200 免费额度能用多久？
 
-Deepgram 注册账号就送 **$200 免费额度**，之后才转为按量付费（pay-as-you-go）。
+Deepgram [注册账号](https://console.deepgram.com/signup)就送 **$200 免费额度**
+（官方原始出处见 [Deepgram 定价页](https://deepgram.com/pricing)，页面上明确写着
+"Free $200 Credit"），之后才转为按量付费（pay-as-you-go）。
 
 Arco 会把系统音频和麦克风混成**单独一路** 16k 单声道音频流送给 Deepgram，所以是
 **按一条流计费**，不是两条。按 Nova-3 实时流式（streaming）的按量价格估算：

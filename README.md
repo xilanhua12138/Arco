@@ -59,7 +59,7 @@ You need:
 - macOS (recent enough for ScreenCaptureKit microphone capture)
 - the Swift toolchain (`swiftc` — ships with Xcode / Command Line Tools)
 - [`uv`](https://docs.astral.sh/uv/) (it pulls in `websockets` on the fly, nothing to `pip install`)
-- a Deepgram API key — the free tier comes with enough credit to run this for a long time
+- a Deepgram API key — [**sign up here**](https://console.deepgram.com/signup); new accounts get a **free $200 credit** ([proof on Deepgram's pricing page](https://deepgram.com/pricing)), enough to run this for a long time
 
 Initialize the checkout:
 
