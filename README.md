@@ -1,5 +1,7 @@
 # Arco
 
+**English** | [中文](./README.zh-CN.md)
+
 ![Arco — the meeting becomes live context](./assets/banner.png)
 
 An [agent skill](https://agentskills.io) that listens to a meeting and keeps a
