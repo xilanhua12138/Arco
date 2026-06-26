@@ -26,10 +26,14 @@ if [ ! -x "$SKILL_DIR/recorder" ]; then
   bash "$SKILL_DIR/bin/build.sh"
 fi
 
-# Stop any running instance first
+# Stop any running instance first. Raise the .stop flag so a live supervisor
+# loop won't relaunch the pipeline while we're tearing it down, then clear it.
+touch "$TDIR/.stop"
+pkill -f "skills/arco/bin/supervise.sh" 2>/dev/null
 pkill -f "skills/arco/recorder" 2>/dev/null
 pkill -f "arco/listen" 2>/dev/null
 sleep 1
+rm -f "$TDIR/.stop"
 
 TS=$(date +%Y%m%d-%H%M%S)
 TRANSCRIPT="$TDIR/transcript-$TS.md"
@@ -37,7 +41,9 @@ ln -sf "$TRANSCRIPT" "$TDIR/current.md"
 printf '# Meeting Transcript\n\n> Started: %s (live)\n\n' "$(date '+%Y-%m-%d %H:%M:%S')" > "$TRANSCRIPT"
 rm -f "$TDIR/.log"
 
-nohup bash -c "'$SKILL_DIR/recorder' '$MODE' | uv run --no-project --with websockets python '$SKILL_DIR/listen.py' '$TRANSCRIPT'" >>"$TDIR/.log" 2>&1 &
+# Run under a supervisor so a dying recorder (e.g. Bluetooth mic switch) or a
+# dropped pipeline auto-restarts; listen.py separately auto-reconnects Deepgram.
+nohup bash "$SKILL_DIR/bin/supervise.sh" "$MODE" "$TRANSCRIPT" >>"$TDIR/.log" 2>&1 &
 
 sleep 2
 echo "Started (mode=$MODE, Deepgram multi-speaker diarization)"

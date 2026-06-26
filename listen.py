@@ -69,50 +69,78 @@ async def run(path: str) -> None:
         print("Missing DEEPGRAM_API_KEY (get a free key at https://deepgram.com, put it in .env)", file=sys.stderr)
         sys.exit(1)
     tr = Transcript(path)
-    async with websockets.connect(URL, additional_headers={"Authorization": f"Token {KEY}"}) as ws:
-        loop = asyncio.get_event_loop()
+    fd = sys.stdin.buffer.fileno()
+    os.set_blocking(fd, False)
 
-        async def reader() -> None:
-            fd = sys.stdin.buffer.fileno()
-            os.set_blocking(fd, False)
-            silence = b"\0" * 3200
-            while True:
-                ready, _, _ = await loop.run_in_executor(None, select.select, [fd], [], [], 1.0)
-                if not ready:
-                    await ws.send(silence)
-                    continue
-                try:
-                    chunk = os.read(fd, 3200)
-                except BlockingIOError:
-                    await ws.send(silence)
-                    continue
-                if chunk == b"":
-                    await ws.send(json.dumps({"type": "CloseStream"}))
-                    return
-                await ws.send(chunk)
+    # `stdin_eof` is the only condition that ends the program: it means the
+    # upstream `recorder` pipe closed (recorder exited / supervisor will decide
+    # whether to relaunch). Any other failure -- a dropped Deepgram WebSocket,
+    # a transient network error -- must NOT kill the listener; we reconnect with
+    # exponential backoff so a network blip during a live meeting self-heals.
+    stdin_eof = False
+    backoff = 1.0
 
-        async def receiver() -> None:
-            async for msg in ws:
-                try:
-                    obj = json.loads(msg)
-                except Exception:
-                    continue
-                if obj.get("type") != "Results" or not obj.get("is_final"):
-                    continue
-                alt = (obj.get("channel", {}).get("alternatives") or [{}])[0]
-                text = (alt.get("transcript") or "").strip()
-                if not text:
-                    continue
-                # `transcript` is the clean utterance text. With diarize=true the
-                # `words` array sometimes contains duplicated tokens, so never rebuild
-                # the text from words -- only read the speaker label from them.
-                # Deepgram emits a separate final at each utterance/speaker boundary,
-                # so one message maps to one speaker in practice.
-                words = alt.get("words") or []
-                spk = words[0].get("speaker") if words else None
-                tr.add(text, spk)
+    while not stdin_eof:
+        try:
+            async with websockets.connect(URL, additional_headers={"Authorization": f"Token {KEY}"}) as ws:
+                backoff = 1.0  # reset after a successful connect
+                loop = asyncio.get_event_loop()
 
-        await asyncio.gather(reader(), receiver())
+                async def reader() -> None:
+                    nonlocal stdin_eof
+                    silence = b"\0" * 3200
+                    while True:
+                        ready, _, _ = await loop.run_in_executor(None, select.select, [fd], [], [], 1.0)
+                        if not ready:
+                            await ws.send(silence)
+                            continue
+                        try:
+                            chunk = os.read(fd, 3200)
+                        except BlockingIOError:
+                            await ws.send(silence)
+                            continue
+                        if chunk == b"":
+                            stdin_eof = True
+                            await ws.send(json.dumps({"type": "CloseStream"}))
+                            return
+                        await ws.send(chunk)
+
+                async def receiver() -> None:
+                    async for msg in ws:
+                        try:
+                            obj = json.loads(msg)
+                        except Exception:
+                            continue
+                        if obj.get("type") != "Results" or not obj.get("is_final"):
+                            continue
+                        alt = (obj.get("channel", {}).get("alternatives") or [{}])[0]
+                        text = (alt.get("transcript") or "").strip()
+                        if not text:
+                            continue
+                        # `transcript` is the clean utterance text. With diarize=true the
+                        # `words` array sometimes contains duplicated tokens, so never rebuild
+                        # the text from words -- only read the speaker label from them.
+                        # Deepgram emits a separate final at each utterance/speaker boundary,
+                        # so one message maps to one speaker in practice.
+                        words = alt.get("words") or []
+                        spk = words[0].get("speaker") if words else None
+                        tr.add(text, spk)
+
+                await asyncio.gather(reader(), receiver())
+        except Exception as e:
+            # stdin EOF surfaces as a clean reader() return, not an exception;
+            # if we land here with stdin_eof set, the recorder already closed and
+            # we should stop. Otherwise it's a connection/network fault: retry.
+            if stdin_eof:
+                break
+            print(
+                f"[reconnect] Deepgram stream dropped ({type(e).__name__}: {e}); "
+                f"retrying in {backoff:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 15.0)
 
 
 if __name__ == "__main__":
