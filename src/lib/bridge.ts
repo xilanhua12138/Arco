@@ -23,6 +23,7 @@ import type {
   TranscriptionModelStatus,
   TranscriptStorageSettings,
 } from '../types'
+import { workspaceName } from './agentWorkspace'
 
 const hasTauriRuntime = () => '__TAURI_INTERNALS__' in window
 const demoMode = () => new URLSearchParams(window.location.search).get('demo')
@@ -379,6 +380,16 @@ export const arcoBridge = {
       provider: input.provider,
       question: input.question,
       contextScope: input.contextScope,
+      sources: input.contextScope === 'workspace' && input.workspace
+        ? [
+            demoAgentReply.sources[0],
+            {
+              kind: 'workspace',
+              label: `${workspaceName(input.workspace)} workspace`,
+              reference: input.workspace,
+            },
+          ]
+        : demoAgentReply.sources,
       savedAsNote: false,
       usedFallback: input.usedFallback,
       createdAt: new Date().toISOString(),

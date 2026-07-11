@@ -28,7 +28,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 你可以只参考本次转写，也可以通过 macOS 原生文件夹选择器附加一个项目工作区。Arco 会为后续问题复用该工作区，并通过这台 Mac 上已登录的 Codex CLI 或 Claude Code 发起请求。
 
 <p align="center">
-  <img src="docs/images/arco-agent-overlay.png" alt="带可收起转写的 Ask Arco 全局浮窗" width="900">
+  <img src="docs/images/arco-agent-overlay.png" alt="带可收起转写的 Ask Arco 全局浮窗" width="720">
 </p>
 
 ## 不离开当前对话
@@ -36,7 +36,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 开始监听后，一个小型全局浮窗会跨应用和 macOS Space 保持可用。无需回到主窗口，就能停止录制或打开 Agent。
 
 <p align="center">
-  <img src="docs/images/arco-recording-hud.png" alt="带停止和 Ask Arco 操作的录制浮窗" width="900">
+  <img src="docs/images/arco-recording-hud.png" alt="带停止和 Ask Arco 操作的录制浮窗" width="560">
 </p>
 
 ## 真正有用的本地会议历史

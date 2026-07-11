@@ -43,6 +43,25 @@ describe('browser Agent bridge', () => {
     expect(reply.answer).toContain('Arco becomes more than a recorder')
   })
 
+  it('shows the selected workspace in the explicit demo answer receipt', async () => {
+    window.history.replaceState({}, '', '/?demo=1')
+
+    const reply = await arcoBridge.runAgent({
+      ...input,
+      contextScope: 'workspace',
+      workspace: '/Users/example/Work/Arco',
+    })
+
+    expect(reply.sources).toEqual([
+      expect.objectContaining({ kind: 'transcript' }),
+      {
+        kind: 'workspace',
+        label: 'Arco workspace',
+        reference: '/Users/example/Work/Arco',
+      },
+    ])
+  })
+
   it('truthfully refuses to test a local CLI from a normal browser tab', async () => {
     const result = await arcoBridge.testAgentProvider('codex')
 
