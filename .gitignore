@@ -1,10 +1,52 @@
-# Secrets — never commit your real key
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
 .env
-
-# Compiled recorder (build it locally with bin/build.sh)
-recorder
-
-# macOS / Python noise
-.DS_Store
+.env.*
+!.env.example
+native/bin/
+/recorder
+/native/recorder
+native/runtime/*
+!native/runtime/.gitkeep
+native/__pycache__/
 __pycache__/
 *.pyc
+native/**/.build/
+test-results/
+playwright-report/
+artifacts/
+src-tauri/target/
+.agents/
+.codex/
+.impeccable/
+.cargo/
+tmp/
+public/arco-ambient-light.svg
+public/arco-icon-black-transparent*.png
+public/arco-icon-neutral-transparent-v5.png
+public/arco-icon-typeless-style-v4.png
+public/arco-icon.svg
+public/favicon.svg
+public/icons.svg
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

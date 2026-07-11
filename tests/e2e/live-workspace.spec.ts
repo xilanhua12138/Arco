@@ -1,0 +1,809 @@
+import { expect, test, type Page } from '@playwright/test'
+
+const configuredProviders = JSON.stringify({
+  setupComplete: true,
+  primary: 'codex',
+  secondary: 'claude',
+})
+
+async function gotoConfigured(page: Page, url = '/') {
+  await page.addInitScript(({ value }) => {
+    window.localStorage.setItem('arco.providerConfig', value)
+    if (!window.sessionStorage.getItem('arco.e2eLocaleSeeded')) {
+      window.localStorage.setItem('arco.locale', 'en')
+      window.sessionStorage.setItem('arco.e2eLocaleSeeded', 'true')
+    }
+  }, { value: configuredProviders })
+  await page.goto(url)
+}
+
+test('recording HUD is a native-sized global control island, not another app page', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-live',
+      startedAt: new Date(Date.now() - 128_000).toISOString(),
+      message: null,
+    }))
+  })
+  await page.goto('/?surface=hud&demo=1')
+
+  const hud = page.getByRole('region', { name: 'Arco recording controls' })
+  await expect(hud).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeVisible()
+  await expect(page.locator('.app-sidebar')).toHaveCount(0)
+  await expect(page.locator('.transcript-surface')).toHaveCount(0)
+
+  const box = await hud.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.round(box!.width)).toBe(368)
+  expect(Math.round(box!.height)).toBe(56)
+  expect(Math.round(720 - box!.y - box!.height)).toBe(24)
+  await page.screenshot({ path: 'test-results/arco-recording-hud.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText('Saved')).toBeVisible()
+})
+
+test('Agent overlay is a focused always-on-top conversation surface', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.providerConfig', JSON.stringify({
+      setupComplete: true,
+      primary: 'codex',
+      secondary: 'claude',
+    }))
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-live',
+      startedAt: new Date(Date.now() - 128_000).toISOString(),
+      message: null,
+    }))
+    window.localStorage.removeItem('arco.demoAgentTurns')
+  })
+  await page.goto('/?surface=agent-overlay&demo=1')
+
+  const overlay = page.getByRole('dialog', { name: 'Ask Arco' })
+  await expect(overlay).toBeVisible()
+  await expect(page.getByText('Live', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Answer what was asked' })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toBeVisible()
+  await expect(page.locator('.app-sidebar')).toHaveCount(0)
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await expect(page.getByText(/It should know enough about my work/)).toBeVisible()
+
+  const box = await overlay.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.round(box!.width)).toBe(720)
+  expect(Math.round(box!.height)).toBe(560)
+  expect(Math.round(box!.x)).toBe(540)
+  expect(Math.round(box!.y)).toBe(20)
+  await page.screenshot({ path: 'test-results/arco-agent-overlay.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Hide transcript' }).click()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toHaveCount(0)
+  await expect(overlay).toHaveCSS('width', '432px')
+  await expect(page.getByRole('button', { name: 'Show transcript' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-agent-overlay-collapsed.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Show transcript' }).click()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await expect(overlay).toHaveCSS('width', '720px')
+})
+
+test('global utility surfaces remain light when system appearance is dark', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.providerConfig', JSON.stringify({
+      setupComplete: true,
+      primary: 'codex',
+      secondary: 'claude',
+    }))
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-live',
+      startedAt: new Date(Date.now() - 128_000).toISOString(),
+      message: null,
+    }))
+    window.localStorage.removeItem('arco.demoAgentTurns')
+  })
+
+  await page.goto('/?surface=hud&demo=1')
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light')
+  await expect(page.getByText('Recording')).toHaveCSS('color', 'rgb(17, 17, 17)')
+  await expect(page.getByRole('button', { name: 'Stop recording' })).toHaveCSS('color', 'rgb(255, 255, 255)')
+  await page.screenshot({ path: 'test-results/arco-recording-hud-light-forced.png', fullPage: true })
+
+  await page.goto('/?surface=agent-overlay&demo=1')
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light')
+  await expect(page.getByRole('heading', { name: 'Ask Arco' })).toHaveCSS('color', 'rgb(17, 17, 17)')
+  await expect(page.getByRole('button', { name: 'Answer what was asked' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-agent-overlay-light-forced.png', fullPage: true })
+})
+
+test('first launch connects one primary and optional secondary before entering Arco', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('arco.locale', 'en'))
+  await page.goto('/?demo=1')
+
+  const setup = page.getByRole('dialog', { name: 'Welcome to Arco' })
+  const setupBrandArtwork = page.locator('.provider-setup-brand img')
+  await expect(setup).toBeVisible()
+  await expect(setup.getByRole('heading', { name: 'Welcome to Arco' })).toHaveCSS('font-family', /Avenir Next/)
+  await expect(setupBrandArtwork).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(setupBrandArtwork).toHaveCSS('box-shadow', 'none')
+  await expect(setup.getByRole('button', { name: 'Welcome' })).toHaveAttribute('aria-current', 'step')
+  await expect(setup.getByRole('button', { name: 'Choose providers' })).toBeDisabled()
+  await page.screenshot({ path: 'test-results/arco-provider-setup-intro.png', fullPage: true })
+
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await expect(setup.getByRole('heading', { name: 'Choose providers' })).toBeVisible()
+  await expect(setup.getByLabel('Codex CLI status')).toContainText('Installed')
+  await setup.getByRole('button', { name: 'Re-check installations' }).click()
+  await expect(setup.getByLabel('Claude Code status')).toContainText('Installed')
+  await setup.getByRole('radio', { name: 'Claude as secondary' }).click()
+  await page.screenshot({ path: 'test-results/arco-provider-setup-choice.png', fullPage: true })
+  await setup.getByRole('button', { name: 'Continue' }).click()
+
+  await setup.getByRole('button', { name: 'Test Codex' }).click()
+  await expect(setup.getByText('Codex is ready.')).toBeVisible()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await expect(setup.getByRole('heading', { name: 'Start from anywhere' })).toBeVisible()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await expect(setup.getByRole('button', { name: 'Ready' })).toHaveAttribute('aria-current', 'step')
+  await page.screenshot({ path: 'test-results/arco-provider-setup-complete.png', fullPage: true })
+  await setup.getByRole('button', { name: 'Open Arco' }).click()
+
+  await expect(setup).toHaveCount(0)
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  await expect(agent).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
+  await expect(agent.getByLabel('Current provider')).toHaveCount(0)
+  await expect(agent.getByRole('combobox', { name: 'Agent provider' })).toHaveCount(0)
+})
+
+test('an idle Current restores the centered first-version launch surface without explanatory copy', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page, '/?demo=empty')
+
+  const idle = page.getByRole('region', { name: 'Start listening' })
+  await expect(idle.getByRole('heading', { name: 'Start listening' })).toBeVisible()
+  await expect(idle.getByText('Start a new meeting when you are ready. Its live transcript and Agent will appear here.')).toHaveCount(0)
+  await expect(idle.getByRole('region', { name: 'On this Mac' })).toContainText('0')
+  await expect(idle.getByRole('region', { name: 'Shortcuts' }).locator('kbd')).toHaveText(['Fn', 'M', '⌘', 'K'])
+  await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
+  await expect(page.getByRole('heading', { name: 'Transcript' })).toHaveCount(0)
+  await expect(page.getByRole('main', { name: 'Ask Arco' })).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/arco-first-meeting-empty.png', fullPage: true, animations: 'disabled' })
+
+  await page.setViewportSize({ width: 1024, height: 700 })
+  const idleViewport = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+  }))
+  expect(idleViewport.documentWidth).toBeLessThanOrEqual(idleViewport.innerWidth)
+  expect(idleViewport.bodyWidth).toBeLessThanOrEqual(idleViewport.innerWidth)
+
+  await idle.getByRole('button', { name: 'Start listening' }).click()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await expect(page.getByRole('main', { name: 'Ask Arco' })).toBeVisible()
+})
+
+test('the listening shortcut can be changed from Settings and updates the idle shortcut receipt', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=empty')
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  const settings = page.getByRole('dialog', { name: 'General' })
+  const recorder = settings.getByRole('button', { name: 'Change listening shortcut' })
+  await recorder.click()
+  await page.keyboard.press('Meta+Alt+L')
+  await expect(recorder).toContainText('⌘ ⌥ L')
+  await settings.getByRole('button', { name: 'Close settings' }).click()
+  await expect(page.getByRole('region', { name: 'Shortcuts' }).locator('kbd')).toHaveText(['⌘', '⌥', 'L', '⌘', 'K'])
+})
+
+test('Current keeps transcript primary with Agent visible at its right', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page)
+
+  const dragSpace = await page.locator('.page-drag-space').boundingBox()
+  const pageHeader = await page.locator('.page-header').boundingBox()
+  const sidebarBrand = await page.locator('.sidebar-brand').boundingBox()
+  expect(dragSpace).not.toBeNull()
+  expect(pageHeader).not.toBeNull()
+  expect(sidebarBrand).not.toBeNull()
+  expect(Math.round(dragSpace!.height)).toBe(32)
+  expect(Math.round(pageHeader!.y)).toBe(41)
+  expect(Math.round(sidebarBrand!.y)).toBe(41)
+  await expect(page.locator('body')).toHaveCSS('font-family', /Avenir Next/)
+  await expect(page.getByRole('heading', { level: 1, name: 'Product direction · weekly working session' })).toHaveCSS('font-family', /Avenir Next/)
+  await expect(page.locator('.utterance time').first()).toHaveCSS('font-family', /SFMono/)
+  await expect(page.locator('.brand-mark')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(page.locator('.brand-mark')).toHaveCSS('box-shadow', 'none')
+
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  const transcript = page.getByRole('complementary', { name: 'Meeting transcript' })
+  await expect(page.getByRole('heading', { level: 1, name: 'Product direction · weekly working session' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
+  await expect(agent).toBeVisible()
+  await expect(transcript).toBeVisible()
+  await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: 'Ask Arco' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop listening' })).toHaveCount(1)
+  await expect(page.getByLabel('Remote 1, system audio').first()).toBeVisible()
+  await expect(page.getByLabel('In room 2, room mic').first()).toBeVisible()
+  await expect(transcript.locator('.utterance')).toHaveCount(12)
+  await expect(transcript.locator('.utterance .speaker-label')).toHaveCount(12)
+  await expect(transcript.locator('.utterance .speaker-avatar')).toHaveCount(12)
+  const firstSpeakerAvatar = transcript.locator('.speaker-avatar').first()
+  const firstSpeakerName = firstSpeakerAvatar.locator('xpath=..').locator('strong')
+  const avatarSurface = await firstSpeakerAvatar.evaluate((element) => {
+    const style = window.getComputedStyle(element)
+    return {
+      tagName: element.tagName.toLocaleLowerCase(),
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+    }
+  })
+  const avatarBox = await firstSpeakerAvatar.boundingBox()
+  const nameBox = await firstSpeakerName.boundingBox()
+  expect(avatarSurface).toEqual({
+    tagName: 'svg',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    backgroundImage: 'none',
+  })
+  expect(avatarBox).not.toBeNull()
+  expect(nameBox).not.toBeNull()
+  expect(Math.abs((avatarBox!.y + avatarBox!.height / 2) - (nameBox!.y + nameBox!.height / 2))).toBeLessThanOrEqual(1)
+  await expect(page.getByText('You', { exact: true })).toHaveCount(0)
+  await page.waitForTimeout(500)
+  await expect(page.getByRole('button', { name: 'Jump to live' })).toHaveCount(0)
+
+  await page.screenshot({ path: 'test-results/arco-final-current-light.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Meeting details' }).click()
+  const details = page.getByRole('dialog', { name: 'Meeting details' })
+  await expect(details).toBeVisible()
+  await expect(details.getByLabel('System audio speakers: Remote 1, Remote 2')).toContainText('Remote 1, Remote 2')
+  await expect(details.getByLabel('Room microphone speakers: In room 1, In room 2')).toContainText('In room 1, In room 2')
+  await page.screenshot({ path: 'test-results/arco-meeting-details-popover.png', fullPage: true })
+  await page.keyboard.press('Escape')
+  await expect(details).toHaveCount(0)
+})
+
+test('a meeting title is edited in place, persists, and updates History', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page)
+
+  await page.getByRole('button', { name: 'Rename meeting' }).click()
+  const title = page.getByRole('textbox', { name: 'Meeting title' })
+  await expect(title).toBeFocused()
+  await expect(title).toHaveValue('Product direction · weekly working session')
+  await page.screenshot({ path: 'test-results/arco-meeting-title-editing.png', fullPage: true })
+  await title.fill('Decision review')
+  await title.press('Enter')
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Decision review' })).toBeVisible()
+  await page.getByRole('button', { name: 'Open meeting history' }).click()
+  await expect(page.getByRole('button', { name: /Decision review/ })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('heading', { level: 1, name: 'Decision review' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Rename meeting' }).click()
+  await page.getByRole('textbox', { name: 'Meeting title' }).fill('')
+  await page.getByRole('textbox', { name: 'Meeting title' }).press('Enter')
+  await expect(page.getByRole('heading', { level: 1, name: 'Untitled meeting' })).toBeVisible()
+})
+
+test('Current exposes native glass through chrome while keeping both reading surfaces stable', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page)
+
+  const material = await page.locator('.app-shell').evaluate((shell) => {
+    const sidebar = shell.querySelector<HTMLElement>('.app-sidebar')
+    const activeNav = shell.querySelector<HTMLElement>('.nav-item-active')
+    const captureCard = shell.querySelector<HTMLElement>('.capture-card')
+    const pageStage = shell.querySelector<HTMLElement>('.page-stage')
+    const workspace = shell.querySelector<HTMLElement>('.current-workspace')
+    const transcript = shell.querySelector<HTMLElement>('.transcript-surface')
+    const agent = shell.querySelector<HTMLElement>('.agent-workspace')
+    if (!sidebar || !activeNav || !captureCard || !pageStage || !workspace || !transcript || !agent) {
+      throw new Error('Current material surfaces are incomplete')
+    }
+    const shellRect = shell.getBoundingClientRect()
+    const stageRect = pageStage.getBoundingClientRect()
+    const stageStyle = getComputedStyle(pageStage)
+
+    return {
+      reducedTransparency: window.matchMedia('(prefers-reduced-transparency: reduce)').matches,
+      shellBackground: getComputedStyle(shell).backgroundColor,
+      sidebarBackground: getComputedStyle(sidebar).backgroundColor,
+      sidebarBackdrop: getComputedStyle(sidebar).backdropFilter,
+      activeNavBackdrop: getComputedStyle(activeNav).backdropFilter,
+      captureBackdrop: getComputedStyle(captureCard).backdropFilter,
+      pageStageBackground: getComputedStyle(pageStage).backgroundColor,
+      pageStageTopRightRadius: stageStyle.borderTopRightRadius,
+      pageStageBottomRightRadius: stageStyle.borderBottomRightRadius,
+      pageStageBoxShadow: stageStyle.boxShadow,
+      pageStageRightGap: shellRect.right - stageRect.right,
+      workspaceBackground: getComputedStyle(workspace).backgroundColor,
+      workspaceBackdrop: getComputedStyle(workspace).backdropFilter,
+      transcriptBackground: getComputedStyle(transcript).backgroundColor,
+      agentBackground: getComputedStyle(agent).backgroundColor,
+    }
+  })
+  const alpha = (color: string) => {
+    const match = color.match(/rgba?\([^,]+,[^,]+,[^,]+(?:,\s*([\d.]+))?\)/)
+    return match?.[1] === undefined ? 1 : Number(match[1])
+  }
+
+  if (material.reducedTransparency) {
+    expect(alpha(material.shellBackground)).toBeGreaterThan(0.7)
+    expect(material.sidebarBackdrop).toBe('none')
+    expect(material.workspaceBackdrop).toBe('none')
+  } else {
+    expect(alpha(material.shellBackground)).toBeLessThan(0.35)
+    expect(alpha(material.sidebarBackground)).toBeLessThan(0.45)
+    expect(material.sidebarBackdrop).toContain('blur(')
+    expect(material.activeNavBackdrop).toContain('blur(')
+    expect(material.captureBackdrop).toContain('blur(')
+    expect(alpha(material.pageStageBackground)).toBeLessThan(0.12)
+    expect(alpha(material.workspaceBackground)).toBeLessThan(0.24)
+    expect(material.workspaceBackdrop).toContain('blur(')
+  }
+  expect(Number.parseFloat(material.pageStageTopRightRadius)).toBeGreaterThanOrEqual(16)
+  expect(Number.parseFloat(material.pageStageBottomRightRadius)).toBeGreaterThanOrEqual(16)
+  expect(material.pageStageRightGap).toBeGreaterThanOrEqual(7)
+  expect(material.pageStageBoxShadow).toContain('inset')
+  expect(alpha(material.transcriptBackground)).toBeGreaterThan(0.9)
+  expect(alpha(material.agentBackground)).toBeGreaterThan(0.9)
+})
+
+test('History is searchable and opens a meeting as History review', async ({ page }) => {
+  await gotoConfigured(page)
+  await page.getByRole('button', { name: 'Open meeting history' }).click()
+
+  await expect(page.getByRole('heading', { level: 1, name: 'History' })).toBeVisible()
+  const historyStageMaterial = await page.locator('.page-stage').evaluate((stage) => {
+    const stageStyle = getComputedStyle(stage)
+    const ambientStyle = getComputedStyle(stage, '::before')
+    const matrixStyle = getComputedStyle(stage, '::after')
+    return {
+      topLeftRadius: stageStyle.borderTopLeftRadius,
+      stageBackground: stageStyle.backgroundImage,
+      ambientOverlayBackground: ambientStyle.backgroundImage,
+      matrixTop: matrixStyle.top,
+      matrixBackground: matrixStyle.backgroundImage,
+      matrixMask: matrixStyle.maskImage,
+    }
+  })
+  expect(Number.parseFloat(historyStageMaterial.topLeftRadius)).toBeGreaterThanOrEqual(16)
+  expect(historyStageMaterial.stageBackground.match(/gradient\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
+  expect(historyStageMaterial.ambientOverlayBackground).toBe('none')
+  expect(Number.parseFloat(historyStageMaterial.matrixTop)).toBe(0)
+  expect(historyStageMaterial.matrixBackground.match(/gradient\(/g)?.length ?? 0).toBe(1)
+  expect(historyStageMaterial.matrixMask).toBe('none')
+  const historyViewport = await page.locator('.history-results').evaluate((results) => {
+    const style = getComputedStyle(results)
+    return {
+      topLeftRadius: style.borderTopLeftRadius,
+      topRightRadius: style.borderTopRightRadius,
+      overflowY: style.overflowY,
+    }
+  })
+  expect(Number.parseFloat(historyViewport.topLeftRadius)).toBeGreaterThanOrEqual(10)
+  expect(Number.parseFloat(historyViewport.topRightRadius)).toBeGreaterThanOrEqual(10)
+  expect(historyViewport.overflowY).toBe('auto')
+  await expect(page.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('main', { name: 'Ask Arco' })).toHaveCount(0)
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toHaveCount(0)
+
+  await expect(page.getByLabel('Filter meetings')).toHaveCount(0)
+  await expect(page.getByText('Your conversations')).toHaveCount(0)
+  await expect(page.getByText('Transcripts stay on this Mac.')).toHaveCount(0)
+  await page.waitForTimeout(250)
+  await page.screenshot({ path: 'test-results/arco-final-history-light.png', fullPage: true })
+
+  await page.getByRole('textbox', { name: 'Search meetings' }).fill('Benchmark review')
+  await expect(page.getByRole('button', { name: /Benchmark review with Estrella/i })).toBeVisible()
+
+  await page.getByRole('textbox', { name: 'Search meetings' }).fill('definitely-not-in-any-meeting')
+  await expect(page.getByText('No matching meetings')).toBeVisible()
+  await expect(page.getByText('Try a phrase from the transcript or clear your search.')).toBeVisible()
+
+  await page.getByRole('textbox', { name: 'Search meetings' }).fill('Benchmark review')
+  const benchmark = page.getByRole('button', { name: /Benchmark review with Estrella/i })
+  await expect(benchmark).toBeVisible()
+  await benchmark.click()
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Benchmark review with Estrella' })).toBeVisible()
+  await expect(page.getByRole('main', { name: 'Ask Arco' })).toBeVisible()
+  const transcript = page.getByRole('complementary', { name: 'Meeting transcript' })
+  await expect(transcript).toBeVisible()
+  await expect(transcript.getByRole('heading', { name: 'Summary' })).toBeVisible()
+  await expect(transcript.getByText(/benchmark/i).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: /Return to live meeting Product direction/i })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-product-reviewing-during-live.png', fullPage: true })
+  await expect(page.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('button', { name: 'Open current meeting' })).not.toHaveAttribute('aria-current')
+})
+
+test('Agent chooses a workspace once and reuses it without a per-question path field', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=1')
+
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  await expect(agent).toBeVisible()
+  await expect(agent.getByText(/Home folder|Personal folder/i)).toHaveCount(0)
+  await agent.getByRole('button', { name: 'Add context' }).click()
+  await agent.getByRole('menuitem', { name: 'Choose workspace' }).click()
+  const quickAction = agent.getByRole('button', { name: /Answer what was asked/i })
+
+  await expect(agent.getByRole('textbox', { name: 'Workspace path' })).toHaveCount(0)
+  await expect(agent.getByRole('button', { name: 'Change workspace' })).toHaveText('Arco')
+  await expect(quickAction).toBeEnabled()
+  await expect(agent.getByText('This transcript')).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-agent-workspace-selected.png', fullPage: true })
+
+  await quickAction.click()
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
+  await expect(agent.getByText('Context used')).toBeVisible()
+  await expect(agent.getByRole('button', { name: /Current transcript · 14:02–14:06/i })).toHaveCount(0)
+  await expect(agent.getByText('Current transcript · 14:02–14:06')).toBeVisible()
+
+  await page.reload()
+  const reopenedAgent = page.getByRole('main', { name: 'Ask Arco' })
+  await reopenedAgent.getByRole('button', { name: 'Add context' }).click()
+  await reopenedAgent.getByRole('menuitem', { name: 'Use Arco workspace' }).click()
+  await expect(reopenedAgent.getByRole('button', { name: 'Change workspace' })).toHaveText('Arco')
+  await expect(reopenedAgent.getByRole('textbox', { name: 'Workspace path' })).toHaveCount(0)
+})
+
+test('Agent uses the configured primary without a per-question provider switch', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=1')
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+
+  await expect(agent.getByLabel('Current provider')).toHaveCount(0)
+  await expect(agent.getByRole('combobox', { name: 'Agent provider' })).toHaveCount(0)
+  await agent.getByRole('button', { name: /Answer what was asked/i }).click()
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
+  await expect(agent.getByText(/native session/i)).toHaveCount(0)
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: 'test-results/arco-configured-primary-agent.png', fullPage: true })
+})
+
+test('a user-confirmed Agent note survives reloading the app', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=1')
+  let agent = page.getByRole('main', { name: 'Ask Arco' })
+  await agent.getByRole('button', { name: /Answer what was asked/i }).click()
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
+  await agent.getByRole('button', { name: 'Save as note' }).click()
+  await expect(agent.getByRole('button', { name: 'Saved note' })).toBeVisible()
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: 'test-results/arco-product-saved-note.png', fullPage: true })
+
+  await page.reload()
+  agent = page.getByRole('main', { name: 'Ask Arco' })
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
+  await expect(agent.getByRole('button', { name: 'Saved note' })).toBeVisible()
+})
+
+test('the normal browser preview never returns the fixed Agent fixture as a real CLI answer', async ({ page }) => {
+  await gotoConfigured(page)
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+
+  await agent.getByRole('button', { name: /Answer what was asked/i }).click()
+
+  await expect(page.getByRole('alert')).toContainText('Browser preview cannot call your local CLI')
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toHaveCount(0)
+  await expect(agent.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toHaveValue(
+    'What is the strongest direct answer to the latest question in this meeting?',
+  )
+})
+
+test('Settings uses navigable sections in one centered sheet', async ({ page }) => {
+  await gotoConfigured(page)
+  await page.getByRole('button', { name: 'Open settings' }).click()
+
+  await expect(page.getByRole('dialog', { name: 'General' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'App language' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Change listening shortcut' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Shortcuts' })).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/arco-general-settings-light.png', fullPage: true })
+  const settingsMaterial = await page.locator('.settings-main').evaluate((surface) => ({
+    background: getComputedStyle(surface).backgroundColor,
+    backdrop: getComputedStyle(surface).backdropFilter,
+  }))
+  const settingsAlpha = settingsMaterial.background.match(/rgba?\([^,]+,[^,]+,[^,]+(?:,\s*([\d.]+))?\)/)?.[1]
+  expect(settingsAlpha === undefined ? 1 : Number(settingsAlpha)).toBeLessThan(0.8)
+  expect(settingsMaterial.backdrop).toContain('blur(')
+  await page.getByRole('button', { name: 'Audio & speakers' }).click()
+  const recognition = page.locator('summary').filter({ hasText: /^Recognition/ })
+  await expect(recognition).toBeVisible()
+  await expect(page.getByText('Chinese', { exact: true })).toBeVisible()
+  await expect(page.getByText('Remote 1… · In room 1…')).toHaveCount(0)
+  await expect(page.getByText(/Deepgram separates multiple speakers/i)).not.toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-product-audio-modes.png', fullPage: true })
+  await recognition.click()
+  await expect(page.getByText(/Deepgram separates multiple speakers/i)).toBeVisible()
+  await expect(page.getByText('Deepgram · multichannel diarization')).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-product-audio-recognition.png', fullPage: true })
+  await page.getByRole('button', { name: /Agent runtime/i }).click()
+  await expect(page.getByRole('dialog', { name: 'Agent runtime' })).toBeVisible()
+  await expect(page.getByText('Codex CLI').first()).toBeVisible()
+  await expect(page.getByText('Claude Code', { exact: true })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-provider-settings.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Edit configuration' }).click()
+  const providerSetup = page.getByRole('dialog', { name: 'Connect Codex or Claude' })
+  await expect(providerSetup.getByRole('button', { name: 'Choose providers' })).toHaveAttribute('aria-current', 'step')
+  await expect(providerSetup.getByRole('radio', { name: 'Codex as primary' })).toBeChecked()
+  await expect(providerSetup.getByRole('radio', { name: 'Claude as secondary' })).toBeChecked()
+  await page.screenshot({ path: 'test-results/arco-provider-edit.png', fullPage: true })
+  await providerSetup.getByRole('button', { name: 'Cancel setup' }).click()
+
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /Data & privacy/i }).click()
+  await expect(page.getByRole('dialog', { name: 'Data & privacy' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'App language' })).toHaveCount(0)
+  const transcriptStorage = page.getByRole('button', { name: 'Meeting transcript storage' })
+  await expect(transcriptStorage).toContainText('Default')
+  await expect(transcriptStorage).toContainText('/Users/demo/Library/Application Support/Arco/transcripts')
+  await transcriptStorage.click()
+  await expect(page.getByRole('button', { name: 'Choose folder' })).toBeDisabled()
+  await expect(page.getByText('Stop the current meeting before changing this folder.')).toBeVisible()
+  await expect(page.getByText('Stored in Arco on this Mac')).toBeVisible()
+
+  await page.screenshot({ path: 'test-results/arco-final-settings-light.png', fullPage: true })
+})
+
+test('transcript storage has a default, supports a custom folder, and restores the default', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=1')
+  await page.getByRole('button', { name: 'Stop listening' }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Data & privacy' }).click()
+
+  const transcriptStorage = page.getByRole('button', { name: 'Meeting transcript storage' })
+  await expect(transcriptStorage).toContainText('Default')
+  await transcriptStorage.click()
+  await page.getByRole('button', { name: 'Choose folder' }).click()
+  await expect(transcriptStorage).toContainText('Custom')
+  await expect(transcriptStorage).toContainText('/Users/demo/Documents/Arco Meetings')
+  await page.screenshot({ path: 'test-results/arco-transcript-storage-custom.png', fullPage: true })
+
+  await page.getByRole('button', { name: 'Close settings' }).click()
+  await page.reload()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Data & privacy' }).click()
+  await expect(page.getByRole('button', { name: 'Meeting transcript storage' })).toContainText('Custom')
+  await page.getByRole('button', { name: 'Meeting transcript storage' }).click()
+  await page.getByRole('button', { name: 'Restore default' }).click()
+  await expect(page.getByRole('button', { name: 'Meeting transcript storage' })).toContainText('Default')
+})
+
+test('Recognition exposes one durable on-device model and diarization contract', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 750 })
+  await gotoConfigured(page)
+  await page.getByRole('button', { name: 'Stop listening' }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Audio & speakers' }).click()
+
+  const settings = page.getByRole('dialog', { name: 'Audio & speakers' })
+  await settings.locator('summary').filter({ hasText: /^Recognition/ }).click()
+  await settings.locator('label').filter({ hasText: /^On-device/ }).click()
+
+  const model = settings.getByRole('combobox', { name: 'On-device model' })
+  await expect(model).toHaveValue('nemotron-speech-3.5-streaming')
+  await expect(model.locator('option')).toHaveText([
+    'Nemotron Speech 3.5 · ~670 MB',
+    'Whisper Tiny · ~75 MB',
+    'Whisper Base · ~142 MB',
+    'Whisper Small · ~466 MB',
+    'Whisper Medium · ~1.5 GB',
+    'Whisper Large · ~2.9 GB',
+  ])
+  await expect(settings.getByRole('checkbox', { name: /Streaming Sortformer/i })).toBeChecked()
+  await expect(settings.getByText('Audio and transcript stay on this Mac.')).toBeVisible()
+  await expect(settings.getByText(/up to 4 speakers per audio source/i)).toBeVisible()
+
+  await model.selectOption('whisper-small')
+  await settings.getByRole('combobox', { name: 'Recognition language' }).selectOption('en-US')
+  await expect(settings.locator('summary').filter({ hasText: /^Recognition/ })).toContainText('Whisper Small')
+  await page.screenshot({ path: 'test-results/arco-local-recognition-settings.png', fullPage: true })
+  await settings.getByRole('button', { name: 'Close settings' }).click()
+
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Audio & speakers' }).click()
+  const reopened = page.getByRole('dialog', { name: 'Audio & speakers' })
+  await reopened.locator('summary').filter({ hasText: /^Recognition/ }).click()
+  await expect(reopened.getByRole('combobox', { name: 'On-device model' })).toHaveValue('whisper-small')
+  await expect(reopened.getByRole('combobox', { name: 'Recognition language' })).toHaveValue('en-US')
+})
+
+test('Meeting output reveals prompt editing only on demand and persists each rule', async ({ page }) => {
+  await gotoConfigured(page)
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /Meeting output/i }).click()
+
+  const settings = page.getByRole('dialog', { name: 'Meeting output' })
+  await expect(settings.getByRole('button', { name: /Automatic title/i })).toContainText('On · Arco default')
+  await expect(settings.getByRole('button', { name: /End-of-meeting summary/i })).toContainText('On · Arco default')
+  await expect(settings.getByRole('textbox', { name: 'Prompt' })).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/arco-meeting-output-settings.png', fullPage: true })
+
+  await settings.getByRole('button', { name: /Automatic title/i }).click()
+  await expect(settings.getByRole('heading', { name: 'Automatic title' })).toBeVisible()
+  await settings.getByRole('switch', { name: 'Use custom prompt' }).click()
+  const prompt = settings.getByRole('textbox', { name: 'Prompt' })
+  await page.screenshot({ path: 'test-results/arco-meeting-output-prompt.png', fullPage: true })
+  await prompt.fill('Name the meeting from its clearest decision. Return only the title.')
+  await settings.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(settings.getByRole('button', { name: /Automatic title/i })).toContainText('On · Custom')
+  await settings.getByRole('button', { name: 'Close settings' }).click()
+
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /Meeting output/i }).click()
+  const reopened = page.getByRole('dialog', { name: 'Meeting output' })
+  await expect(reopened.getByRole('button', { name: /Automatic title/i })).toContainText('On · Custom')
+  await reopened.getByRole('button', { name: /Automatic title/i }).click()
+  await expect(reopened.getByRole('textbox', { name: 'Prompt' })).toHaveValue(
+    'Name the meeting from its clearest decision. Return only the title.',
+  )
+})
+
+test('1024 layout stays light under dark system appearance without overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+  await gotoConfigured(page)
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light')
+
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  const transcript = page.getByRole('complementary', { name: 'Meeting transcript' })
+  const agentBox = await agent.boundingBox()
+  const transcriptBox = await transcript.boundingBox()
+  expect(agentBox).not.toBeNull()
+  expect(transcriptBox).not.toBeNull()
+  expect(transcriptBox!.x).toBeLessThan(agentBox!.x)
+  expect(transcriptBox!.width).toBeGreaterThan(agentBox!.width)
+  expect(transcriptBox!.x + transcriptBox!.width).toBeLessThanOrEqual(agentBox!.x + 1)
+  await expect(page.getByRole('button', { name: 'Stop listening' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
+
+  const viewport = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+  }))
+  expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.innerWidth)
+  expect(viewport.bodyWidth).toBeLessThanOrEqual(viewport.innerWidth)
+  expect(agentBox!.x + agentBox!.width).toBeLessThanOrEqual(viewport.innerWidth)
+
+  await page.screenshot({ path: 'test-results/arco-transcript-first-light-forced-1024.png', fullPage: true })
+})
+
+test('1080 light layout preserves the Transcript-first split without horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 750 })
+  await gotoConfigured(page)
+
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  const transcript = page.getByRole('complementary', { name: 'Meeting transcript' })
+  const agentBox = await agent.boundingBox()
+  const transcriptBox = await transcript.boundingBox()
+
+  expect(agentBox).not.toBeNull()
+  expect(transcriptBox).not.toBeNull()
+  expect(transcriptBox!.x).toBeLessThan(agentBox!.x)
+  expect(transcriptBox!.width).toBeGreaterThan(agentBox!.width)
+  expect(transcriptBox!.x + transcriptBox!.width).toBeLessThanOrEqual(agentBox!.x + 1)
+
+  const viewport = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+  }))
+  expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.innerWidth)
+  expect(viewport.bodyWidth).toBeLessThanOrEqual(viewport.innerWidth)
+
+  await page.screenshot({ path: 'test-results/arco-transcript-first-light-1080.png', fullPage: true })
+})
+
+test('capture can stop and start again without leaving Current', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page)
+
+  await page.getByRole('button', { name: 'Stop listening' }).click()
+  const idle = page.getByRole('region', { name: 'Start listening' })
+  const start = idle.getByRole('button', { name: 'Start listening' })
+  await expect(start).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByText(/microphone cannot be treated as one person/i)).toHaveCount(0)
+  await expect(idle.getByRole('region', { name: 'On this Mac' })).toBeVisible()
+  await page.waitForTimeout(500)
+  await page.screenshot({ path: 'test-results/arco-idle-current-with-history.png', fullPage: true, animations: 'disabled' })
+
+  await page.getByRole('button', { name: 'Open meeting history' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'History' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
+  await page.getByRole('button', { name: 'Open current meeting' }).click()
+  await expect(page.getByRole('region', { name: 'Start listening' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
+
+  await start.click()
+  await expect(page.getByRole('button', { name: 'Stop listening' })).toBeEnabled()
+})
+
+test('the next meeting can be explicitly set to online-only audio', async ({ page }) => {
+  await gotoConfigured(page)
+  await page.getByRole('button', { name: 'Stop listening' }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Audio & speakers' }).click()
+  const settings = page.getByRole('dialog', { name: 'Audio & speakers' })
+  await settings.locator('label').filter({ hasText: 'Online meeting' }).click()
+  await page.screenshot({ path: 'test-results/arco-product-audio-mode-online.png', fullPage: true })
+  await settings.getByRole('button', { name: 'Close settings' }).click()
+
+  const capture = page.getByRole('region', { name: 'Audio capture · Online · System audio' })
+  await expect(capture).toContainText('Online')
+  await expect(capture.getByText('System')).toHaveCount(0)
+  await expect(capture.getByText('Room')).toHaveCount(0)
+})
+
+test('the interface switches to Chinese across the workspace and keeps it after reload', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page)
+
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('combobox', { name: 'App language' }).selectOption('zh-CN')
+
+  const settings = page.getByRole('dialog', { name: '通用' })
+  await expect(settings).toBeVisible()
+  await expect(settings.getByText('界面语言', { exact: true })).toBeVisible()
+  await expect(settings.getByRole('button', { name: '修改聆听快捷键' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '音频与说话人' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-i18n-zh-settings-1240.png', fullPage: true })
+  await settings.getByRole('button', { name: '关闭设置' }).click()
+
+  await expect(page.getByRole('button', { name: '打开当前会议' })).toBeVisible()
+  await expect(page.getByRole('main', { name: '询问 Arco' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: '会议转写' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-i18n-zh-1240.png', fullPage: true })
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: '打开设置' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light')
+  await page.screenshot({ path: 'test-results/arco-i18n-zh-light-forced-1024.png', fullPage: true })
+
+  const viewport = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+  }))
+  expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.innerWidth)
+  expect(viewport.bodyWidth).toBeLessThanOrEqual(viewport.innerWidth)
+})
+
+test('first launch can switch to Chinese before provider setup', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await page.addInitScript(() => {
+    window.localStorage.removeItem('arco.providerConfig')
+    window.localStorage.removeItem('arco.onboarding')
+    window.localStorage.setItem('arco.locale', 'en')
+  })
+  await page.goto('/?demo=1')
+
+  await page.getByRole('combobox', { name: 'App language' }).selectOption('zh-CN')
+
+  await expect(page.getByRole('heading', { name: '欢迎使用 Arco' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '继续' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '选择服务商' })).toBeDisabled()
+  await page.screenshot({ path: 'test-results/arco-i18n-zh-onboarding-1240.png', fullPage: true })
+})

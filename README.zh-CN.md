@@ -1,139 +1,159 @@
-# Arco
+<div align="center">
+  <img src="docs/images/arco-app-icon.png" alt="Arco" width="112">
 
-[English](./README.md) | **中文**
+  <h1>Arco</h1>
 
-![Arco — 会议即实时上下文](./assets/banner.png)
+  <p><strong>让会议成为你 Mac 上本地 Agent 的实时上下文。</strong></p>
 
-一个 [agent skill](https://agentskills.io)：监听会议，并在本地磁盘上持续维护一份
-**带说话人标注的实时转写**——这样你就能让你的 AI 助手总结要点、提取待办事项、
-或回答刚才会上聊到的问题，而且全部基于真实的原话。它适用于任何支持本地 shell
-访问的 skill 运行环境（Claude Code，或任何遵循 Agent Skills 标准的 agent）。
+  <p>
+    Arco 是一款面向 macOS 的本地优先、AI Native 会议助手。它把带说话人标签的实时转写
+    放在 Codex 或 Claude 旁边，让你在会议仍在进行时提问、挑战观点或找回关键决定。
+  </p>
 
-它会同时采集**系统音频**（电话/会议另一端的人）和你的**麦克风**，混音后送入
-[Deepgram](https://deepgram.com) 的实时语音转文字（开启说话人分离 diarization）。
-每一行都会被打上 `Speaker 1 / Speaker 2 / Speaker 3…` 标签，写入一个 Claude Code
-可以直接读取的 Markdown 文件。
+  <p><strong>macOS 14+</strong> · 本地优先 · 开源 · MIT</p>
 
-仅支持 macOS——采集端基于 ScreenCaptureKit 构建，所以**不需要**安装 BlackHole
-之类的虚拟音频设备。
+  <p><a href="./README.md">English</a> · <strong>简体中文</strong></p>
+</div>
 
-## 为什么做这个
+## 实时上下文，而不是另一个会议仪表盘
 
-我经常在通话过程中想问 Claude「等等，他们刚才说想要什么来着？」，但从会议笔记
-App 里复制粘贴太笨拙了。Arco 直接把转写放在 Claude 本来就能访问的文件里。不用切
-App，也不用往通话里拉一个会议机器人。
+Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房间麦克风始终分离，因此混合会议可以区分 `远程 N` 和 `现场 N`，也不会把一整条音频通道误认为某一个人。
 
-## 工作原理
+<p align="center">
+  <img src="docs/images/arco-live-agent.png" alt="Arco 实时转写与 Agent 工作区" width="1000">
+</p>
 
+## 在会议进行时直接提问
+
+你可以只参考本次转写，也可以通过 macOS 原生文件夹选择器附加一个项目工作区。Arco 会为后续问题复用该工作区，并通过这台 Mac 上已登录的 Codex CLI 或 Claude Code 发起请求。
+
+<p align="center">
+  <img src="docs/images/arco-agent-overlay.png" alt="带可收起转写的 Ask Arco 全局浮窗" width="900">
+</p>
+
+## 不离开当前对话
+
+开始监听后，一个小型全局浮窗会跨应用和 macOS Space 保持可用。无需回到主窗口，就能停止录制或打开 Agent。
+
+<p align="center">
+  <img src="docs/images/arco-recording-hud.png" alt="带停止和 Ask Arco 操作的录制浮窗" width="900">
+</p>
+
+## 真正有用的本地会议历史
+
+会议可以先以未命名状态开始，随时手动改名，也可以由 Agent 在内容足够时生成标题，并在结束后自动生成总结。历史记录保存在可读的本地文件中，并支持搜索。
+
+<p align="center">
+  <img src="docs/images/arco-history.png" alt="Arco 本地会议历史" width="1000">
+</p>
+
+## Arco 能做什么
+
+| 功能 | 工作方式 | 价值 |
+| --- | --- | --- |
+| 混合会议采集 | 使用 ScreenCaptureKit 与 AVAudioEngine，分别采集系统音频和房间麦克风。 | 同一场会议里的线上和现场发言都清晰可辨。 |
+| 流式转写 | 可选择 Deepgram，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
+| 多说话人分离 | 使用 Deepgram diarization，或可选的本地 Streaming Sortformer，在每条音频通道内分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
+| 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
+| 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
+| 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |
+| 自动会议产出 | 内容足够后生成标题，会议结束后生成总结；两类 Prompt 都可配置。 | 无需会前命名或手动记笔记，也能得到可复用的会议记录。 |
+| 本地历史 | 以 Markdown 转写和本地 sidecar 存储，位置可自定义。 | 记录可迁移、可搜索，并始终由用户控制。 |
+
+## 为什么做 Arco
+
+大多数会议工具先录制，再让你会后回顾。Arco 面向的是会议中的即时需求：*对方刚才真正要的是什么？还有什么没解决？哪个假设值得挑战？*
+
+它不是另一个托管聊天机器人，而是你 Mac 上原本就在使用的 Codex 或 Claude。它默认以实时转写为依据，只在你主动附加时读取所选项目工作区。
+
+## 隐私
+
+Arco 本地优先并完全开源。默认数据位置：
+
+```text
+~/Library/Application Support/Arco/
 ```
-recorder (Swift)                                         listen.py
-ScreenCaptureKit 系统音频 + AVAudioEngine 麦克风
-混音/重采样 → 16k 单声道 PCM ──stdout│stdin──────────► Deepgram 实时 ASR
-                                                           (diarize=true)
-                                                                │
-                                          实时追加 ◄────────────┘
-                           ~/.claude/meeting-transcripts/current.md
+
+- 可随时自定义转写保存位置，旧位置仍会保留在历史记录中。
+- Arco 会流式处理音频，但不会保存原始 PCM 录音。
+- 使用本地转写和说话人分离时，语音处理留在 Mac 上。
+- 使用 Deepgram 时，音频会发送给 Deepgram 完成转写。
+- Agent 问题通过所选的本地 CLI 发送；输入框会始终显示当前使用的是“仅转写”还是“转写 + 工作区”。
+- Codex 的转写与工作区模式会额外受到 macOS 只读沙箱保护。
+
+## 构建桌面应用
+
+### 环境要求
+
+- macOS 14 或更高版本
+- 本地模型推荐 Apple Silicon
+- Node.js 22+、pnpm、Rust 与 Swift 工具链
+- Agent 功能需要 Codex CLI 或 Claude Code
+- Deepgram 转写需要 `uv`，或安装了 `websockets` 的 Python
+
+### 从源码运行
+
+```bash
+git clone https://github.com/xilanhua12138/Arco.git
+cd Arco
+pnpm install
+pnpm build:native
+pnpm desktop
 ```
 
-- `recorder.swift` 通过 ScreenCaptureKit 抓取系统输出、通过 AVAudioEngine 抓取
-  麦克风，把两路混音/重采样成 16 kHz 单声道 PCM，并把裸字节写到 stdout。
-- `listen.py` 把这路音频通过 WebSocket 送进 Deepgram，并把每一句最终结果追加到
-  转写文件里。
-- 你的 AI 助手在你提问时随时读取 `current.md`。
+仅预览前端：
 
-## 安装
+```bash
+pnpm dev
+```
 
-clone 到你的 skills 目录（Claude Code 是 `~/.claude/skills/`）：
+生成本地 ad-hoc 签名的 macOS 压缩包：
+
+```bash
+pnpm desktop:package
+```
+
+产物位于 `artifacts/Arco-local-macos-<arch>.zip`。面向公众分发仍需要 Developer ID 签名、公证和正式更新渠道。
+
+Deepgram 从启动环境读取 `DEEPGRAM_API_KEY`，配置示例见 [`.env.example`](./.env.example)。本地模型可在 **设置 → 音频与说话人 → 识别** 中按需下载，并保存在 `~/Library/Application Support/Arco/models/`。
+
+## 原来的 Agent Skill 仍然保留
+
+Arco 最初是一个轻量 Agent Skill，现在已经成长为完整桌面应用。原来的 [`SKILL.md`](./SKILL.md)、命令行脚本与独立 listener 仍然保留在同一仓库中，偏好 Skill 工作流的用户可以继续使用。
 
 ```bash
 git clone https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
-```
-
-你需要：
-
-- macOS（版本要新到支持 ScreenCaptureKit 麦克风采集）
-- Swift 工具链（`swiftc`——随 Xcode / Command Line Tools 一起提供）
-- [`uv`](https://docs.astral.sh/uv/)（它会按需拉取 `websockets`，不用手动 `pip install`）
-- 一个 Deepgram API key——[**点此注册 Deepgram**](https://console.deepgram.com/signup)，**注册账号即送 $200 免费额度**，足够用很久（见下方「成本估算」）
-
-初始化 checkout：
-
-```bash
 cd ~/.claude/skills/arco
 bash bin/init.sh
-# 如果 init.sh 创建了 .env 或提示缺少 key，编辑 .env 填入你的 DEEPGRAM_API_KEY
-bash bin/init.sh
 ```
 
-`init.sh` 会检查本地工具链、在需要时创建 `.env`、把 `ARCO_MIC_DEVICE_ID` /
-`ARCO_MIC_DEVICE_NAME` 刷新为当前 macOS 默认麦克风、预装 Python 的 `websockets`
-依赖，并编译/签名 recorder。初始化之后第一次执行 `start.sh` 时，macOS 会请求
-**屏幕录制**和**麦克风**权限——两个都要授予。命令行的 `recorder` 二进制有时需要
-你手动在 *系统设置 → 隐私与安全性 → 屏幕录制* 里勾选；勾一次，然后重新启动即可。
+具体命令和要求见 [`SKILL.md`](./SKILL.md)。桌面应用也会只读加载已有的 `~/.claude/meeting-transcripts/` 历史记录，不会覆盖原文件。
 
-## 使用
+## 验证源码
 
 ```bash
-bash bin/start.sh both     # 系统音频 + 麦克风（默认）
-bash bin/start.sh system   # 只录通话另一端
-bash bin/start.sh mic      # 线下面对面会议，只录麦克风
-
-bash bin/mic-id.sh --write-env  # 把当前默认麦克风 ID 刷新进 .env
-bash bin/status.sh         # 查看是否在运行 + 最近几行转写
-bash bin/stop.sh           # 停止
+pnpm lint
+pnpm test
+pnpm build
+pnpm test:e2e
+cargo test --manifest-path src-tauri/Cargo.toml
+pnpm design:detect
+pnpm desktop:package
 ```
 
-运行期间，转写文件位于 `~/.claude/meeting-transcripts/current.md`，逐行更新。你可
-以直接问你的 AI 助手「总结一下目前为止的会议内容」或「他们让我后续跟进什么？」，
-它会去读这个文件。
+## 技术架构
 
-当你告诉 Claude 会议结束（或要求一份最终总结）时，skill 会自动停止监听——不会在
-后台继续录音。每次会话都保存为 `meeting-<时间戳>.md`；`current.md` 始终指向最新
-的一份。
+- **Tauri + Rust**：窗口、本地存储、采集生命周期、Agent 进程与原生 session 绑定。
+- **React + TypeScript**：主工作区、历史、设置、Onboarding 与全局 Agent 浮层。
+- **Swift**：macOS 音频采集与本地转写链路。
+- **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答、用户保存的笔记分开存储。
 
-## 配置
+详细约束见 [PRODUCT.md](./PRODUCT.md)、[DESIGN.md](./DESIGN.md)、[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) 与 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
 
-`.env`（参见 `.env.example`）：
+## 参与贡献
 
-| 变量 | 默认值 | 说明 |
-|----------|---------|-------|
-| `DEEPGRAM_API_KEY` | — | 必填 |
-| `DEEPGRAM_MODEL` | `nova-3` | Deepgram 模型 |
-| `DEEPGRAM_LANG` | `zh-Hans` | 简体中文；英文会议用 `en` |
+欢迎提交 Issue 和 Pull Request。较大的产品或架构改动，建议先开 Issue 对齐行为与隐私边界。
 
-关于模型：在我的测试里，`nova-3` 配 `zh-Hans` 的中文效果远远最干净。`nova-2`/`zh`
-会出现乱码字符，`nova-3`/`multi` 则完全解码错了中文。英文会议请设置
-`DEEPGRAM_LANG=en`。
+## License
 
-## 成本估算：$200 免费额度能用多久？
-
-Deepgram [注册账号](https://console.deepgram.com/signup)就送 **$200 免费额度**
-（官方原始出处见 [Deepgram 定价页](https://deepgram.com/pricing)，页面上明确写着
-"Free $200 Credit"），之后才转为按量付费（pay-as-you-go）。
-
-Arco 会把系统音频和麦克风混成**单独一路** 16k 单声道音频流送给 Deepgram，所以是
-**按一条流计费**，不是两条。按 Nova-3 实时流式（streaming）的按量价格估算：
-
-| 模式 | 单价 | 每天 4 小时（240 分钟）成本 | $200 能用 |
-|------|------|------------------------------|-----------|
-| **Nova-3 单语言**（默认 `zh-Hans` 或 `en`） | $0.0048/分钟 | 240 × $0.0048 = **$1.152/天** | **约 173 天（≈ 5.7 个月）** |
-| Nova-3 多语言（`multi`） | $0.0058/分钟 | 240 × $0.0058 = $1.392/天 | 约 143 天（≈ 4.8 个月） |
-
-换句话说，按默认配置**每天开 4 小时会议/交流，$200 大约能撑半年左右**才需要充值。
-单价数据来自 [Deepgram 官方定价页](https://deepgram.com/pricing)，价格可能随官方调整
-而变化，请以官网为准。
-
-## 一些值得知道的点
-
-- **别把系统输出静音。** Arco 抓的是输出流，所以如果你这边把通话静音了，就没东西
-  可采集。
-- **说话人分离需要一点时间稳定。** 一次会话最开始的一两个字可能会被标错，因为
-  Deepgram 的 diarizer 还在「热身」。
-- **构建产物不入库。** `recorder` 是本地编译的（`bin/build.sh`），所以被 gitignore
-  了。改完 `recorder.swift` 后要重新编译。
-- **用 Deepgram，不用豆包。** 豆包的说话人分离只存在于它的离线文件识别 API 里，
-  流式接口没有，所以它没法实时区分说话人。Deepgram 在一条 WebSocket 里就搞定了。
-
-## 许可证
-
-MIT——见 [LICENSE](./LICENSE)。
+Arco 使用 [MIT License](./LICENSE)。
