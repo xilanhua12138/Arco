@@ -15,14 +15,14 @@
   <p><a href="./README.md">English</a> · <strong>简体中文</strong></p>
 
   <p>
-    <a href="https://github.com/xilanhua12138/Arco/releases/latest"><strong>下载 macOS 应用</strong></a>
+    <a href="https://github.com/xilanhua12138/Arco/releases"><strong>下载 macOS 应用</strong></a>
     · <a href="#开发">从源码构建</a>
   </p>
 </div>
 
 ## 下载 macOS 应用
 
-从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest) 下载最新 Apple Silicon `.dmg`，打开后把 `Arco.app` 拖到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
+从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases) 下载最新 Apple Silicon `.dmg`，打开后把 `Arco.app` 拖到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
 
 当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含原生音频与 Rust Deepgram 运行时；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 音频与说话人 → 识别**并主动选择后下载。
 

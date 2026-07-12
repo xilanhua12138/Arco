@@ -16,14 +16,14 @@
   <p><strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a></p>
 
   <p>
-    <a href="https://github.com/xilanhua12138/Arco/releases/latest"><strong>Download for macOS</strong></a>
+    <a href="https://github.com/xilanhua12138/Arco/releases"><strong>Download for macOS</strong></a>
     · <a href="#development">Build from source</a>
   </p>
 </div>
 
 ## Download the macOS app
 
-Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
+Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
 The current preview build is ad-hoc signed but not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. The release includes the native audio and Rust Deepgram runtimes; Whisper, Nemotron, and speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
 
