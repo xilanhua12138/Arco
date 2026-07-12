@@ -22,7 +22,7 @@
 
 ## 下载 macOS 应用
 
-从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest) 下载最新 Apple Silicon 版本，解压后把 `Arco.app` 移到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
+从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest) 下载最新 Apple Silicon `.dmg`，打开后把 `Arco.app` 拖到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
 
 当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含原生音频与 Rust Deepgram 运行时；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 音频与说话人 → 识别**并主动选择后下载。
 
@@ -126,7 +126,7 @@ pnpm dev
 pnpm desktop:package
 ```
 
-压缩包与校验文件位于 `artifacts/Arco-macos-<arch>.zip` 和 `artifacts/Arco-macos-<arch>.zip.sha256`。未来面向普通用户的正式版本会补充 Developer ID 签名与 Apple 公证。
+安装镜像与校验文件位于 `artifacts/Arco-macos-<arch>.dmg` 和 `artifacts/Arco-macos-<arch>.dmg.sha256`。未来面向普通用户的正式版本会补充 Developer ID 签名与 Apple 公证。
 
 使用 Deepgram 时，只需进入**设置 → 音频与说话人 → 识别**，粘贴 Key 并点击**验证并保存**。Arco 会通过 Deepgram 的[官方认证接口](https://developers.deepgram.com/guides/fundamentals/authenticating)完成验证，再保存到 macOS 钥匙串。本地模型保存在 `~/Library/Application Support/Arco/models/`。
 

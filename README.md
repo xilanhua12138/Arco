@@ -23,7 +23,7 @@
 
 ## Download the macOS app
 
-Download the latest Apple Silicon build from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest), unzip it, and move `Arco.app` to Applications. Arco requires macOS 14 or newer.
+Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
 The current preview build is ad-hoc signed but not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. The release includes the native audio and Rust Deepgram runtimes; Whisper, Nemotron, and speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
 
@@ -129,7 +129,7 @@ To create the same locally ad-hoc-signed macOS archive used for preview releases
 pnpm desktop:package
 ```
 
-The archive and checksum are written to `artifacts/Arco-macos-<arch>.zip` and `artifacts/Arco-macos-<arch>.zip.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
+The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
 For Deepgram, open **Settings → Audio & speakers → Recognition**, paste a key, and choose **Verify & save**. Arco verifies it through Deepgram's [official authentication endpoint](https://developers.deepgram.com/guides/fundamentals/authenticating), then stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
 
