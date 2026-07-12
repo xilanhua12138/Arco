@@ -122,10 +122,17 @@ Deepgram 从启动环境读取 `DEEPGRAM_API_KEY`，配置示例见 [`.env.examp
 Arco 最初是一个轻量 Agent Skill，现在已经成长为完整桌面应用。原来的 [`SKILL.md`](./SKILL.md)、命令行脚本与独立 listener 仍然保留在同一仓库中，偏好 Skill 工作流的用户可以继续使用。
 
 ```bash
-git clone https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
+git clone --depth 1 --filter=blob:none --no-checkout \
+  https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
 cd ~/.claude/skills/arco
+git sparse-checkout init --no-cone
+git sparse-checkout set \
+  /SKILL.md /.env.example /listen.py /recorder.swift /bin/
+git checkout
 bash bin/init.sh
 ```
+
+这个 sparse checkout 只会下载 Agent Skill 实际使用的文件，不会拉取桌面应用源码。
 
 具体命令和要求见 [`SKILL.md`](./SKILL.md)。桌面应用也会只读加载已有的 `~/.claude/meeting-transcripts/` 历史记录，不会覆盖原文件。
 

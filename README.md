@@ -125,10 +125,17 @@ Deepgram reads `DEEPGRAM_API_KEY` from the launch environment. See [`.env.exampl
 Arco began as a small Agent Skill and has grown into a complete desktop application. The original [`SKILL.md`](./SKILL.md), command-line scripts, and standalone listener remain available in this repository for people who prefer the skill workflow.
 
 ```bash
-git clone https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
+git clone --depth 1 --filter=blob:none --no-checkout \
+  https://github.com/xilanhua12138/Arco.git ~/.claude/skills/arco
 cd ~/.claude/skills/arco
+git sparse-checkout init --no-cone
+git sparse-checkout set \
+  /SKILL.md /.env.example /listen.py /recorder.swift /bin/
+git checkout
 bash bin/init.sh
 ```
+
+This sparse checkout downloads only the files used by the Agent Skill, not the desktop application source.
 
 See [`SKILL.md`](./SKILL.md) for its commands and requirements. The desktop app also reads existing `~/.claude/meeting-transcripts/` history without overwriting it.
 
