@@ -125,37 +125,46 @@ test('global utility surfaces remain light when system appearance is dark', asyn
   await page.screenshot({ path: 'test-results/arco-agent-overlay-light-forced.png', fullPage: true })
 })
 
-test('first launch connects one primary and optional secondary before entering Arco', async ({ page }) => {
+test('first launch reaches a real Deepgram audio check and starts the first meeting', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
   await page.addInitScript(() => window.localStorage.setItem('arco.locale', 'en'))
-  await page.goto('/?demo=1')
+  await page.goto('/?demo=empty')
 
-  const setup = page.getByRole('dialog', { name: 'Welcome to Arco' })
-  const setupBrandArtwork = page.locator('.provider-setup-brand img')
-  await expect(setup).toBeVisible()
-  await expect(setup.getByRole('heading', { name: 'Welcome to Arco' })).toHaveCSS('font-family', /Avenir Next/)
+  const landing = page.getByRole('main', { name: 'Stay in the conversation' })
+  const setupBrandArtwork = page.locator('.onboarding-brand img')
+  await expect(landing).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toHaveCount(0)
+  await expect(landing.getByRole('heading', { name: 'Stay in the conversation' })).toHaveCSS('font-family', /Avenir Next/)
   await expect(setupBrandArtwork).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(setupBrandArtwork).toHaveCSS('box-shadow', 'none')
-  await expect(setup.getByRole('button', { name: 'Welcome' })).toHaveAttribute('aria-current', 'step')
-  await expect(setup.getByRole('button', { name: 'Choose providers' })).toBeDisabled()
-  await page.screenshot({ path: 'test-results/arco-provider-setup-intro.png', fullPage: true })
+  await expect(landing.getByText('About 2 minutes')).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-onboarding-welcome.png', fullPage: true, animations: 'disabled' })
 
-  await setup.getByRole('button', { name: 'Continue' }).click()
-  await expect(setup.getByRole('heading', { name: 'Choose providers' })).toBeVisible()
-  await expect(setup.getByLabel('Codex CLI status')).toContainText('Installed')
-  await setup.getByRole('button', { name: 'Re-check installations' }).click()
-  await expect(setup.getByLabel('Claude Code status')).toContainText('Installed')
-  await setup.getByRole('radio', { name: 'Claude as secondary' }).click()
-  await page.screenshot({ path: 'test-results/arco-provider-setup-choice.png', fullPage: true })
-  await setup.getByRole('button', { name: 'Continue' }).click()
-
+  await landing.getByRole('button', { name: 'Continue' }).click()
+  const setup = page.locator('.onboarding-wizard')
+  await expect(setup.getByRole('heading', { name: 'Your meeting Agent' })).toBeVisible()
   await setup.getByRole('button', { name: 'Test Codex' }).click()
   await expect(setup.getByText('Codex is ready.')).toBeVisible()
   await setup.getByRole('button', { name: 'Continue' }).click()
+
+  await expect(setup.getByRole('heading', { name: 'Choose transcription' })).toBeVisible()
+  await setup.getByLabel('Deepgram API key').fill('dg_live_abcdefghijklmnopqrstuvwxyz')
+  await setup.getByRole('button', { name: 'Verify & save' }).click()
+  await expect(setup.getByText('Deepgram is ready.')).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-onboarding-transcription.png', fullPage: true, animations: 'disabled' })
+  await setup.getByRole('button', { name: 'Continue' }).click()
+
+  await expect(setup.getByRole('heading', { name: 'Check your audio' })).toBeVisible()
+  await setup.getByRole('button', { name: 'Check audio' }).click()
+  await expect(setup.getByText('System audio is ready')).toBeVisible()
+  await expect(setup.getByText('Microphone is ready')).toBeVisible()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+
   await expect(setup.getByRole('heading', { name: 'Start from anywhere' })).toBeVisible()
   await setup.getByRole('button', { name: 'Continue' }).click()
-  await expect(setup.getByRole('button', { name: 'Ready' })).toHaveAttribute('aria-current', 'step')
-  await page.screenshot({ path: 'test-results/arco-provider-setup-complete.png', fullPage: true })
-  await setup.getByRole('button', { name: 'Open Arco' }).click()
+  await expect(setup.getByRole('button', { name: 'First meeting' })).toHaveAttribute('aria-current', 'step')
+  await page.screenshot({ path: 'test-results/arco-onboarding-ready.png', fullPage: true, animations: 'disabled' })
+  await setup.getByRole('button', { name: 'Start listening' }).click()
 
   await expect(setup).toHaveCount(0)
   const agent = page.getByRole('main', { name: 'Ask Arco' })
@@ -164,6 +173,42 @@ test('first launch connects one primary and optional secondary before entering A
   await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
   await expect(agent.getByLabel('Current provider')).toHaveCount(0)
   await expect(agent.getByRole('combobox', { name: 'Agent provider' })).toHaveCount(0)
+})
+
+test('first launch can choose transcript-only on-device setup without a cloud key', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 720 })
+  await page.addInitScript(() => window.localStorage.setItem('arco.locale', 'en'))
+  await page.goto('/?demo=empty')
+  const landing = page.getByRole('main', { name: 'Stay in the conversation' })
+
+  await landing.getByRole('button', { name: 'Continue' }).click()
+  const setup = page.locator('.onboarding-wizard')
+  await setup.getByRole('radio', { name: 'Continue without an Agent' }).click()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await setup.getByRole('radio', { name: 'On this Mac' }).click()
+  await setup.getByRole('button', { name: 'Download & use' }).click()
+  await expect(setup.getByText('Ready on this Mac')).toBeVisible()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await setup.getByText('In-person meeting').click()
+  await setup.getByRole('button', { name: 'Check microphone' }).click()
+  await expect(setup.getByText('Microphone is ready')).toBeVisible()
+  await expect(setup.getByText('System audio is not needed')).toBeVisible()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await setup.getByRole('button', { name: 'Open Arco' }).click()
+
+  await expect(setup).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Start listening' })).toBeVisible()
+  const persisted = await page.evaluate(() => ({
+    provider: window.localStorage.getItem('arco.providerConfig'),
+    transcription: window.localStorage.getItem('arco.transcriptionConfig'),
+    audioMode: window.localStorage.getItem('arco.audioMode'),
+  }))
+  expect(persisted.provider).toContain('"setupComplete":false')
+  expect(persisted.transcription).toContain('"provider":"local"')
+  expect(persisted.audioMode).toBe('mic')
+  const widths = await page.evaluate(() => ({ viewport: window.innerWidth, page: document.documentElement.scrollWidth }))
+  expect(widths.page).toBeLessThanOrEqual(widths.viewport)
 })
 
 test('an idle Current restores the centered first-version launch surface without explanatory copy', async ({ page }) => {
@@ -240,7 +285,6 @@ test('Current keeps transcript primary with Agent visible at its right', async (
   await expect(transcript.locator('.utterance .speaker-label')).toHaveCount(12)
   await expect(transcript.locator('.utterance .speaker-avatar')).toHaveCount(12)
   const firstSpeakerAvatar = transcript.locator('.speaker-avatar').first()
-  const firstSpeakerName = firstSpeakerAvatar.locator('xpath=..').locator('strong')
   const avatarSurface = await firstSpeakerAvatar.evaluate((element) => {
     const style = window.getComputedStyle(element)
     return {
@@ -249,16 +293,20 @@ test('Current keeps transcript primary with Agent visible at its right', async (
       backgroundImage: style.backgroundImage,
     }
   })
-  const avatarBox = await firstSpeakerAvatar.boundingBox()
-  const nameBox = await firstSpeakerName.boundingBox()
+  const speakerCenterDelta = await firstSpeakerAvatar.evaluate((avatar) => {
+    const name = avatar.parentElement?.querySelector('strong')
+    if (!name) return null
+    const avatarBox = avatar.getBoundingClientRect()
+    const nameBox = name.getBoundingClientRect()
+    return Math.abs((avatarBox.y + avatarBox.height / 2) - (nameBox.y + nameBox.height / 2))
+  })
   expect(avatarSurface).toEqual({
     tagName: 'svg',
     backgroundColor: 'rgba(0, 0, 0, 0)',
     backgroundImage: 'none',
   })
-  expect(avatarBox).not.toBeNull()
-  expect(nameBox).not.toBeNull()
-  expect(Math.abs((avatarBox!.y + avatarBox!.height / 2) - (nameBox!.y + nameBox!.height / 2))).toBeLessThanOrEqual(1)
+  expect(speakerCenterDelta).not.toBeNull()
+  expect(speakerCenterDelta!).toBeLessThanOrEqual(1)
   await expect(page.getByText('You', { exact: true })).toHaveCount(0)
   await page.waitForTimeout(500)
   await expect(page.getByRole('button', { name: 'Jump to live' })).toHaveCount(0)
@@ -962,15 +1010,17 @@ test('first launch can switch to Chinese before provider setup', async ({ page }
   await page.setViewportSize({ width: 1240, height: 820 })
   await page.addInitScript(() => {
     window.localStorage.removeItem('arco.providerConfig')
-    window.localStorage.removeItem('arco.onboarding')
+    window.localStorage.removeItem('arco.onboarding.v1')
     window.localStorage.setItem('arco.locale', 'en')
   })
   await page.goto('/?demo=1')
 
   await page.getByRole('combobox', { name: 'App language' }).selectOption('zh-CN')
 
-  await expect(page.getByRole('heading', { name: '欢迎使用 Arco' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '专注于正在发生的对话' })).toBeVisible()
   await expect(page.getByRole('button', { name: '继续' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '选择服务商' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Agent' })).toHaveCount(0)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: 'Agent' })).toHaveAttribute('aria-current', 'step')
   await page.screenshot({ path: 'test-results/arco-i18n-zh-onboarding-1240.png', fullPage: true })
 })

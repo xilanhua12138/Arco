@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod audio_setup;
 pub mod capture;
 pub mod deepgram;
 mod deepgram_credentials;
@@ -66,6 +67,7 @@ mod dock_icon_contract_tests {
 }
 
 use agent::AgentRunner;
+use audio_setup::AudioSetupTester;
 use capture::{CaptureConfig, CaptureManager};
 use deepgram_credentials::DeepgramCredentialStatus;
 use meeting_output::{
@@ -74,9 +76,9 @@ use meeting_output::{
 use meeting_state::MeetingStateStore;
 use meetings::MeetingStore;
 use models::{
-    CaptureState, GeneratedMeetingArtifact, MeetingDetail, MeetingSummary, NoteDocument,
-    PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus, SavedNote, TranscriptionConfig,
-    TranscriptionModelStatus,
+    AudioSetupCheck, CaptureState, GeneratedMeetingArtifact, MeetingDetail, MeetingSummary,
+    NoteDocument, PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus, SavedNote,
+    TranscriptionConfig, TranscriptionModelStatus,
 };
 use notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage, NotesStorageSettings};
 use paths::AppPaths;
@@ -90,6 +92,7 @@ pub struct AppState {
     meetings: MeetingStore,
     meeting_state: MeetingStateStore,
     capture: CaptureManager,
+    audio_setup: AudioSetupTester,
     transcription: LocalTranscriptionRuntime,
     agent: AgentRunner,
     agent_run_lock: Mutex<()>,
@@ -112,11 +115,13 @@ impl AppState {
             MeetingStore::new(paths.transcripts.clone(), paths.legacy_transcripts.clone());
         meetings.set_roots(storage.meeting_roots())?;
         let capture = CaptureManager::new(CaptureConfig::discover(&paths));
+        let audio_setup = AudioSetupTester::discover(&paths);
         capture.set_transcript_root(storage.active_root())?;
         Ok(Self {
             meetings,
             meeting_state: MeetingStateStore::new(paths.app_data.join("meeting-state")),
             capture,
+            audio_setup,
             transcription: LocalTranscriptionRuntime::discover(&paths),
             agent: AgentRunner::new(agent_workspace),
             agent_run_lock: Mutex::new(()),
@@ -448,6 +453,17 @@ fn capture_status(state: tauri::State<'_, AppState>) -> CaptureState {
 }
 
 #[tauri::command]
+async fn test_audio_setup(
+    state: tauri::State<'_, AppState>,
+    mode: String,
+) -> Result<AudioSetupCheck, String> {
+    let tester = state.audio_setup.clone();
+    tauri::async_runtime::spawn_blocking(move || tester.test(&mode))
+        .await
+        .map_err(|error| format!("audio check stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command]
 async fn transcription_model_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TranscriptionModelStatus>, String> {
@@ -712,6 +728,7 @@ pub fn run() {
             save_deepgram_api_key,
             remove_deepgram_api_key,
             capture_status,
+            test_audio_setup,
             transcription_model_status,
             prepare_transcription_model,
             remove_transcription_model,

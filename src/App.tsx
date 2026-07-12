@@ -6,6 +6,7 @@ import { HistoryPage } from './components/HistoryPage'
 import { CurrentIdleState } from './components/CurrentIdleState'
 import { InsightPanel } from './components/InsightPanel'
 import { NotesPage } from './components/NotesPage'
+import { Onboarding } from './components/Onboarding'
 import { ProviderSetup } from './components/ProviderSetup'
 import { SettingsSheet } from './components/SettingsSheet'
 import { Sidebar } from './components/Sidebar'
@@ -152,6 +153,14 @@ function App() {
       return [...retained, status]
     })
   }, [])
+
+  useEffect(() => {
+    if (!providerSetupOpen || editingProviders) return
+    void Promise.all([
+      arcoBridge.deepgramCredentialStatus().then(setDeepgramCredential),
+      arcoBridge.transcriptionModelStatus().then(setTranscriptionModels),
+    ]).catch((cause) => console.warn('Could not prepare onboarding status', cause))
+  }, [editingProviders, providerSetupOpen])
 
   const restoreTriggerFocus = () => {
     const triggerId = returnFocusRef.current
@@ -400,6 +409,55 @@ function App() {
       unlisten?.()
     }
   }, [arco.isDesktop, listeningShortcut])
+
+  if (providerSetupOpen && !editingProviders) {
+    return (
+      <Onboarding
+        runtimes={arco.runtimes}
+        transcriptionConfig={transcriptionConfig}
+        transcriptionModels={transcriptionModels}
+        deepgramCredential={deepgramCredential}
+        listeningShortcut={listeningShortcut}
+        audioMode={audioMode}
+        onRefreshRuntimes={arco.refreshRuntimes}
+        onTestProvider={async (provider) => (await arcoBridge.testAgentProvider(provider)).ok}
+        onSaveDeepgramApiKey={async (apiKey) => {
+          setDeepgramCredentialBusy(true)
+          try {
+            const next = await arcoBridge.saveDeepgramApiKey(apiKey)
+            setDeepgramCredential(next)
+            return next
+          } finally {
+            setDeepgramCredentialBusy(false)
+          }
+        }}
+        onPrepareTranscriptionModel={async (model, includeDiarization) => {
+          const next = await arcoBridge.prepareTranscriptionModel(model, includeDiarization)
+          setTranscriptionModels(next)
+          return next
+        }}
+        onTestAudio={arcoBridge.testAudioSetup}
+        onChangeListeningShortcut={changeListeningShortcut}
+        onComplete={async (result) => {
+          saveProviderConfig(result.providerConfig)
+          setProviderConfig(result.providerConfig)
+          saveTranscriptionConfig(result.transcriptionConfig)
+          setTranscriptionConfig(result.transcriptionConfig)
+          changeAudioMode(result.audioMode)
+          completeOnboarding(false)
+          setProviderSetupOpen(false)
+          if (result.startListening) {
+            const next = await arco.toggleCapture(result.audioMode, result.transcriptionConfig)
+            if (next?.phase === 'recording') setPage('current')
+          }
+        }}
+        onSkip={() => {
+          completeOnboarding(true)
+          setProviderSetupOpen(false)
+        }}
+      />
+    )
+  }
 
   return (
     <div className="app-shell consumer-shell">
@@ -653,11 +711,11 @@ function App() {
         />
       )}
 
-      {providerSetupOpen && (
+      {providerSetupOpen && editingProviders && (
         <ProviderSetup
-          mode={editingProviders ? 'provider' : 'onboarding'}
+          mode="provider"
           runtimes={arco.runtimes}
-          initialConfig={editingProviders ? providerConfig : undefined}
+          initialConfig={providerConfig}
           listeningShortcut={listeningShortcut}
           onChangeListeningShortcut={changeListeningShortcut}
           onRefresh={arco.refreshRuntimes}
@@ -665,20 +723,16 @@ function App() {
           onComplete={(nextConfig) => {
             saveProviderConfig(nextConfig)
             setProviderConfig(nextConfig)
-            completeOnboarding(false)
             setProviderSetupOpen(false)
             setEditingProviders(false)
           }}
-          onCancel={editingProviders ? () => {
+          onCancel={() => {
             setProviderSetupOpen(false)
             setEditingProviders(false)
-          } : undefined}
-          onSkip={!editingProviders ? () => {
-            completeOnboarding(true)
-            setProviderSetupOpen(false)
-          } : undefined}
+          }}
         />
       )}
+
     </div>
   )
 }

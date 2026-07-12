@@ -76,6 +76,24 @@ pub struct ProviderConnectionTest {
     pub message: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSourceCheck {
+    pub required: bool,
+    pub ready: bool,
+    pub level: Option<f32>,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSetupCheck {
+    pub mode: String,
+    pub success: bool,
+    pub system: AudioSourceCheck,
+    pub microphone: AudioSourceCheck,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureState {

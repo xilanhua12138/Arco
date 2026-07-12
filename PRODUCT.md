@@ -44,7 +44,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 
 ### Reach first value
 
-- First launch is a short, skippable path: understand the product, choose a Primary and optional Secondary CLI, test the Primary, confirm the global listening shortcut, then enter Arco.
+- First launch is a standalone product state, not a sheet over an already-running workspace. A single-purpose landing page leads into a stable setup workspace with five visible stages: choose and test a Primary with an optional Secondary CLI, choose and prepare transcription, verify the audio lanes required by the meeting type, confirm the global shortcut, then start the first meeting or enter Arco.
 - Skipping Agent setup enters a complete transcript-only product; it never traps the user behind an account-style gate.
 - Whenever capture is idle, Current replaces Transcript and Agent with one centered `Start listening` action and no explanatory paragraph. The configured audio mode and local-storage receipt stay compact beneath it; honest meeting statistics and the complete shortcut reference remain available in the footer.
 - The default global shortcut is `Fn + M`. It starts or stops the single capture session while Arco is running, can be changed or disabled in Settings, and never creates a second meeting while capture is transitioning.

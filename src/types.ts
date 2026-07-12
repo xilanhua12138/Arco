@@ -149,6 +149,20 @@ export interface AskAgentInput {
 
 export type AudioMode = 'both' | 'system' | 'mic'
 
+export interface AudioSourceCheck {
+  required: boolean
+  ready: boolean
+  level: number | null
+  message: string | null
+}
+
+export interface AudioSetupCheck {
+  mode: AudioMode
+  success: boolean
+  system: AudioSourceCheck
+  microphone: AudioSourceCheck
+}
+
 export type TranscriptionProviderId = 'deepgram' | 'local'
 
 export type LocalTranscriptionModelId =

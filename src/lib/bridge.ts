@@ -10,6 +10,7 @@ import {
 import type {
   AskAgentInput,
   AudioMode,
+  AudioSetupCheck,
   CaptureState,
   DeepgramCredentialStatus,
   GenerateMeetingOutputInput,
@@ -344,6 +345,30 @@ export const arcoBridge = {
   async captureStatus(): Promise<CaptureState> {
     if (hasTauriRuntime()) return invoke<CaptureState>('capture_status')
     return hasExplicitDemoMode() ? readDemoCapture() : demoCapture
+  },
+
+  async testAudioSetup(mode: AudioMode): Promise<AudioSetupCheck> {
+    if (hasTauriRuntime()) return invoke<AudioSetupCheck>('test_audio_setup', { mode })
+    if (!hasExplicitDemoMode()) {
+      throw new Error('Open the Arco desktop app to check microphone and system audio.')
+    }
+    await wait(180)
+    return {
+      mode,
+      success: true,
+      system: {
+        required: mode !== 'mic',
+        ready: true,
+        level: mode === 'mic' ? 0 : 0.46,
+        message: null,
+      },
+      microphone: {
+        required: mode !== 'system',
+        ready: true,
+        level: mode === 'system' ? 0 : 0.61,
+        message: null,
+      },
+    }
   },
 
   async deepgramCredentialStatus(): Promise<DeepgramCredentialStatus> {

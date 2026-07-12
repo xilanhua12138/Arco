@@ -81,33 +81,42 @@ beforeEach(() => {
 })
 
 describe('Arco consumer conversation workspace', () => {
-  it('guides the first launch through one provider setup before Agent use', async () => {
+  it('guides the first launch through Agent, transcription, audio, shortcut, and first meeting', async () => {
     const user = userEvent.setup()
     const runtimeStatus = vi.spyOn(arcoBridge, 'runtimeStatus')
+    vi.spyOn(arcoBridge, 'deepgramCredentialStatus').mockResolvedValue({ configured: true, verified: true, message: null })
     window.localStorage.removeItem(PROVIDER_CONFIG_STORAGE_KEY)
     window.localStorage.removeItem(ONBOARDING_STORAGE_KEY)
 
     render(<App />)
 
-    const setup = await screen.findByRole('dialog', { name: 'Welcome to Arco' })
-    expect(within(setup).getByRole('button', { name: 'Skip for now' })).toBeVisible()
-    expect(within(setup).getByRole('button', { name: 'Welcome' })).toHaveAttribute('aria-current', 'step')
+    const landing = await screen.findByRole('main', { name: 'Stay in the conversation' })
+    expect(within(landing).getByRole('button', { name: 'Set up later' })).toBeVisible()
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).not.toBeInTheDocument()
 
-    await user.click(within(setup).getByRole('button', { name: 'Continue' }))
-    expect(await within(setup).findByLabelText('Codex CLI status')).toHaveTextContent('Installed')
-    await user.click(within(setup).getByRole('button', { name: 'Re-check installations' }))
+    await user.click(within(landing).getByRole('button', { name: 'Continue' }))
+    const setup = await screen.findByRole('main', { name: 'Agent' })
+    expect(await within(setup).findByRole('heading', { name: 'Your meeting Agent' })).toBeVisible()
+    await user.click(within(setup).getByRole('button', { name: 'Re-check' }))
     await waitFor(() => expect(runtimeStatus).toHaveBeenCalledTimes(2))
-    await user.click(within(setup).getByRole('radio', { name: 'Claude as secondary' }))
-    await user.click(within(setup).getByRole('button', { name: 'Continue' }))
     await user.click(within(setup).getByRole('button', { name: 'Test Codex' }))
     expect(await within(setup).findByText('Codex is ready.')).toBeVisible()
     await user.click(within(setup).getByRole('button', { name: 'Continue' }))
+
+    expect(within(setup).getByRole('heading', { name: 'Choose transcription' })).toBeVisible()
+    expect(await within(setup).findByText('Deepgram is ready.')).toBeVisible()
+    await user.click(within(setup).getByRole('button', { name: 'Continue' }))
+
+    await user.click(within(setup).getByRole('button', { name: 'Check audio' }))
+    expect(await within(setup).findByText('Microphone is ready')).toBeVisible()
+    await user.click(within(setup).getByRole('button', { name: 'Continue' }))
+
     expect(within(setup).getByRole('heading', { name: 'Start from anywhere' })).toBeVisible()
     await user.click(within(setup).getByRole('button', { name: 'Continue' }))
     await user.click(within(setup).getByRole('button', { name: 'Open Arco' }))
 
-    expect(screen.queryByRole('dialog', { name: 'Welcome to Arco' })).not.toBeInTheDocument()
-    expect(loadProviderConfig()).toEqual({ setupComplete: true, primary: 'codex', secondary: 'claude' })
+    expect(screen.queryByRole('main', { name: 'First meeting' })).not.toBeInTheDocument()
+    expect(loadProviderConfig()).toEqual({ setupComplete: true, primary: 'codex', secondary: null })
     expect(await findAgentWorkspace()).toBeVisible()
     expect(await findTranscriptEvidence()).toBeVisible()
     expect(screen.queryByRole('button', { name: /Open Agent|Close Agent/i })).not.toBeInTheDocument()
@@ -179,7 +188,7 @@ describe('Arco consumer conversation workspace', () => {
     await waitFor(() => expect(within(restoredStats).getByText('Meetings').closest('div')).toHaveTextContent('2'))
   })
 
-  it('lets a first-time user skip Agent setup and enter transcript-only Arco', async () => {
+  it('lets a first-time user postpone setup and enter transcript-only Arco', async () => {
     const user = userEvent.setup()
     window.localStorage.removeItem(PROVIDER_CONFIG_STORAGE_KEY)
     window.localStorage.removeItem(ONBOARDING_STORAGE_KEY)
@@ -187,10 +196,10 @@ describe('Arco consumer conversation workspace', () => {
     vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(idleCapture)
 
     render(<App />)
-    const setup = await screen.findByRole('dialog', { name: 'Welcome to Arco' })
-    await user.click(within(setup).getByRole('button', { name: 'Skip for now' }))
+    const setup = await screen.findByRole('main', { name: 'Stay in the conversation' })
+    await user.click(within(setup).getByRole('button', { name: 'Set up later' }))
 
-    expect(screen.queryByRole('dialog', { name: 'Welcome to Arco' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('main', { name: 'Stay in the conversation' })).not.toBeInTheDocument()
     expect(await screen.findByRole('region', { name: 'Start listening' })).toBeVisible()
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
   })

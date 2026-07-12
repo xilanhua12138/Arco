@@ -108,6 +108,23 @@ describe('browser Agent bridge', () => {
     await expect(arcoBridge.captureStatus()).resolves.toEqual(started)
   })
 
+  it('does not pretend browser audio is a native setup check', async () => {
+    await expect(arcoBridge.testAudioSetup('both')).rejects.toThrow(
+      'Open the Arco desktop app to check microphone and system audio.',
+    )
+  })
+
+  it('models only the audio lanes required by the explicit demo meeting mode', async () => {
+    window.history.replaceState({}, '', '/?demo=1')
+
+    await expect(arcoBridge.testAudioSetup('mic')).resolves.toEqual({
+      mode: 'mic',
+      success: true,
+      system: { required: false, ready: true, level: 0, message: null },
+      microphone: { required: true, ready: true, level: 0.61, message: null },
+    })
+  })
+
   it('never presents simulated meeting output as a real CLI result in a normal browser tab', async () => {
     await expect(arcoBridge.generateMeetingOutput({
       meetingId: 'demo-live',
@@ -286,6 +303,19 @@ describe('desktop transcription bridge', () => {
     await arcoBridge.startCapture('both', transcription)
 
     expect(invokeMock).toHaveBeenCalledWith('start_capture', { mode: 'both', transcription })
+  })
+
+  it('runs the native audio setup check with the selected meeting mode', async () => {
+    const result = {
+      mode: 'system',
+      success: true,
+      system: { required: true, ready: true, level: 0.52, message: null },
+      microphone: { required: false, ready: false, level: 0, message: null },
+    }
+    invokeMock.mockResolvedValue(result)
+
+    await expect(arcoBridge.testAudioSetup('system')).resolves.toEqual(result)
+    expect(invokeMock).toHaveBeenCalledWith('test_audio_setup', { mode: 'system' })
   })
 
   it('uses the local sidecar as the source of truth for model readiness', async () => {

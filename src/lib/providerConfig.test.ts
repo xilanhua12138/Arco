@@ -28,13 +28,17 @@ describe('provider configuration', () => {
     expect(loadProviderConfig()).toEqual({ setupComplete: false, primary: null, secondary: null })
   })
 
-  it('creates and persists only complete configurations backed by available CLIs', () => {
+  it('persists a validated Agent choice, including an explicit transcript-only choice', () => {
     const config = createProviderConfig('codex', 'claude', runtimes)
 
     expect(config).toEqual({ setupComplete: true, primary: 'codex', secondary: 'claude' })
     saveProviderConfig(config)
     expect(JSON.parse(window.localStorage.getItem(PROVIDER_CONFIG_STORAGE_KEY) ?? '')).toEqual(config)
     expect(loadProviderConfig()).toEqual(config)
+
+    const transcriptOnly = { setupComplete: false, primary: null, secondary: null } as const
+    saveProviderConfig(transcriptOnly)
+    expect(loadProviderConfig()).toEqual(transcriptOnly)
 
     expect(() => createProviderConfig('codex', 'codex', runtimes)).toThrow('Primary and secondary providers must be different.')
     expect(() => createProviderConfig('claude', null, [

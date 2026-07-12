@@ -75,9 +75,7 @@ export function loadProviderConfig(): ProviderConfig {
 
 export function saveProviderConfig(config: ProviderConfig): void {
   const parsed = parseProviderConfig(config)
-  if (!parsed?.setupComplete) {
-    throw new Error('Only a complete provider configuration can be saved.')
-  }
+  if (!parsed) throw new Error('Invalid provider configuration.')
   window.localStorage.setItem(PROVIDER_CONFIG_STORAGE_KEY, JSON.stringify(parsed))
 }
 
