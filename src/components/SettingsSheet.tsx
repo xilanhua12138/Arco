@@ -20,9 +20,11 @@ import {
 import { useState } from 'react'
 import type {
   AudioMode,
+  DeepgramCredentialStatus,
   LocalTranscriptionModelId,
   ProviderId,
   RuntimeStatus,
+  NotesStorageSettings,
   TranscriptionConfig,
   TranscriptionModelStatus,
   TranscriptStorageSettings,
@@ -53,6 +55,10 @@ interface SettingsSheetProps {
   onChangeTranscriptionConfig?: (config: TranscriptionConfig) => void
   onPrepareTranscriptionModel?: (model: LocalTranscriptionModelId) => void
   onRemoveTranscriptionModel?: (model: LocalTranscriptionModelId | 'sortformer-streaming') => void
+  deepgramCredential?: DeepgramCredentialStatus
+  deepgramCredentialBusy?: boolean
+  onSaveDeepgramApiKey?: (apiKey: string) => void | Promise<void>
+  onRemoveDeepgramApiKey?: () => void | Promise<void>
   providerConfig?: Readonly<ProviderConfig>
   onEditProviders?: () => void
   generationSettings?: GenerationSettings
@@ -62,8 +68,12 @@ interface SettingsSheetProps {
   onChangeListeningShortcut?: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
   storageSettings?: TranscriptStorageSettings
   storageChanging?: boolean
+  notesStorageSettings?: NotesStorageSettings
+  notesStorageChanging?: boolean
   onChooseTranscriptDirectory?: () => boolean | Promise<boolean>
   onResetTranscriptDirectory?: () => boolean | Promise<boolean>
+  onChooseNotesDirectory?: () => boolean | Promise<boolean>
+  onResetNotesDirectory?: () => boolean | Promise<boolean>
   initialPage?: SettingsPage
   onClose: () => void
 }
@@ -92,6 +102,10 @@ export function SettingsSheet({
   onChangeTranscriptionConfig = () => undefined,
   onPrepareTranscriptionModel = () => undefined,
   onRemoveTranscriptionModel = () => undefined,
+  deepgramCredential = { configured: false, verified: false, message: null },
+  deepgramCredentialBusy = false,
+  onSaveDeepgramApiKey = () => undefined,
+  onRemoveDeepgramApiKey = () => undefined,
   providerConfig = { setupComplete: false, primary: null, secondary: null },
   onEditProviders = () => undefined,
   generationSettings = defaultGenerationSettings(),
@@ -105,14 +119,25 @@ export function SettingsSheet({
     usingDefault: true,
   },
   storageChanging = false,
+  notesStorageSettings = {
+    defaultDirectory: '~/Library/Application Support/Arco/notes',
+    selectedDirectory: '~/Library/Application Support/Arco/notes',
+    usingDefault: true,
+  },
+  notesStorageChanging = false,
   onChooseTranscriptDirectory = () => true,
   onResetTranscriptDirectory = () => true,
+  onChooseNotesDirectory = () => true,
+  onResetNotesDirectory = () => true,
   initialPage = 'audio',
   onClose,
 }: SettingsSheetProps) {
   const { locale, setLocale, t } = useI18n()
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [storageOpen, setStorageOpen] = useState(false)
+  const [notesStorageOpen, setNotesStorageOpen] = useState(false)
+  const [deepgramApiKey, setDeepgramApiKey] = useState('')
+  const [deepgramError, setDeepgramError] = useState<string | null>(null)
   if (!open) return null
   const audioScenarios: Array<{ mode: AudioMode; title: string; description: string }> = [
     { mode: 'both', title: t('settings.scenario.hybrid.title'), description: t('settings.scenario.hybrid.description') },
@@ -161,6 +186,18 @@ export function SettingsSheet({
       language: transcriptionConfig.language,
       diarization: 'local-streaming',
     })
+  }
+
+  const saveDeepgramKey = async () => {
+    const key = deepgramApiKey.trim()
+    if (!key) return
+    setDeepgramError(null)
+    try {
+      await onSaveDeepgramApiKey(key)
+      setDeepgramApiKey('')
+    } catch (cause) {
+      setDeepgramError(cause instanceof Error ? cause.message : String(cause))
+    }
   }
 
   return (
@@ -381,11 +418,13 @@ export function SettingsSheet({
                                 type="button"
                                 className="model-action"
                                 disabled={audioModeLocked || selectedModelBusy}
-                                aria-label={t('settings.downloadModel', { model: selectedModel?.label ?? '' })}
+                                aria-label={t('settings.downloadAndUseModel', { model: selectedModel?.label ?? '' })}
                                 onClick={() => selectedModel && onPrepareTranscriptionModel(selectedModel.id)}
                               >
                                 <Download size={14} />
-                                {selectedModelAction}
+                                {!selectedModelStatus?.installed && !selectedModelBusy
+                                  ? t('settings.downloadAndUse')
+                                  : selectedModelAction}
                               </button>
                             )}
                           </div>
@@ -432,6 +471,43 @@ export function SettingsSheet({
                             </em>
                           </label>
                           <p className="local-privacy-note"><ShieldCheck size={14} /> {t('settings.localPrivacy')}</p>
+                        </div>
+                      )}
+
+                      {transcriptionConfig.provider === 'deepgram' && (
+                        <div className="deepgram-key-panel" role="group" aria-label={t('settings.deepgramSetupAria')}>
+                          {deepgramCredential.configured ? (
+                            <div className="deepgram-key-ready" aria-live="polite">
+                              <span className="deepgram-key-status"><Check size={15} aria-hidden="true" /><span><strong>{t('settings.deepgramReady')}</strong><small>{t('settings.deepgramKeychain')}</small></span></span>
+                              <button type="button" className="model-action model-action-remove" disabled={audioModeLocked || deepgramCredentialBusy} onClick={() => void onRemoveDeepgramApiKey()}>
+                                {t('settings.removeDeepgramKey')}
+                              </button>
+                            </div>
+                          ) : (
+                            <form onSubmit={(event) => { event.preventDefault(); void saveDeepgramKey() }}>
+                              <div className="deepgram-key-heading">
+                                <span><strong>{t('settings.deepgramPasteKey')}</strong><small>{t('settings.deepgramPasteKeyHelp')}</small></span>
+                                <a href="https://console.deepgram.com/" target="_blank" rel="noreferrer">{t('settings.deepgramGetKey')}</a>
+                              </div>
+                              <div className="deepgram-key-entry">
+                                <input
+                                  type="password"
+                                  aria-label={t('settings.deepgramApiKey')}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  value={deepgramApiKey}
+                                  disabled={audioModeLocked || deepgramCredentialBusy}
+                                  placeholder={t('settings.deepgramKeyPlaceholder')}
+                                  onChange={(event) => setDeepgramApiKey(event.target.value)}
+                                />
+                                <button type="submit" className="model-action" disabled={audioModeLocked || deepgramCredentialBusy || !deepgramApiKey.trim()}>
+                                  {deepgramCredentialBusy ? t('settings.verifying') : t('settings.verifyAndSave')}
+                                </button>
+                              </div>
+                              {deepgramError && <p className="deepgram-key-error" role="alert">{deepgramError}</p>}
+                              <p className="deepgram-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.deepgramPrivacy')}</p>
+                            </form>
+                          )}
                         </div>
                       )}
 
@@ -577,6 +653,47 @@ export function SettingsSheet({
                         )}
                       </div>
                       {audioModeLocked && <small>{t('settings.storageLocked')}</small>}
+                    </div>
+                  )}
+                </div>
+                <div className={`transcript-storage-setting ${notesStorageOpen ? 'transcript-storage-setting-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="transcript-storage-summary"
+                    aria-label={t('settings.notesStorage')}
+                    aria-expanded={notesStorageOpen}
+                    onClick={() => setNotesStorageOpen((current) => !current)}
+                  >
+                    <span className="transcript-storage-name"><FileText size={14} /> {t('settings.notes')}</span>
+                    <span className="transcript-storage-value">
+                      <small>{notesStorageSettings.usingDefault ? t('settings.defaultLocation') : t('settings.customLocation')}</small>
+                      <code title={notesStorageSettings.selectedDirectory}>{notesStorageSettings.selectedDirectory}</code>
+                    </span>
+                    <ChevronRight size={15} aria-hidden="true" />
+                  </button>
+                  {notesStorageOpen && (
+                    <div className="transcript-storage-controls">
+                      <p>{t('settings.notesStorageLocationHelp')}</p>
+                      <div>
+                        <button
+                          type="button"
+                          className="storage-action storage-action-primary"
+                          disabled={notesStorageChanging}
+                          onClick={() => void onChooseNotesDirectory()}
+                        >
+                          <FolderOpen size={14} /> {t('settings.chooseFolder')}
+                        </button>
+                        {!notesStorageSettings.usingDefault && (
+                          <button
+                            type="button"
+                            className="storage-action"
+                            disabled={notesStorageChanging}
+                            onClick={() => void onResetNotesDirectory()}
+                          >
+                            {t('settings.restoreDefault')}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

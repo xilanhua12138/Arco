@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { demoAgentReply, demoMeetingDetails } from '../lib/demoData'
@@ -106,6 +106,76 @@ describe('InsightPanel product safeguards', () => {
     expect(onAsk).toHaveBeenCalledWith(expect.objectContaining({ provider: 'codex' }))
   })
 
+  it('turns a quick action into a visible user turn while the Agent is answering', async () => {
+    const user = userEvent.setup()
+    const onAsk = vi.fn<(input: AskAgentInput) => Promise<boolean>>(
+      () => new Promise<boolean>(() => undefined),
+    )
+    renderPanel({ onAsk })
+
+    await user.click(screen.getByRole('button', { name: 'Answer what was asked' }))
+
+    expect(screen.getByRole('heading', { level: 3, name: 'Answer what was asked' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Answer what was asked' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Reading this meeting and your selected context…')
+    expect(onAsk).toHaveBeenCalledWith(expect.objectContaining({
+      question: 'Answer what was asked',
+      agentPrompt: 'What is the strongest direct answer to the latest question in this meeting?',
+    }))
+  })
+
+  it('keeps the quick-action label as the visible user message after the answer arrives', () => {
+    const quickReply = {
+      ...demoAgentReply,
+      question: 'Answer what was asked',
+    }
+
+    renderPanel({ replies: [quickReply] })
+
+    expect(screen.getByRole('heading', { level: 3, name: 'Answer what was asked' })).toBeVisible()
+    expect(screen.getByText(quickReply.answer)).toBeVisible()
+  })
+
+  it('renders Agent markdown as structured readable content without executing raw HTML', () => {
+    const markdownReply = {
+      ...demoAgentReply,
+      answer: [
+        '**Direct answer: connect it to the live meeting. **',
+        '',
+        '- Keep the transcript visible',
+        '- Use `agentPrompt` for the detailed instruction',
+        '',
+        '| State | Result |',
+        '| --- | --- |',
+        '| Ready | Sent |',
+        '',
+        '[Read the guide](https://example.com/guide)',
+        '',
+        '[unsafe](javascript:alert(1))',
+        '',
+        '![remote diagram](https://tracker.example/pixel.png)',
+        '',
+        '<script>alert("unsafe")</script>',
+      ].join('\n'),
+    }
+
+    renderPanel({ replies: [markdownReply] })
+
+    const reply = screen.getByText('Direct answer: connect it to the live meeting.').closest('article')
+    expect(reply).not.toBeNull()
+    expect(within(reply!).getByText('Direct answer: connect it to the live meeting.').tagName).toBe('STRONG')
+    expect(within(reply!).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(reply!).getByText('agentPrompt').tagName).toBe('CODE')
+    expect(within(reply!).getByRole('table')).toHaveTextContent('ReadySent')
+    const guide = within(reply!).getByRole('link', { name: 'Read the guide' })
+    expect(guide).toHaveAttribute('href', 'https://example.com/guide')
+    expect(guide).toHaveAttribute('target', '_blank')
+    expect(within(reply!).queryByRole('link', { name: 'unsafe' })).not.toBeInTheDocument()
+    expect(within(reply!).queryByRole('img')).not.toBeInTheDocument()
+    expect(within(reply!).getByText('remote diagram')).toBeVisible()
+    expect(reply).not.toHaveTextContent('alert("unsafe")')
+  })
+
   it('uses the configured secondary only when runtime routing explicitly enters failover', async () => {
     const user = userEvent.setup()
     const onAsk = successfulAsk()
@@ -158,11 +228,13 @@ describe('InsightPanel product safeguards', () => {
     expect(screen.queryByLabelText('Current provider')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Answer what was asked/i })).not.toBeInTheDocument()
     expect(screen.getByText(demoAgentReply.answer)).toBeVisible()
-    expect(screen.getByText('Context used')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Context used · 2' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Save as note' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Copy' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Copy' })).toHaveAttribute('aria-label', 'Copy')
     expect(screen.getByText('This transcript')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Add context' })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toHaveAttribute('rows', '2')
     expect(screen.queryByRole('combobox', { name: 'Context' })).not.toBeInTheDocument()
 
     expect(screen.queryByText('Meeting Agent')).not.toBeInTheDocument()
@@ -230,12 +302,24 @@ describe('InsightPanel product safeguards', () => {
     expect(screen.queryByRole('textbox', { name: 'Workspace path' })).not.toBeInTheDocument()
   })
 
-  it('presents synthetic sources honestly as context used, not dead buttons', () => {
+  it('progressively discloses the context used for each answer', async () => {
+    const user = userEvent.setup()
     renderPanel({ replies: [demoAgentReply] })
 
-    expect(screen.getByText('Context used')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /Current transcript · 14:02–14:06/i })).not.toBeInTheDocument()
+    const disclosure = screen.getByRole('button', { name: 'Context used · 2' })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Current transcript · 14:02–14:06')).not.toBeInTheDocument()
+
+    await user.click(disclosure)
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('Current transcript · 14:02–14:06')).toBeVisible()
+    expect(screen.getByText('Your stated trust model')).toBeVisible()
+
+    await user.click(disclosure)
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Current transcript · 14:02–14:06')).not.toBeInTheDocument()
   })
 
   it('saves an Agent answer as a durable meeting note by stable turn id', async () => {

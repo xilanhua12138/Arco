@@ -103,6 +103,7 @@ describe('SettingsSheet audio scenarios', () => {
     await user.click(screen.getByRole('button', { name: /Data & privacy/i }))
     expect(screen.getByText('Native Agent conversations')).toBeVisible()
     expect(screen.getByText('Stored by Codex or Claude on this Mac')).toBeVisible()
-    expect(screen.getByText('Meeting links, answer cache, and saved notes')).toBeVisible()
+    expect(screen.getByText('Meeting links and answer cache')).toBeVisible()
+    expect(screen.getByText('Notes')).toBeVisible()
   })
 })

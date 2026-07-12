@@ -77,34 +77,10 @@ impl CaptureConfig {
             if let Some(binary) = std::env::var_os("ARCO_TRANSCRIBER_BIN") {
                 (CommandSpec::new(PathBuf::from(binary), Vec::new()), false)
             } else {
-                let script = paths.native_dir.join("transcriber.py");
-                if let Some(uv) = find_command("uv") {
-                    (
-                        CommandSpec::new(
-                            uv,
-                            [
-                                "run",
-                                "--no-project",
-                                "--with",
-                                "websockets>=14",
-                                "python",
-                                script.to_string_lossy().as_ref(),
-                            ]
-                            .into_iter()
-                            .map(OsString::from)
-                            .collect(),
-                        ),
-                        true,
-                    )
-                } else {
-                    (
-                        CommandSpec::new(
-                            find_command("python3").unwrap_or_else(|| PathBuf::from("python3")),
-                            vec![script.into_os_string()],
-                        ),
-                        true,
-                    )
-                }
+                (
+                    CommandSpec::new(discover_deepgram_transcriber(paths), Vec::new()),
+                    true,
+                )
             };
 
         let local_binary = discover_local_transcriber(paths);
@@ -131,6 +107,19 @@ impl CaptureConfig {
             requires_ready_signal: true,
         }
     }
+}
+
+pub fn discover_deepgram_transcriber(paths: &AppPaths) -> PathBuf {
+    [
+        paths.native_dir.join("arco-deepgram-transcriber"),
+        paths
+            .native_dir
+            .join("runtime")
+            .join("arco-deepgram-transcriber"),
+    ]
+    .into_iter()
+    .find(|path| is_executable(path))
+    .unwrap_or_else(|| paths.native_dir.join("arco-deepgram-transcriber"))
 }
 
 pub fn discover_local_transcriber(paths: &AppPaths) -> Option<PathBuf> {
@@ -233,6 +222,15 @@ impl CaptureManager {
         mode: &str,
         transcription: TranscriptionConfig,
     ) -> Result<CaptureState, String> {
+        self.start_with_transcription_and_secret(mode, transcription, None)
+    }
+
+    pub fn start_with_transcription_and_secret(
+        &self,
+        mode: &str,
+        transcription: TranscriptionConfig,
+        deepgram_api_key: Option<String>,
+    ) -> Result<CaptureState, String> {
         validate_mode(mode)?;
         transcription.validate()?;
         let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
@@ -257,7 +255,7 @@ impl CaptureManager {
             transcription: Some(transcription.clone()),
         };
 
-        match self.spawn_pipeline(mode, &transcription) {
+        match self.spawn_pipeline(mode, &transcription, deepgram_api_key.as_deref()) {
             Ok((children, transcript, started_at, source)) => {
                 let id = meeting_id(&source, &transcript)?;
                 inner.transcript = Some(transcript.clone());
@@ -319,6 +317,7 @@ impl CaptureManager {
         &self,
         mode: &str,
         transcription: &TranscriptionConfig,
+        deepgram_api_key: Option<&str>,
     ) -> Result<(CaptureChildren, PathBuf, String, String), String> {
         let destination = self
             .destination
@@ -328,6 +327,10 @@ impl CaptureManager {
         let transcript_dir = destination.path;
         let transcriber_definition = self.resolve_transcriber(transcription)?;
         if transcriber_definition.requires_deepgram_key
+            && deepgram_api_key
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
             && !self
                 .config
                 .environment
@@ -338,14 +341,7 @@ impl CaptureManager {
                 .map(|value| value.trim().is_empty())
                 .unwrap_or(true)
         {
-            return Err(format!(
-                "Missing DEEPGRAM_API_KEY. Add it to {} or the app environment.",
-                transcript_dir
-                    .parent()
-                    .unwrap_or(&transcript_dir)
-                    .join(".env")
-                    .display()
-            ));
+            return Err("Deepgram is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
         }
 
         fs::create_dir_all(&transcript_dir).map_err(|error| {
@@ -425,6 +421,12 @@ impl CaptureManager {
             .envs(&self.config.environment)
             .env("ARCO_READY_FILE", &ready_file)
             .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
+        if let Some(api_key) = deepgram_api_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            transcriber_command.env("DEEPGRAM_API_KEY", api_key);
+        }
         if let Err(error) = configure_process_group(&mut transcriber_command) {
             let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
             let _ = finalize_transcript(&transcript, "error");
@@ -604,8 +606,8 @@ fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
         .flatten()
     {
         Some(_) => {
-            // The wrapper may have exited before a descendant (for example
-            // `uv run python`). Signal the owned process group as a final sweep.
+            // A helper may exit before one of its descendants. Signal the
+            // owned process group as a final sweep.
             let _ = terminate_process_tree(&mut children.transcriber, Duration::ZERO);
         }
         None => {
@@ -812,7 +814,6 @@ fn command_candidates(home: Option<&Path>, name: &str) -> Vec<PathBuf> {
 
 fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
     let allowed = [
-        "DEEPGRAM_API_KEY",
         "DEEPGRAM_MODEL",
         "DEEPGRAM_LANG",
         "ARCO_AUDIO_BUFFER_SECONDS",
@@ -880,10 +881,32 @@ mod tests {
     #[test]
     fn finder_safe_tool_candidates_include_common_install_locations() {
         let home = Path::new("/Users/example");
-        let candidates = command_candidates(Some(home), "uv");
-        assert_eq!(candidates[0], PathBuf::from("/Users/example/.local/bin/uv"));
-        assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/uv")));
-        assert!(candidates.contains(&PathBuf::from("/usr/local/bin/uv")));
-        assert!(candidates.contains(&PathBuf::from("/usr/bin/uv")));
+        let candidates = command_candidates(Some(home), "swiftc");
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("/Users/example/.local/bin/swiftc")
+        );
+        assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/swiftc")));
+        assert!(candidates.contains(&PathBuf::from("/usr/local/bin/swiftc")));
+        assert!(candidates.contains(&PathBuf::from("/usr/bin/swiftc")));
+    }
+
+    #[test]
+    fn deepgram_runtime_is_a_bundled_rust_binary_not_a_script_runtime() {
+        let paths = AppPaths {
+            home: PathBuf::from("/Users/example"),
+            app_data: PathBuf::from("/tmp/arco"),
+            transcripts: PathBuf::from("/tmp/arco/transcripts"),
+            notes: PathBuf::from("/tmp/arco/notes"),
+            legacy_transcripts: PathBuf::from("/tmp/legacy"),
+            native_dir: PathBuf::from("/Applications/Arco.app/Contents/Resources/native"),
+        };
+        let program = discover_deepgram_transcriber(&paths);
+        assert_eq!(
+            program.file_name().and_then(|value| value.to_str()),
+            Some("arco-deepgram-transcriber")
+        );
+        assert!(!program.to_string_lossy().contains("python"));
+        assert!(!program.to_string_lossy().contains("uv"));
     }
 }

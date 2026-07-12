@@ -122,5 +122,6 @@ export const demoAgentReply: PersistedAgentTurn = {
   contextScope: 'transcript',
   createdAt: new Date().toISOString(),
   savedAsNote: false,
+  noteId: null,
   usedFallback: false,
 }

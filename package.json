@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:recorder": "bash native/build-recorder.sh",
+    "build:deepgram": "bash native/build-deepgram-transcriber.sh",
     "build:transcriber": "bash native/build-local-transcriber.sh",
-    "build:native": "pnpm build:recorder && pnpm build:transcriber",
+    "build:native": "pnpm build:recorder && pnpm build:deepgram && pnpm build:transcriber",
     "icon:generate": "swift native/generate-app-icon.swift public/arco-icon.png public/arco-app-icon.png && tauri icon public/arco-app-icon.png && cp src-tauri/icons/32x32.png public/favicon.png && cp src-tauri/icons/ios/AppIcon-60x60@3x.png public/apple-touch-icon.png",
     "test:transcriber": "swift run --package-path native/local-transcriber -c debug arco-transcription-selftest",
     "desktop": "pnpm build:native && tauri dev",
@@ -28,7 +29,9 @@
     "@tauri-apps/plugin-global-shortcut": "^2.3.2",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

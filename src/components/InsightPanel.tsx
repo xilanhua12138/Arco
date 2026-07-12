@@ -3,6 +3,7 @@ import {
   BookOpenText,
   Bookmark,
   Check,
+  ChevronRight,
   CircleAlert,
   Copy,
   FileSearch,
@@ -22,6 +23,7 @@ import type {
 } from '../types'
 import { useI18n } from '../i18n/i18n'
 import { workspaceName } from '../lib/agentWorkspace'
+import { MarkdownContent } from './MarkdownContent'
 
 interface InsightPanelProps {
   meeting: MeetingDetail | null
@@ -68,7 +70,9 @@ export function InsightPanel({
   const [copiedReply, setCopiedReply] = useState<number | null>(null)
   const [requestError, setRequestError] = useState(false)
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
+  const [openContextTurnId, setOpenContextTurnId] = useState<string | null>(null)
   const [savingTurnId, setSavingTurnId] = useState<string | null>(null)
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
   const runtime = runtimes.find((candidate) => candidate.provider === provider)
   const workspaceMissing = scope === 'workspace' && !workspace
   const quickPrompts = [
@@ -76,27 +80,34 @@ export function InsightPanel({
     { label: t('agent.quick.unresolved.label'), prompt: t('agent.quick.unresolved.prompt') },
     { label: t('agent.quick.challenge.label'), prompt: t('agent.quick.challenge.prompt') },
   ]
-  const submit = async (prompt = question) => {
-    if (!meeting || !prompt.trim() || running || !runtime?.available || workspaceMissing) return
+  const submit = async (displayQuestion = question, agentPrompt?: string) => {
+    const normalizedQuestion = displayQuestion.trim()
+    const normalizedAgentPrompt = agentPrompt?.trim()
+    if (!meeting || !normalizedQuestion || running || pendingQuestion || !runtime?.available || workspaceMissing) return
     setRequestError(false)
+    setPendingQuestion(normalizedQuestion)
+    setQuestion('')
     try {
       const succeeded = await onAsk({
         provider,
         usedFallback: isFailover,
-        question: prompt,
+        question: normalizedQuestion,
+        agentPrompt: normalizedAgentPrompt || undefined,
         meetingId: meeting.summary.id,
         contextScope: scope,
         workspace: scope === 'workspace' ? workspace ?? undefined : undefined,
       })
       if (!succeeded) {
-        if (!question.trim()) setQuestion(prompt.trim())
+        setQuestion(normalizedQuestion)
         setRequestError(true)
+        setPendingQuestion(null)
         return
       }
-      setQuestion('')
+      setPendingQuestion(null)
     } catch {
-      if (!question.trim()) setQuestion(prompt.trim())
+      setQuestion(normalizedQuestion)
       setRequestError(true)
+      setPendingQuestion(null)
     }
   }
 
@@ -150,15 +161,15 @@ export function InsightPanel({
           </div>
         )}
 
-        {replies.length === 0 && (
+        {replies.length === 0 && !pendingQuestion && (
           <section className="quick-actions" aria-label={t('agent.suggestedActions')}>
             <div className="quick-action-list">
               {quickPrompts.map(({ label, prompt }) => (
                 <button
                   type="button"
                   key={label}
-                  onClick={() => submit(prompt)}
-                  disabled={running || !runtime?.available || workspaceMissing}
+                  onClick={() => submit(label, prompt)}
+                  disabled={running || Boolean(pendingQuestion) || !runtime?.available || workspaceMissing}
                 >
                   <strong>{label}</strong>
                   <ArrowUp size={14} />
@@ -174,22 +185,20 @@ export function InsightPanel({
               <span className="reply-provider-fallback">{t('agent.fallback', { provider: reply.provider === 'codex' ? 'Codex' : 'Claude' })}</span>
             )}
             <h3 className="agent-turn-question">{reply.question}</h3>
-            {reply.answer.split(/\n{2,}/).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
-            {reply.sources.length > 0 && (
-              <section className="context-used" aria-label={t('agent.contextUsedAria')}>
-                <h3>{t('agent.contextUsed')}</h3>
-                <ol className="source-list">
-                  {reply.sources.map((source, sourceIndex) => (
-                    <li key={`${source.kind}-${source.reference}`}>
-                      <span>{String(sourceIndex + 1).padStart(2, '0')}</span>
-                      {sourceIcon(source.kind)}
-                      <span>{source.label}</span>
-                    </li>
-                  ))}
-                </ol>
-              </section>
-            )}
+            <MarkdownContent className="agent-reply-markdown">{reply.answer}</MarkdownContent>
             <div className="reply-actions">
+              {reply.sources.length > 0 && (
+                <button
+                  type="button"
+                  className="context-disclosure"
+                  aria-expanded={openContextTurnId === reply.id}
+                  aria-controls={`context-used-${reply.id}`}
+                  onClick={() => setOpenContextTurnId((current) => current === reply.id ? null : reply.id)}
+                >
+                  <ChevronRight size={13} aria-hidden="true" />
+                  {t('agent.contextUsed')} · {reply.sources.length}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={savingTurnId === reply.id}
@@ -203,15 +212,48 @@ export function InsightPanel({
                 {reply.savedAsNote ? <Check size={13} /> : <Bookmark size={13} />}
                 {savingTurnId === reply.id ? t('common.saving') : reply.savedAsNote ? t('agent.savedNote') : t('agent.saveAsNote')}
               </button>
-              <button type="button" onClick={() => copyReply(reply, index)}>
+              <button
+                type="button"
+                aria-label={copiedReply === index ? t('agent.copied') : t('agent.copy')}
+                onClick={() => copyReply(reply, index)}
+              >
                 {copiedReply === index ? <Check size={13} /> : <Copy size={13} />}
-                {copiedReply === index ? t('agent.copied') : t('agent.copy')}
+                <span className="reply-copy-label">
+                  {copiedReply === index ? t('agent.copied') : t('agent.copy')}
+                </span>
               </button>
             </div>
+            {openContextTurnId === reply.id && (
+              <section
+                className="context-used"
+                id={`context-used-${reply.id}`}
+                aria-label={t('agent.contextUsedAria')}
+              >
+                <ol className="source-list">
+                  {reply.sources.map((source, sourceIndex) => (
+                    <li key={`${source.kind}-${source.reference}`}>
+                      <span>{String(sourceIndex + 1).padStart(2, '0')}</span>
+                      {sourceIcon(source.kind)}
+                      <span>{source.label}</span>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
           </article>
         ))}
 
-        {running && (
+        {pendingQuestion && (
+          <article className="agent-reply agent-pending-turn">
+            <h3 className="agent-turn-question">{pendingQuestion}</h3>
+            <div className="agent-thinking" role="status">
+              <span /><span /><span />
+              {t('agent.thinking')}
+            </div>
+          </article>
+        )}
+
+        {running && !pendingQuestion && (
           <div className="agent-thinking" role="status">
             <span /><span /><span />
             {t('agent.thinking')}
@@ -228,7 +270,7 @@ export function InsightPanel({
       >
         <div className="composer-context-rail" aria-label={t('agent.referenceContext')}>
           <span className="composer-context-chip composer-context-chip-fixed">
-            <BookOpenText size={12} aria-hidden="true" />
+            <BookOpenText size={11} aria-hidden="true" />
             {t('agent.scope.transcript')}
           </span>
           {scope === 'workspace' && workspace && (
@@ -239,7 +281,7 @@ export function InsightPanel({
               title={workspace}
               onClick={() => void onChooseWorkspace()}
             >
-              <FolderOpen size={12} aria-hidden="true" />
+              <FolderOpen size={11} aria-hidden="true" />
               <span>{workspaceName(workspace)}</span>
             </button>
           )}
@@ -255,7 +297,7 @@ export function InsightPanel({
             }
           }}
           placeholder={t('agent.placeholder')}
-          rows={3}
+          rows={2}
           aria-label={t('agent.questionAria')}
           disabled={!meeting}
         />
@@ -319,7 +361,7 @@ export function InsightPanel({
           <button
             type="submit"
             className="send-button"
-            disabled={!question.trim() || running || !meeting || !runtime?.available || workspaceMissing}
+            disabled={!question.trim() || running || Boolean(pendingQuestion) || !meeting || !runtime?.available || workspaceMissing}
             aria-label={t('agent.send')}
           >
             <ArrowUp size={16} />

@@ -5,6 +5,7 @@ import './App.css'
 import { HistoryPage } from './components/HistoryPage'
 import { CurrentIdleState } from './components/CurrentIdleState'
 import { InsightPanel } from './components/InsightPanel'
+import { NotesPage } from './components/NotesPage'
 import { ProviderSetup } from './components/ProviderSetup'
 import { SettingsSheet } from './components/SettingsSheet'
 import { Sidebar } from './components/Sidebar'
@@ -25,7 +26,7 @@ import {
   type GenerationSettings,
 } from './lib/generationSettings'
 import type { AudioMode } from './types'
-import type { TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
+import type { DeepgramCredentialStatus, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
 import {
   loadTranscriptionConfig,
   saveTranscriptionConfig,
@@ -39,7 +40,7 @@ import { registerListeningShortcut, unregisterListeningShortcut } from './lib/li
 import { completeOnboarding, loadOnboardingState } from './lib/onboarding'
 import { useI18n } from './i18n/i18n'
 
-type AppPage = 'current' | 'history' | 'review'
+type AppPage = 'current' | 'history' | 'notes' | 'review'
 
 const storedAudioMode = (): AudioMode => {
   const value = window.localStorage.getItem('arco.audioMode')
@@ -51,9 +52,11 @@ function App() {
   const arco = useArco()
   const agentWorkspace = useAgentWorkspace(t('agent.chooseWorkspaceDialogTitle'))
   const refreshMeetings = arco.refreshMeetings
+  const refreshSavedNotes = arco.refreshSavedNotes
   const activeMeeting = arco.activeMeeting
   const [page, setPage] = useState<AppPage>('current')
   const [query, setQuery] = useState('')
+  const [notesQuery, setNotesQuery] = useState('')
   const [audioMode, setAudioMode] = useState<AudioMode>(storedAudioMode)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsPage, setSettingsPage] = useState<'general' | 'audio'>('general')
@@ -61,6 +64,8 @@ function App() {
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings)
   const [transcriptionConfig, setTranscriptionConfig] = useState<TranscriptionConfig>(loadTranscriptionConfig)
   const [transcriptionModels, setTranscriptionModels] = useState<TranscriptionModelStatus[]>([])
+  const [deepgramCredential, setDeepgramCredential] = useState<DeepgramCredentialStatus>({ configured: false, verified: false, message: null })
+  const [deepgramCredentialBusy, setDeepgramCredentialBusy] = useState(false)
   const [providerSetupOpen, setProviderSetupOpen] = useState(() => {
     const existingProvider = loadProviderConfig()
     return !existingProvider.setupComplete && !loadOnboardingState().completed
@@ -69,7 +74,9 @@ function App() {
   const [listeningShortcut, setListeningShortcut] = useState<ListeningShortcut>(loadListeningShortcut)
   const [shortcutError, setShortcutError] = useState<string | null>(null)
   const [storageSettings, setStorageSettings] = useState<TranscriptStorageSettings | undefined>()
+  const [notesStorageSettings, setNotesStorageSettings] = useState<NotesStorageSettings | undefined>()
   const [storageChanging, setStorageChanging] = useState(false)
+  const [notesStorageChanging, setNotesStorageChanging] = useState(false)
   const [storageError, setStorageError] = useState<string | null>(null)
   const returnFocusRef = useRef<string | null>(null)
   const registeredShortcutRef = useRef<ListeningShortcut>(null)
@@ -113,6 +120,32 @@ function App() {
     return next
   }
 
+  const refreshDeepgramCredential = async () => {
+    const status = await arcoBridge.deepgramCredentialStatus()
+    setDeepgramCredential(status)
+    return status
+  }
+
+  const saveDeepgramApiKey = async (apiKey: string) => {
+    setDeepgramCredentialBusy(true)
+    try {
+      const status = await arcoBridge.saveDeepgramApiKey(apiKey)
+      setDeepgramCredential(status)
+    } finally {
+      setDeepgramCredentialBusy(false)
+    }
+  }
+
+  const removeDeepgramApiKey = async () => {
+    setDeepgramCredentialBusy(true)
+    try {
+      const status = await arcoBridge.removeDeepgramApiKey()
+      setDeepgramCredential(status)
+    } finally {
+      setDeepgramCredentialBusy(false)
+    }
+  }
+
   const mergeTranscriptionModelStatus = useCallback((status: TranscriptionModelStatus) => {
     setTranscriptionModels((current) => {
       const retained = current.filter((candidate) => candidate.id !== status.id)
@@ -133,6 +166,7 @@ function App() {
 
   const showPage = async (nextPage: AppPage) => {
     setSettingsOpen(false)
+    if (nextPage === 'notes') void refreshSavedNotes(notesQuery)
     if (
       nextPage === 'current' &&
       arco.capture.phase === 'recording' &&
@@ -207,8 +241,12 @@ function App() {
 
   const refreshStorageSettings = useCallback(async () => {
     try {
-      const settings = await arcoBridge.storageSettings()
+      const [settings, noteSettings] = await Promise.all([
+        arcoBridge.storageSettings(),
+        arcoBridge.notesStorageSettings(),
+      ])
       setStorageSettings(settings)
+      setNotesStorageSettings(noteSettings)
       return settings
     } catch (cause) {
       setStorageError(cause instanceof Error ? cause.message : String(cause))
@@ -250,11 +288,48 @@ function App() {
     }
   }
 
+  const chooseNotesDirectory = async () => {
+    setStorageError(null)
+    try {
+      const directory = await arcoBridge.chooseNotesDirectory(t('settings.chooseNotesFolderDialogTitle'))
+      if (!directory) return false
+      setNotesStorageChanging(true)
+      const settings = await arcoBridge.setNotesDirectory(directory)
+      setNotesStorageSettings(settings)
+      await refreshSavedNotes(notesQuery)
+      return true
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : String(cause))
+      return false
+    } finally {
+      setNotesStorageChanging(false)
+    }
+  }
+
+  const resetNotesDirectory = async () => {
+    setStorageError(null)
+    setNotesStorageChanging(true)
+    try {
+      const settings = await arcoBridge.setNotesDirectory(null)
+      setNotesStorageSettings(settings)
+      await refreshSavedNotes(notesQuery)
+      return true
+    } catch (cause) {
+      setStorageError(cause instanceof Error ? cause.message : String(cause))
+      return false
+    } finally {
+      setNotesStorageChanging(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
-    void arcoBridge.storageSettings()
-      .then((settings) => {
-        if (!cancelled) setStorageSettings(settings)
+    void Promise.all([arcoBridge.storageSettings(), arcoBridge.notesStorageSettings()])
+      .then(([settings, noteSettings]) => {
+        if (!cancelled) {
+          setStorageSettings(settings)
+          setNotesStorageSettings(noteSettings)
+        }
       })
       .catch((cause) => {
         if (!cancelled) setStorageError(cause instanceof Error ? cause.message : String(cause))
@@ -268,6 +343,12 @@ function App() {
     const timer = window.setTimeout(() => void refreshMeetings(query), 180)
     return () => window.clearTimeout(timer)
   }, [query, refreshMeetings])
+
+  useEffect(() => {
+    if (page !== 'notes') return
+    const timer = window.setTimeout(() => void refreshSavedNotes(notesQuery), 180)
+    return () => window.clearTimeout(timer)
+  }, [notesQuery, page, refreshSavedNotes])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -341,7 +422,8 @@ function App() {
           setSettingsPage('general')
             setSettingsOpen(true)
             void refreshStorageSettings()
-          void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
+            void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
+            void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
         }}
       />
 
@@ -362,6 +444,8 @@ function App() {
                     returnFocusRef.current = 'settings-trigger'
                     setSettingsPage('audio')
                     setSettingsOpen(true)
+                    void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
+                    void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
                   }}
                 />
               </div>
@@ -405,6 +489,20 @@ function App() {
               if (opened) setPage(id === arco.capture.activeMeetingId ? 'current' : 'review')
             }}
           />
+        ) : page === 'notes' ? (
+          <NotesPage
+            notes={arco.savedNotes}
+            meetings={arco.meetings}
+            query={notesQuery}
+            loading={arco.notesLoading}
+            onQueryChange={setNotesQuery}
+            onOpenMeeting={async (id) => {
+              const opened = await arco.selectMeeting(id)
+              if (opened) setPage(id === arco.capture.activeMeetingId ? 'current' : 'review')
+            }}
+            onSaveNote={arco.saveNote}
+            onDeleteNote={arco.deleteNote}
+          />
         ) : (
           <section className="current-page" aria-label={t('app.historyReviewAria')}>
             <TopBar
@@ -412,6 +510,7 @@ function App() {
               meetingDetail={arco.meeting}
               capture={arco.capture}
               onRenameMeeting={arco.renameMeeting}
+              onBackToHistory={() => void showPage('history')}
             />
             {reviewingWhileRecording && (
               <button
@@ -467,9 +566,13 @@ function App() {
         listeningShortcut={listeningShortcut}
         shortcutError={shortcutError}
         storageSettings={storageSettings}
+        notesStorageSettings={notesStorageSettings}
         storageChanging={storageChanging}
+        notesStorageChanging={notesStorageChanging}
         onChooseTranscriptDirectory={chooseTranscriptDirectory}
         onResetTranscriptDirectory={resetTranscriptDirectory}
+        onChooseNotesDirectory={chooseNotesDirectory}
+        onResetNotesDirectory={resetNotesDirectory}
         onChangeListeningShortcut={changeListeningShortcut}
         onChangeGenerationSettings={changeGenerationSettings}
         audioMode={displayedAudioMode}
@@ -477,6 +580,10 @@ function App() {
         audioModeLocked={audioModeLocked}
         transcriptionConfig={transcriptionConfig}
         transcriptionModels={transcriptionModels}
+        deepgramCredential={deepgramCredential}
+        deepgramCredentialBusy={deepgramCredentialBusy}
+        onSaveDeepgramApiKey={saveDeepgramApiKey}
+        onRemoveDeepgramApiKey={removeDeepgramApiKey}
         onChangeTranscriptionConfig={changeTranscriptionConfig}
         onPrepareTranscriptionModel={(model) => {
           const includeDiarization = transcriptionConfig.diarization === 'local-streaming'
@@ -504,13 +611,23 @@ function App() {
           ).then(setTranscriptionModels).catch((cause) => {
             const error = cause instanceof Error ? cause.message : String(cause)
             mergeTranscriptionModelStatus({
-              id: includeDiarization ? 'sortformer-streaming' : model,
+              id: model,
               installed: false,
               phase: 'failed',
               progress: null,
               error,
               path: null,
             })
+            if (includeDiarization) {
+              mergeTranscriptionModelStatus({
+                id: 'sortformer-streaming',
+                installed: false,
+                phase: 'failed',
+                progress: null,
+                error,
+                path: null,
+              })
+            }
           })
         }}
         onRemoveTranscriptionModel={(model) => {

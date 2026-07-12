@@ -106,13 +106,42 @@ export interface PersistedAgentTurn extends AgentReply {
   question: string
   contextScope: ContextScope
   savedAsNote: boolean
+  noteId?: string | null
   usedFallback: boolean
 }
+
+export interface SavedNote {
+  meeting: MeetingSummary
+  turn: PersistedAgentTurn
+}
+
+export interface NoteDocument {
+  id: string
+  title: string
+  body: string
+  source: 'manual' | 'agent'
+  createdAt: string
+  updatedAt: string
+  path: string
+  meetingId: string | null
+  meetingTitle: string | null
+  agentTurnId: string | null
+}
+
+export interface SaveNoteInput {
+  id: string | null
+  meetingId: string
+  title: string
+  body: string
+}
+
+export type NotesStorageSettings = TranscriptStorageSettings
 
 export interface AskAgentInput {
   provider: ProviderId
   usedFallback: boolean
   question: string
+  agentPrompt?: string
   meetingId: string
   workspace?: string
   contextScope: ContextScope
@@ -158,4 +187,10 @@ export interface TranscriptionModelStatus {
   progress: number | null
   error: string | null
   path: string | null
+}
+
+export interface DeepgramCredentialStatus {
+  configured: boolean
+  verified: boolean
+  message: string | null
 }

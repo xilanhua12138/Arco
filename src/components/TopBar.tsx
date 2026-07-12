@@ -1,4 +1,4 @@
-import { Info, Pencil } from 'lucide-react'
+import { ArrowLeft, Info, Pencil } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptureState, MeetingDetail, MeetingSummary } from '../types'
 import { formatDurationLabel, localizedSpeakerLabel, useI18n } from '../i18n/i18n'
@@ -8,9 +8,10 @@ interface TopBarProps {
   meetingDetail?: MeetingDetail | null
   capture: CaptureState
   onRenameMeeting: (meetingId: string, title: string | null) => Promise<boolean>
+  onBackToHistory?: () => void
 }
 
-export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting }: TopBarProps) {
+export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting, onBackToHistory }: TopBarProps) {
   const { t } = useI18n()
   const [openMeetingId, setOpenMeetingId] = useState<string | null>(null)
   const [editingMeetingId, setEditingMeetingId] = useState<string | null>(null)
@@ -99,6 +100,17 @@ export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting
     <header className="page-header current-page-header">
       <div className="page-title-block">
         <div className="page-title-line">
+          {onBackToHistory && (
+            <button
+              type="button"
+              className="history-back-button"
+              aria-label={t('history.back')}
+              title={t('history.back')}
+              onClick={onBackToHistory}
+            >
+              <ArrowLeft size={18} aria-hidden="true" />
+            </button>
+          )}
           {meeting ? (
             editingTitle ? (
               <h1 className="meeting-title-heading-editing">

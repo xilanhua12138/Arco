@@ -232,10 +232,34 @@ pub struct PersistedAgentTurn {
     pub context_scope: String,
     pub created_at: String,
     pub saved_as_note: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
     #[serde(default)]
     pub used_fallback: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedNote {
+    pub meeting: MeetingSummary,
+    pub turn: PersistedAgentTurn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDocument {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub path: String,
+    pub meeting_id: Option<String>,
+    pub meeting_title: Option<String>,
+    pub agent_turn_id: Option<String>,
 }

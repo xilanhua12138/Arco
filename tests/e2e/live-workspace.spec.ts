@@ -431,6 +431,12 @@ test('History is searchable and opens a meeting as History review', async ({ pag
   await page.screenshot({ path: 'test-results/arco-product-reviewing-during-live.png', fullPage: true })
   await expect(page.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByRole('button', { name: 'Open current meeting' })).not.toHaveAttribute('aria-current')
+
+  await page.getByRole('button', { name: 'Back to History' }).click()
+
+  await expect(page.getByRole('heading', { level: 1, name: 'History' })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Search meetings' })).toHaveValue('Benchmark review')
+  await expect(page.getByRole('button', { name: /Benchmark review with Estrella/i })).toBeVisible()
 })
 
 test('Agent chooses a workspace once and reuses it without a per-question path field', async ({ page }) => {
@@ -451,8 +457,13 @@ test('Agent chooses a workspace once and reuses it without a per-question path f
 
   await quickAction.click()
   await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
-  await expect(agent.getByText('Context used')).toBeVisible()
-  await expect(agent.getByRole('button', { name: /Current transcript · 14:02–14:06/i })).toHaveCount(0)
+  const contextDisclosure = agent.getByRole('button', { name: 'Context used · 2' })
+  await expect(contextDisclosure).toHaveAttribute('aria-expanded', 'false')
+  await expect(agent.getByText('Current transcript · 14:02–14:06')).toHaveCount(0)
+
+  await contextDisclosure.click()
+
+  await expect(contextDisclosure).toHaveAttribute('aria-expanded', 'true')
   await expect(agent.getByText('Current transcript · 14:02–14:06')).toBeVisible()
 
   await page.reload()
@@ -461,6 +472,97 @@ test('Agent chooses a workspace once and reuses it without a per-question path f
   await reopenedAgent.getByRole('menuitem', { name: 'Use Arco workspace' }).click()
   await expect(reopenedAgent.getByRole('button', { name: 'Change workspace' })).toHaveText('Arco')
   await expect(reopenedAgent.getByRole('textbox', { name: 'Workspace path' })).toHaveCount(0)
+})
+
+test('Agent panel keeps one aligned document rhythm at compact desktop widths', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 750 })
+  await gotoConfigured(page, '/?demo=1')
+
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  await agent.getByRole('button', { name: 'Add context' }).click()
+  await agent.getByRole('menuitem', { name: 'Choose workspace' }).click()
+  await agent.getByRole('button', { name: /Answer what was asked/i }).click()
+  await expect(agent.getByRole('heading', { level: 3, name: 'Answer what was asked' })).toBeVisible()
+  await expect(agent.getByRole('button', { name: 'Answer what was asked' })).toHaveCount(0)
+  await expect(agent.getByRole('status')).toContainText('Reading this meeting and your selected context…')
+  await expect(agent.getByText(/Arco becomes more than a recorder/)).toBeVisible()
+
+  const agentBox = await agent.boundingBox()
+  const composer = agent.locator('.ask-composer')
+  const composerBox = await composer.boundingBox()
+  expect(agentBox).not.toBeNull()
+  expect(composerBox).not.toBeNull()
+  expect(Math.round(composerBox!.x)).toBe(Math.round(agentBox!.x))
+  expect(Math.round(composerBox!.width)).toBe(Math.round(agentBox!.width))
+
+  const firstReply = agent.locator('.agent-reply').first()
+  await expect(firstReply).toHaveCSS('margin-top', '0px')
+  await expect(firstReply).toHaveCSS('padding-top', '0px')
+  await expect(firstReply).toHaveCSS('border-top-width', '0px')
+
+  const answer = firstReply.locator('p').first()
+  await expect(answer).toHaveCSS('font-size', '14px')
+  await expect(answer).toHaveCSS('line-height', '22px')
+  await expect(composer).toHaveCSS('border-radius', '0px')
+  await expect(composer).toHaveCSS('margin', '0px')
+  await expect(agent.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toHaveAttribute('rows', '2')
+
+  const contextChips = composer.locator('.composer-context-chip')
+  await expect(contextChips).toHaveCount(2)
+  for (let index = 0; index < 2; index += 1) {
+    const chip = contextChips.nth(index)
+    await expect(chip).toHaveCSS('font-size', '10px')
+    await expect(chip).toHaveCSS('font-weight', '400')
+    await expect(chip).toHaveCSS('padding', '4px 7px')
+    const box = await chip.boundingBox()
+    expect(box).not.toBeNull()
+    expect(box!.height).toBeLessThanOrEqual(22)
+  }
+
+  const actionButtons = agent.locator('.reply-actions button')
+  await expect(actionButtons).toHaveCount(3)
+  for (let index = 0; index < 3; index += 1) {
+    const button = actionButtons.nth(index)
+    await expect(button).toHaveCSS('font-size', '11px')
+    const box = await button.boundingBox()
+    expect(box).not.toBeNull()
+    expect(box!.height).toBeGreaterThanOrEqual(30)
+  }
+})
+
+test('Agent answers render Markdown as document content instead of syntax text', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.demoAgentTurns', JSON.stringify([{
+      id: 'markdown-turn',
+      meetingId: 'demo-live',
+      provider: 'codex',
+      question: 'Summarize the recommendation',
+      answer: [
+        '**Direct answer: keep the transcript visible. **',
+        '',
+        '- Preserve the evidence',
+        '- Render `Markdown` safely',
+        '',
+        '| State | Result |',
+        '| --- | --- |',
+        '| Ready | Sent |',
+      ].join('\n'),
+      sources: [],
+      contextScope: 'transcript',
+      createdAt: new Date().toISOString(),
+      savedAsNote: false,
+      usedFallback: false,
+    }]))
+  })
+  await gotoConfigured(page, '/?demo=1')
+
+  const reply = page.locator('.agent-reply').first()
+  await expect(reply.locator('strong')).toHaveText('Direct answer: keep the transcript visible.')
+  await expect(reply.getByRole('listitem')).toHaveCount(2)
+  await expect(reply.locator('code')).toHaveText('Markdown')
+  await expect(reply.getByRole('table')).toContainText('Ready')
+  await expect(reply).not.toContainText('**Direct answer: keep the transcript visible. **')
+  await page.screenshot({ path: 'test-results/arco-agent-markdown.png', fullPage: true })
 })
 
 test('Agent uses the configured primary without a per-question provider switch', async ({ page }) => {
@@ -492,6 +594,59 @@ test('a user-confirmed Agent note survives reloading the app', async ({ page }) 
   await expect(agent.getByRole('button', { name: 'Saved note' })).toBeVisible()
 })
 
+test('saved Agent answers are browsable from Notes and retain their meeting source', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await gotoConfigured(page, '/?demo=1')
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  await agent.getByRole('button', { name: /Answer what was asked/i }).click()
+  await agent.getByRole('button', { name: 'Save as note' }).click()
+
+  await page.getByRole('button', { name: 'Open saved notes' }).click()
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Product direction · weekly working session', exact: true })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(/Arco becomes more than a recorder/)
+  await expect(page.getByRole('button', { name: 'Open saved notes' })).toHaveAttribute('aria-current', 'page')
+  await page.screenshot({ path: 'test-results/arco-notes-1240x820.png', fullPage: true })
+
+  await page.setViewportSize({ width: 1080, height: 750 })
+  await expect(page.getByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1080)
+  await page.screenshot({ path: 'test-results/arco-notes-1080x750.png', fullPage: true })
+
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.setViewportSize({ width: 1024, height: 750 })
+  await expect(page.locator('body')).toHaveCSS('color-scheme', 'light')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1024)
+})
+
+test('a user can write multiple Markdown notes for the same meeting and reopen them', async ({ page }) => {
+  await gotoConfigured(page, '/?demo=1')
+  await page.getByRole('button', { name: 'Open saved notes' }).click()
+
+  await page.getByRole('button', { name: 'New note' }).click()
+  await expect(page.getByRole('combobox', { name: 'Meeting for this note' })).toHaveValue('demo-live')
+  await page.getByRole('textbox', { name: 'Note title' }).fill('Interview follow-ups')
+  await page.getByRole('textbox', { name: 'Markdown note' }).fill('- Ask about the rollout\n- Confirm the owner')
+  await page.getByRole('button', { name: 'Save note' }).click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'New note' }).click()
+  await page.getByRole('textbox', { name: 'Note title' }).fill('Open questions')
+  await page.getByRole('textbox', { name: 'Markdown note' }).fill('1. Who owns launch readiness?')
+  await page.getByRole('button', { name: 'Save note' }).click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+
+  await expect(page.getByRole('button', { name: /Interview follow-ups/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Open questions/ })).toBeVisible()
+
+  await page.reload()
+  await page.getByRole('button', { name: 'Open saved notes' }).click()
+  await page.getByRole('button', { name: /Interview follow-ups/ }).click()
+  await expect(page.getByRole('textbox', { name: 'Markdown note' })).toHaveValue('- Ask about the rollout\n- Confirm the owner')
+  await expect(page.getByRole('combobox', { name: 'Meeting for this note' })).toHaveValue('demo-live')
+})
+
 test('the normal browser preview never returns the fixed Agent fixture as a real CLI answer', async ({ page }) => {
   await gotoConfigured(page)
   const agent = page.getByRole('main', { name: 'Ask Arco' })
@@ -501,7 +656,7 @@ test('the normal browser preview never returns the fixed Agent fixture as a real
   await expect(page.getByRole('alert')).toContainText('Browser preview cannot call your local CLI')
   await expect(agent.getByText(/Arco becomes more than a recorder/)).toHaveCount(0)
   await expect(agent.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toHaveValue(
-    'What is the strongest direct answer to the latest question in this meeting?',
+    'Answer what was asked',
   )
 })
 
@@ -587,13 +742,23 @@ test('transcript storage has a default, supports a custom folder, and restores t
 
 test('Recognition exposes one durable on-device model and diarization contract', async ({ page }) => {
   await page.setViewportSize({ width: 1080, height: 750 })
-  await gotoConfigured(page)
+  await gotoConfigured(page, '/?demo=1')
   await page.getByRole('button', { name: 'Stop listening' }).click()
   await page.getByRole('button', { name: 'Open settings' }).click()
   await page.getByRole('button', { name: 'Audio & speakers' }).click()
 
   const settings = page.getByRole('dialog', { name: 'Audio & speakers' })
   await settings.locator('summary').filter({ hasText: /^Recognition/ }).click()
+  const deepgramSetup = settings.getByRole('group', { name: 'Deepgram setup' })
+  await expect(deepgramSetup.getByRole('link', { name: 'Get a Deepgram key' })).toHaveAttribute(
+    'href',
+    'https://console.deepgram.com/',
+  )
+  await deepgramSetup.getByLabel('Deepgram API key').fill('0123456789abcdef0123456789abcdef')
+  await deepgramSetup.getByRole('button', { name: 'Verify & save' }).click()
+  await expect(deepgramSetup.getByText('Deepgram is ready')).toBeVisible()
+  await expect(deepgramSetup).not.toContainText(/uv|python|\.env|DEEPGRAM_API_KEY=/i)
+  await page.screenshot({ path: 'test-results/arco-deepgram-setup.png', fullPage: true })
   await settings.locator('label').filter({ hasText: /^On-device/ }).click()
 
   const model = settings.getByRole('combobox', { name: 'On-device model' })
@@ -611,6 +776,8 @@ test('Recognition exposes one durable on-device model and diarization contract',
   await expect(settings.getByText(/up to 4 speakers per audio source/i)).toBeVisible()
 
   await model.selectOption('whisper-small')
+  await settings.getByRole('button', { name: 'Download and use Whisper Small' }).click()
+  await expect(settings.getByText('Ready on this Mac')).toBeVisible()
   await settings.getByRole('combobox', { name: 'Recognition language' }).selectOption('en-US')
   await expect(settings.locator('summary').filter({ hasText: /^Recognition/ })).toContainText('Whisper Small')
   await page.screenshot({ path: 'test-results/arco-local-recognition-settings.png', fullPage: true })

@@ -82,6 +82,22 @@ describe('browser Agent bridge', () => {
     })
   })
 
+  it('models an explicit demo model download without touching the network', async () => {
+    window.history.replaceState({}, '', '/?demo=1')
+
+    const prepared = await arcoBridge.prepareTranscriptionModel('whisper-base', true)
+
+    expect(prepared).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'whisper-base', installed: true, phase: 'ready' }),
+      expect.objectContaining({ id: 'sortformer-streaming', installed: true, phase: 'ready' }),
+    ]))
+
+    const removed = await arcoBridge.removeTranscriptionModel('whisper-base')
+    expect(removed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'whisper-base', installed: false, phase: 'not-installed' }),
+    ]))
+  })
+
   it('keeps demo capture state consistent across start, status, and stop', async () => {
     window.history.replaceState({}, '', '/?surface=hud&demo=1')
 
@@ -139,6 +155,26 @@ describe('desktop meeting output bridge', () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     invokeMock.mockReset()
     openMock.mockReset()
+  })
+
+  it('persists the visible quick-action message while sending its detailed Agent prompt', async () => {
+    invokeMock.mockResolvedValue({ question: 'Answer what was asked' })
+
+    await arcoBridge.runAgent({
+      ...input,
+      question: 'Answer what was asked',
+      agentPrompt: 'What is the strongest direct answer to the latest question in this meeting?',
+    })
+
+    expect(invokeMock).toHaveBeenCalledWith('run_agent', {
+      provider: 'codex',
+      usedFallback: false,
+      question: 'Answer what was asked',
+      agentPrompt: 'What is the strongest direct answer to the latest question in this meeting?',
+      meetingId: 'demo-live',
+      workspace: null,
+      contextScope: 'transcript',
+    })
   })
 
   it('passes the typed request through to the native command and returns its artifact', async () => {

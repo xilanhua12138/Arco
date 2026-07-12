@@ -116,7 +116,7 @@ Deepgram may restart numbering after a reconnect. Arco namespaces identities by 
 - Exact repeated speech is preserved; text equality is not a deduplication key.
 - The mic channel is never assumed to be `You`. That name requires a future explicit mapping, personal-mic mode, or voice enrollment.
 
-The Deepgram adapter drains recorder stdout into a bounded queue: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. A failed WebSocket send is returned to the queue head; an overflow timeline gap starts a new connection identity. A completed `send()` is not a server acknowledgement, so the MVP cannot promise lossless cloud recovery without recording PCM locally.
+The Rust Deepgram adapter drains recorder stdout into a bounded in-memory queue: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement, so the MVP cannot promise lossless cloud recovery without recording PCM locally.
 
 Rust reports `recording` only after provider readiness. Deepgram signals after the WebSocket is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. The local sidecar signals after model load; a missing or incomplete model is a terminal setup error.
 

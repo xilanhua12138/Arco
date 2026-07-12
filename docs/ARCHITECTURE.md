@@ -33,7 +33,7 @@ Bundled Swift recorder stdout (16kHz Int16LE stereo PCM)
   ├─ channel 0: system output
   ├─ channel 1: local microphone
   └─ selected TranscriberDefinition
-       ├─ Python Deepgram stream ── cloud ASR + cloud diarization
+       ├─ Rust Deepgram sidecar ── cloud ASR + cloud diarization
        └─ bundled Swift sidecar
             ├─ LocalTranscriptionProvider
             │    ├─ Nemotron Speech 3.5 (FluidAudio/Core ML)
@@ -44,7 +44,7 @@ Bundled Swift recorder stdout (16kHz Int16LE stereo PCM)
 
 The desktop app does not invoke the legacy global `start.sh` / `stop.sh`, touch a shared `.stop` flag, or use `pkill -f`.
 
-`CaptureManager` resolves a validated `TranscriptionConfig` through the registry, then starts the recorder and selected transcriber in separate owned process groups. A provider-specific ready-file handshake gates the visible recording state: Deepgram signals after its WebSocket is accepted; the local sidecar signals after the selected ASR and optional diarizer models are loaded. Stop/error/drop terminates those exact process trees (including a `uv run` child), and an app shutdown finalizes an active Markdown transcript as `interrupted`.
+`CaptureManager` resolves a validated `TranscriptionConfig` through the registry, then starts the recorder and selected transcriber in separate owned process groups. A provider-specific ready-file handshake gates the visible recording state: the bundled Rust Deepgram sidecar signals after its WebSocket is accepted; the local sidecar signals after the selected ASR and optional diarizer models are loaded. Stop/error/drop terminates those exact process trees, and an app shutdown finalizes an active Markdown transcript as `interrupted`.
 
 Provider discovery, capture routing, model management, and inference are separate boundaries. Rust owns policy and lifecycle; the Swift sidecar owns local inference; every transcriber consumes the same PCM stream and writes the same transcript adapter. Adding another engine therefore means registering a definition and implementing its sidecar contract rather than branching through the UI, meeting store, and process lifecycle.
 
@@ -118,5 +118,5 @@ For Codex, `transcript` and `workspace` scopes add a macOS Seatbelt profile arou
 1. Keychain storage and first-run permission/key onboarding.
 2. SQLite/WAL session index, transcript FTS, incremental commits, and crash recovery.
 3. Stream provider deltas into the UI, add cancellation, and replace context receipts with real evidence citations where the provider exposes stable evidence references. Native provider-session resume is already the continuity base.
-4. Universal helper builds, Developer ID signing/notarization, DMG, and updater. The current build embeds host-architecture, ad-hoc-signed recorder and local-transcriber binaries; only the Deepgram adapter still relies on an external `uv`/Python runtime.
+4. Universal helper builds, Developer ID signing/notarization, DMG, and updater. The current build embeds host-architecture, ad-hoc-signed recorder, Rust Deepgram, and local-transcriber binaries.
 5. Auto-detection of supported meeting apps without joining or recording invisibly.

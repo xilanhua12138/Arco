@@ -291,6 +291,12 @@ describe('Arco consumer conversation workspace', () => {
     expect(await findAgentWorkspace()).toBeVisible()
     expect(await findTranscriptEvidence()).toBeVisible()
     expect(screen.queryByRole('heading', { level: 1, name: 'History' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to History' }))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'History' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('heading', { level: 1, name: 'Benchmark review with Estrella' })).not.toBeInTheDocument()
   })
 
   it('returns Current to the start-listening state after stopping an active meeting', async () => {
@@ -364,8 +370,14 @@ describe('Arco consumer conversation workspace', () => {
     await user.click(within(agent).getByRole('button', { name: /Answer what was asked/i }))
 
     expect(await screen.findByText(/Arco becomes more than a recorder/)).toBeVisible()
+    const contextDisclosure = screen.getByRole('button', { name: 'Context used · 2' })
+    expect(contextDisclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Current transcript · 14:02–14:06')).not.toBeInTheDocument()
+
+    await user.click(contextDisclosure)
+
     expect(screen.getByText('Current transcript · 14:02–14:06')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /Current transcript · 14:02–14:06/i })).not.toBeInTheDocument()
+    expect(contextDisclosure).toHaveAttribute('aria-expanded', 'true')
     expect(screen.queryByText(/Codex native session · This transcript/i)).not.toBeInTheDocument()
   })
 
@@ -386,6 +398,98 @@ describe('Arco consumer conversation workspace', () => {
     expect(within(agent).getByText('What did we decide?')).toBeVisible()
     expect(within(agent).getByText('The persisted answer survives an app restart.')).toBeVisible()
     expect(within(agent).getByRole('button', { name: 'Saved note' })).toBeVisible()
+  })
+
+  it('collects saved Agent answers in Notes and opens their source meeting', async () => {
+    const user = userEvent.setup()
+    const savedTurn = {
+      ...demoAgentReply,
+      id: 'saved-note-turn',
+      meetingId: pastA.id,
+      question: 'What did we decide about the release?',
+      answer: 'Keep the evidence visible and ship the Notes collection.',
+      createdAt: '2026-07-09T10:17:00+08:00',
+      savedAsNote: true,
+    }
+    const savedNote = {
+      id: 'local:note-agent-saved-note-turn.md',
+      title: savedTurn.question,
+      body: savedTurn.answer,
+      source: 'agent' as const,
+      createdAt: savedTurn.createdAt,
+      updatedAt: savedTurn.createdAt,
+      path: '/tmp/notes/note-agent-saved-note-turn.md',
+      meetingId: pastA.id,
+      meetingTitle: pastA.title,
+      agentTurnId: savedTurn.id,
+    }
+    const listNotes = vi.spyOn(arcoBridge, 'listNotes').mockImplementation(async () => [savedNote])
+    vi.spyOn(arcoBridge, 'readMeeting').mockImplementation(async (id) => (
+      id === pastA.id
+        ? detail(pastA, 'Historical evidence from A')
+        : detail(liveB, 'Live evidence from B')
+    ))
+
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Open saved notes' }))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open saved notes' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('button', { name: pastA.title })).toBeVisible()
+    expect(screen.getByText(savedTurn.question)).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(savedTurn.answer)
+    expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: 'Search notes' }), 'release')
+    await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith('release'))
+
+    await user.click(screen.getByRole('button', { name: pastA.title }))
+    expect(await screen.findByRole('heading', { level: 1, name: pastA.title })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('teaches how to create the first note without inventing an empty editor', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(arcoBridge, 'listNotes').mockResolvedValue([])
+
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Open saved notes' }))
+
+    expect(await screen.findByText('No notes yet')).toBeVisible()
+    expect(screen.getByText('Create a Markdown note for a meeting to start writing.')).toBeVisible()
+  })
+
+  it('lets the user enter Notes and write a standalone Markdown note', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(arcoBridge, 'listNotes').mockResolvedValue([])
+    const saveNote = vi.spyOn(arcoBridge, 'saveNote').mockImplementation(async (input) => ({
+      id: 'local:note-20260712.md',
+      title: input.title,
+      body: input.body,
+      source: 'manual',
+      createdAt: '2026-07-12T17:20:00+08:00',
+      updatedAt: '2026-07-12T17:20:00+08:00',
+      path: '/Users/demo/Library/Application Support/Arco/notes/note-20260712.md',
+      meetingId: input.meetingId,
+      meetingTitle: 'Untitled meeting',
+      agentTurnId: null,
+    }))
+
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Open saved notes' }))
+    await user.click(await screen.findByRole('button', { name: 'New note' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Meeting for this note' }), 'demo-live')
+    await user.type(screen.getByRole('textbox', { name: 'Note title' }), 'Interview follow-ups')
+    await user.type(screen.getByRole('textbox', { name: 'Markdown note' }), '- Ask about the rollout\n- Confirm the owner')
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+
+    await waitFor(() => expect(saveNote).toHaveBeenCalledWith({
+      id: null,
+      meetingId: 'demo-live',
+      title: 'Interview follow-ups',
+      body: '- Ask about the rollout\n- Confirm the owner',
+    }))
+    expect(await screen.findByText('Saved')).toBeVisible()
   })
 
   it('opens General settings by default and navigates to audio, runtime, and privacy', async () => {

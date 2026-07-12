@@ -11,14 +11,19 @@ import type {
   AskAgentInput,
   AudioMode,
   CaptureState,
+  DeepgramCredentialStatus,
   GenerateMeetingOutputInput,
   MeetingDetail,
   MeetingGenerationStatus,
   MeetingOutputArtifact,
   MeetingSummary,
+  NoteDocument,
+  NotesStorageSettings,
   PersistedAgentTurn,
   ProviderConnectionTest,
   RuntimeStatus,
+  SavedNote,
+  SaveNoteInput,
   TranscriptionConfig,
   TranscriptionModelStatus,
   TranscriptStorageSettings,
@@ -35,7 +40,12 @@ const demoTurnsKey = 'arco.demoAgentTurns'
 const demoCaptureKey = 'arco.demoCapture'
 const demoMeetingOutputsKey = 'arco.demoMeetingOutputs'
 const demoStorageKey = 'arco.demoTranscriptStorage'
+const demoTranscriptionModelsKey = 'arco.demoTranscriptionModels'
+const demoDeepgramConfiguredKey = 'arco.demoDeepgramConfigured'
+const demoNotesKey = 'arco.demoNotes'
+const demoNotesStorageKey = 'arco.demoNotesStorage'
 const demoDefaultTranscriptDirectory = '/Users/demo/Library/Application Support/Arco/transcripts'
+const demoDefaultNotesDirectory = '/Users/demo/Library/Application Support/Arco/notes'
 
 const demoTranscriptionModels: TranscriptionModelStatus[] = [
   {
@@ -63,6 +73,32 @@ const demoTranscriptionModels: TranscriptionModelStatus[] = [
     path: null,
   },
 ]
+
+const readDemoTranscriptionModels = (): TranscriptionModelStatus[] => {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(demoTranscriptionModelsKey) ?? 'null')
+    return Array.isArray(parsed) ? parsed as TranscriptionModelStatus[] : demoTranscriptionModels.map((status) => ({ ...status }))
+  } catch {
+    return demoTranscriptionModels.map((status) => ({ ...status }))
+  }
+}
+
+const writeDemoTranscriptionModels = (statuses: TranscriptionModelStatus[]) => {
+  window.localStorage.setItem(demoTranscriptionModelsKey, JSON.stringify(statuses))
+}
+
+const updateDemoTranscriptionModel = (
+  statuses: TranscriptionModelStatus[],
+  id: TranscriptionModelStatus['id'],
+  installed: boolean,
+) => statuses.map((status) => status.id === id ? {
+  ...status,
+  installed,
+  phase: installed ? 'ready' as const : 'not-installed' as const,
+  progress: installed ? 1 : null,
+  error: null,
+  path: installed ? `/Users/demo/Library/Application Support/Arco/models/${id}` : null,
+} : status)
 
 interface DemoMeetingOutputState {
   title?: string | null
@@ -119,6 +155,19 @@ const writeDemoTurns = (turns: PersistedAgentTurn[]) => {
   window.localStorage.setItem(demoTurnsKey, JSON.stringify(turns))
 }
 
+const readDemoNotes = (): NoteDocument[] => {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(demoNotesKey) ?? '[]')
+    return Array.isArray(parsed) ? parsed as NoteDocument[] : []
+  } catch {
+    return []
+  }
+}
+
+const writeDemoNotes = (notes: NoteDocument[]) => {
+  window.localStorage.setItem(demoNotesKey, JSON.stringify(notes))
+}
+
 const readDemoCapture = (): CaptureState => {
   try {
     const stored = window.localStorage.getItem(demoCaptureKey)
@@ -172,6 +221,16 @@ export const arcoBridge = {
     }
   },
 
+  async notesStorageSettings(): Promise<NotesStorageSettings> {
+    if (hasTauriRuntime()) return invoke<NotesStorageSettings>('notes_storage_settings')
+    const selectedDirectory = window.localStorage.getItem(demoNotesStorageKey) || demoDefaultNotesDirectory
+    return {
+      defaultDirectory: demoDefaultNotesDirectory,
+      selectedDirectory,
+      usingDefault: selectedDirectory === demoDefaultNotesDirectory,
+    }
+  },
+
   async chooseTranscriptDirectory(title = 'Choose where Arco saves meeting transcripts'): Promise<string | null> {
     if (!hasTauriRuntime()) return '/Users/demo/Documents/Arco Meetings'
     const selected = await open({
@@ -179,6 +238,12 @@ export const arcoBridge = {
       multiple: false,
       title,
     })
+    return typeof selected === 'string' ? selected : null
+  },
+
+  async chooseNotesDirectory(title = 'Choose where Arco saves Markdown notes'): Promise<string | null> {
+    if (!hasTauriRuntime()) return '/Users/demo/Documents/Arco Notes'
+    const selected = await open({ directory: true, multiple: false, title })
     return typeof selected === 'string' ? selected : null
   },
 
@@ -199,6 +264,13 @@ export const arcoBridge = {
     if (directory) window.localStorage.setItem(demoStorageKey, directory)
     else window.localStorage.removeItem(demoStorageKey)
     return arcoBridge.storageSettings()
+  },
+
+  async setNotesDirectory(directory: string | null): Promise<NotesStorageSettings> {
+    if (hasTauriRuntime()) return invoke<NotesStorageSettings>('set_notes_directory', { directory })
+    if (directory) window.localStorage.setItem(demoNotesStorageKey, directory)
+    else window.localStorage.removeItem(demoNotesStorageKey)
+    return arcoBridge.notesStorageSettings()
   },
 
   async renameMeeting(meetingId: string, title: string | null): Promise<MeetingSummary> {
@@ -274,6 +346,30 @@ export const arcoBridge = {
     return hasExplicitDemoMode() ? readDemoCapture() : demoCapture
   },
 
+  async deepgramCredentialStatus(): Promise<DeepgramCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<DeepgramCredentialStatus>('deepgram_credential_status')
+    const configured = window.sessionStorage.getItem(demoDeepgramConfiguredKey) === 'true'
+    return { configured, verified: configured, message: null }
+  },
+
+  async saveDeepgramApiKey(apiKey: string): Promise<DeepgramCredentialStatus> {
+    if (hasTauriRuntime()) {
+      return invoke<DeepgramCredentialStatus>('save_deepgram_api_key', { apiKey })
+    }
+    if (apiKey.trim().length < 20 || /\s/.test(apiKey.trim())) {
+      throw new Error('Paste a complete Deepgram API key.')
+    }
+    await wait(120)
+    window.sessionStorage.setItem(demoDeepgramConfiguredKey, 'true')
+    return { configured: true, verified: true, message: 'Deepgram is ready.' }
+  },
+
+  async removeDeepgramApiKey(): Promise<DeepgramCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<DeepgramCredentialStatus>('remove_deepgram_api_key')
+    window.sessionStorage.removeItem(demoDeepgramConfiguredKey)
+    return { configured: false, verified: false, message: null }
+  },
+
   async startCapture(mode: AudioMode, transcription?: TranscriptionConfig): Promise<CaptureState> {
     if (hasTauriRuntime()) return invoke<CaptureState>('start_capture', { mode, transcription })
     await wait(250)
@@ -290,12 +386,21 @@ export const arcoBridge = {
 
   async transcriptionModelStatus(): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) return invoke<TranscriptionModelStatus[]>('transcription_model_status')
-    return demoTranscriptionModels
+    return hasExplicitDemoMode() ? readDemoTranscriptionModels() : demoTranscriptionModels
   },
 
   async prepareTranscriptionModel(model: TranscriptionConfig['model'], includeDiarization: boolean): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
       return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model, includeDiarization })
+    }
+    if (hasExplicitDemoMode() && model !== 'nova-3') {
+      await wait(120)
+      let statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, true)
+      if (includeDiarization) {
+        statuses = updateDemoTranscriptionModel(statuses, 'sortformer-streaming', true)
+      }
+      writeDemoTranscriptionModels(statuses)
+      return statuses
     }
     throw new Error('Open the Arco desktop app to download on-device speech models.')
   },
@@ -303,6 +408,11 @@ export const arcoBridge = {
   async removeTranscriptionModel(model: TranscriptionConfig['model'] | 'sortformer-streaming'): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
       return invoke<TranscriptionModelStatus[]>('remove_transcription_model', { model })
+    }
+    if (hasExplicitDemoMode() && model !== 'nova-3') {
+      const statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, false)
+      writeDemoTranscriptionModels(statuses)
+      return statuses
     }
     throw new Error('Open the Arco desktop app to manage on-device speech models.')
   },
@@ -338,6 +448,70 @@ export const arcoBridge = {
     return readDemoTurns().filter((turn) => turn.meetingId === meetingId)
   },
 
+  async listSavedNotes(query = ''): Promise<SavedNote[]> {
+    if (hasTauriRuntime()) return invoke<SavedNote[]>('list_saved_notes', { query })
+    if (!hasExplicitDemoMode()) return []
+    const needle = query.trim().toLocaleLowerCase()
+    return readDemoTurns()
+      .filter((turn) => turn.savedAsNote)
+      .flatMap((turn) => {
+        const summary = demoMeetings.find((meeting) => meeting.id === turn.meetingId)
+        if (!summary) return []
+        const meeting = withDemoMeetingOutput(summary)
+        const searchable = `${meeting.title ?? ''}\n${turn.question}\n${turn.answer}`.toLocaleLowerCase()
+        return needle && !searchable.includes(needle) ? [] : [{ meeting, turn }]
+      })
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.turn.createdAt)
+        const rightTime = Date.parse(right.turn.createdAt)
+        return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
+      })
+  },
+
+  async listNotes(query = ''): Promise<NoteDocument[]> {
+    if (hasTauriRuntime()) return invoke<NoteDocument[]>('list_notes', { query })
+    if (!hasExplicitDemoMode()) return []
+    const needle = query.trim().toLocaleLowerCase()
+    return readDemoNotes()
+      .filter((note) => !needle || `${note.title}\n${note.body}`.toLocaleLowerCase().includes(needle))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  },
+
+  async saveNote(input: SaveNoteInput): Promise<NoteDocument> {
+    if (hasTauriRuntime()) {
+      return invoke<NoteDocument>('save_note', {
+        noteId: input.id,
+        meetingId: input.meetingId,
+        title: input.title,
+        body: input.body,
+      })
+    }
+    if (!hasExplicitDemoMode()) throw new Error('Open the Arco desktop app to save Markdown notes.')
+    const notes = readDemoNotes()
+    const existing = input.id ? notes.find((note) => note.id === input.id) : undefined
+    const now = new Date().toISOString()
+    const note: NoteDocument = {
+      id: existing?.id ?? `local:note-${Date.now()}.md`,
+      title: input.title.trim(),
+      body: input.body,
+      source: existing?.source ?? 'manual',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      path: existing?.path ?? `${demoDefaultNotesDirectory}/note-${Date.now()}.md`,
+      meetingId: input.meetingId,
+      meetingTitle: demoMeetings.find((meeting) => meeting.id === input.meetingId)?.title ?? existing?.meetingTitle ?? null,
+      agentTurnId: existing?.agentTurnId ?? null,
+    }
+    writeDemoNotes([note, ...notes.filter((candidate) => candidate.id !== note.id)])
+    return note
+  },
+
+  async deleteNote(noteId: string): Promise<void> {
+    if (hasTauriRuntime()) return invoke<void>('delete_note', { noteId })
+    if (!hasExplicitDemoMode()) throw new Error('Open the Arco desktop app to delete Markdown notes.')
+    writeDemoNotes(readDemoNotes().filter((note) => note.id !== noteId))
+  },
+
   async setAgentTurnSaved(meetingId: string, turnId: string, saved: boolean): Promise<PersistedAgentTurn> {
     if (hasTauriRuntime()) {
       return invoke<PersistedAgentTurn>('set_agent_turn_saved', { meetingId, turnId, saved })
@@ -348,9 +522,31 @@ export const arcoBridge = {
     const turns = readDemoTurns()
     const index = turns.findIndex((turn) => turn.meetingId === meetingId && turn.id === turnId)
     if (index < 0) throw new Error('Agent turn not found')
-    const updated = { ...turns[index], savedAsNote: saved }
+    const noteId = saved ? `local:note-agent-${turnId}.md` : null
+    const updated = { ...turns[index], savedAsNote: saved, noteId }
     turns[index] = updated
     writeDemoTurns(turns)
+    if (saved) {
+      const meeting = demoMeetings.find((candidate) => candidate.id === meetingId)
+      const notes = readDemoNotes()
+      if (!notes.some((note) => note.agentTurnId === turnId)) {
+        const now = new Date().toISOString()
+        writeDemoNotes([{
+          id: noteId!,
+          title: updated.question,
+          body: updated.answer,
+          source: 'agent',
+          createdAt: now,
+          updatedAt: now,
+          path: `${demoDefaultNotesDirectory}/note-agent-${turnId}.md`,
+          meetingId,
+          meetingTitle: meeting?.title ?? null,
+          agentTurnId: turnId,
+        }, ...notes])
+      }
+    } else {
+      writeDemoNotes(readDemoNotes().filter((note) => note.agentTurnId !== turnId))
+    }
     return updated
   },
 
@@ -360,6 +556,7 @@ export const arcoBridge = {
         provider: input.provider,
         usedFallback: input.usedFallback,
         question: input.question,
+        agentPrompt: input.agentPrompt ?? null,
         meetingId: input.meetingId,
         workspace: input.workspace ?? null,
         contextScope: input.contextScope,

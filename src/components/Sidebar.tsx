@@ -1,6 +1,7 @@
 import {
   AudioWaveform,
   Clock3,
+  NotebookPen,
   Radio,
   Settings2,
   Square,
@@ -9,7 +10,7 @@ import {
 import type { AudioMode, CaptureState, MeetingSummary } from '../types'
 import { useI18n } from '../i18n/i18n'
 
-type AppPage = 'current' | 'history' | 'review'
+type AppPage = 'current' | 'history' | 'notes' | 'review'
 
 interface SidebarProps {
   page: AppPage
@@ -32,6 +33,7 @@ export function Sidebar({
 }: SidebarProps) {
   const { t } = useI18n()
   const historySelected = page === 'history' || page === 'review'
+  const notesSelected = page === 'notes'
   const recording = capture.phase === 'recording'
   const busy = capture.phase === 'starting' || capture.phase === 'stopping'
   const showCaptureAction = page !== 'current' || recording
@@ -87,6 +89,17 @@ export function Sidebar({
         >
           <Clock3 size={18} />
           <span>{t('nav.history')}</span>
+        </button>
+        <button
+          id="notes-trigger"
+          type="button"
+          className={`nav-item ${notesSelected ? 'nav-item-active' : ''}`}
+          onClick={() => onChangePage('notes')}
+          aria-current={notesSelected ? 'page' : undefined}
+          aria-label={t('nav.openNotes')}
+        >
+          <NotebookPen size={18} />
+          <span>{t('nav.notes')}</span>
         </button>
       </nav>
 

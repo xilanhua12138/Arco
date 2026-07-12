@@ -31,6 +31,5 @@ if [ "$OUTPUT" = "$NATIVE_DIR/recorder" ]; then
   cp "$OUTPUT" "$RUNTIME_DIR/recorder"
   cp "$NATIVE_DIR/recorder.swift" "$RUNTIME_DIR/recorder.swift"
   cp "$NATIVE_DIR/recorder-Info.plist" "$RUNTIME_DIR/recorder-Info.plist"
-  cp "$NATIVE_DIR/transcriber.py" "$RUNTIME_DIR/transcriber.py"
 fi
 echo "Built and signed $OUTPUT"

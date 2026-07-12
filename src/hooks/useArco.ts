@@ -14,7 +14,9 @@ import type {
   MeetingDetail,
   MeetingOutputKind,
   MeetingSummary,
+  NoteDocument,
   PersistedAgentTurn,
+  SaveNoteInput,
     RuntimeStatus,
     TranscriptionConfig,
 } from '../types'
@@ -38,6 +40,8 @@ export function useArco() {
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [capture, setCapture] = useState<CaptureState>(idleCapture)
   const [agentTurnsByMeeting, setAgentTurnsByMeeting] = useState<Record<string, PersistedAgentTurn[]>>({})
+  const [savedNotes, setSavedNotes] = useState<NoteDocument[]>([])
+  const [notesLoading, setNotesLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [agentRunning, setAgentRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,6 +49,7 @@ export function useArco() {
   const activeCaptureRef = useRef<string | null>(null)
   const meetingRef = useRef<MeetingDetail | null>(null)
   const meetingQueryRef = useRef('')
+  const noteQueryRef = useRef('')
   const generationClaimsRef = useRef(new Map<string, Promise<void>>())
   const selectionRequestRef = useRef(0)
 
@@ -121,6 +126,21 @@ export function useArco() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.refreshAgentThread'))
       return []
+    }
+  }, [t])
+
+  const refreshSavedNotes = useCallback(async (query = '') => {
+    noteQueryRef.current = query
+    setNotesLoading(true)
+    try {
+      const notes = await arcoBridge.listNotes(query)
+      setSavedNotes(notes)
+      return notes
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('error.loadSavedNotes'))
+      return []
+    } finally {
+      setNotesLoading(false)
     }
   }, [t])
 
@@ -311,9 +331,13 @@ export function useArco() {
     const cleanups: Array<() => void> = []
     void Promise.all([
       listen('arco:capture-changed', () => void syncCapture()),
-      listen<string>('arco:agent-thread-changed', (event) => void refreshAgentTurns(event.payload)),
+      listen<string>('arco:agent-thread-changed', (event) => {
+        void refreshAgentTurns(event.payload)
+        void refreshSavedNotes(noteQueryRef.current)
+      }),
       listen<string>('arco:agent-target-changed', (event) => void selectMeeting(event.payload)),
       listen<string>('arco:meeting-output-changed', (event) => void refreshMeetingOutput(event.payload)),
+      listen('arco:notes-changed', () => void refreshSavedNotes(noteQueryRef.current)),
     ]).then((unlisteners) => {
       if (disposed) unlisteners.forEach((unlisten) => unlisten())
       else cleanups.push(...unlisteners)
@@ -322,7 +346,7 @@ export function useArco() {
       disposed = true
       cleanups.forEach((unlisten) => unlisten())
     }
-  }, [refreshAgentTurns, refreshMeetingOutput, selectMeeting, syncCapture])
+  }, [refreshAgentTurns, refreshMeetingOutput, refreshSavedNotes, selectMeeting, syncCapture])
 
   const toggleCapture = useCallback(
     async (mode: AudioMode = 'both', transcription?: TranscriptionConfig) => {
@@ -394,12 +418,37 @@ export function useArco() {
         ...current,
         [meetingId]: (current[meetingId] ?? []).map((turn) => turn.id === turnId ? updated : turn),
       }))
+      await refreshSavedNotes(noteQueryRef.current)
       return true
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.updateSavedNote'))
       return false
     }
-  }, [t])
+  }, [refreshSavedNotes, t])
+
+  const saveNote = useCallback(async (input: SaveNoteInput) => {
+    setError(null)
+    try {
+      const note = await arcoBridge.saveNote(input)
+      await refreshSavedNotes(noteQueryRef.current)
+      return note
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('error.saveNote'))
+      return null
+    }
+  }, [refreshSavedNotes, t])
+
+  const deleteNote = useCallback(async (noteId: string) => {
+    setError(null)
+    try {
+      await arcoBridge.deleteNote(noteId)
+      await refreshSavedNotes(noteQueryRef.current)
+      return true
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('error.deleteNote'))
+      return false
+    }
+  }, [refreshSavedNotes, t])
 
   return {
     meetings,
@@ -409,6 +458,8 @@ export function useArco() {
     runtimes,
     capture,
     agentReplies: selectedMeetingId ? (agentTurnsByMeeting[selectedMeetingId] ?? []) : [],
+    savedNotes,
+    notesLoading,
     loading,
     agentRunning,
     error,
@@ -416,12 +467,15 @@ export function useArco() {
     selectMeeting,
     refreshMeetings,
     refreshAgentTurns,
+    refreshSavedNotes,
     renameMeeting,
     syncCapture,
     refreshRuntimes,
     toggleCapture,
     askAgent,
     setAgentTurnSaved,
+    saveNote,
+    deleteNote,
     dismissError: () => setError(null),
   }
 }

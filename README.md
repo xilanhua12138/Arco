@@ -14,7 +14,18 @@
   <p><strong>macOS 14+</strong> · Local-first · Open source · MIT</p>
 
   <p><strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a></p>
+
+  <p>
+    <a href="https://github.com/xilanhua12138/Arco/releases/latest"><strong>Download for macOS</strong></a>
+    · <a href="#development">Build from source</a>
+  </p>
 </div>
+
+## Download the macOS app
+
+Download the latest Apple Silicon build from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases/latest), unzip it, and move `Arco.app` to Applications. Arco requires macOS 14 or newer.
+
+The current preview build is ad-hoc signed but not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. The release includes the native audio and Rust Deepgram runtimes; Whisper, Nemotron, and speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
 
 ## Live context, not another meeting dashboard
 
@@ -29,7 +40,7 @@ Arco keeps the transcript as the evidence layer and the Agent at its right. Syst
 Use the transcript alone or attach one project workspace through the native macOS folder picker. Arco reuses that workspace for later questions and sends each request through the local Codex or Claude CLI already signed in on your Mac.
 
 <p align="center">
-  <img src="docs/images/arco-agent-overlay.png" alt="Ask Arco floating Agent with a collapsible transcript" width="720">
+  <img src="docs/images/arco-agent-overlay.png" alt="Ask Arco floating Agent with a collapsible transcript" width="900">
 </p>
 
 ## Stay in the conversation
@@ -37,12 +48,12 @@ Use the transcript alone or attach one project workspace through the native macO
 When Arco is listening, a small always-on-top control stays available across apps and macOS Spaces. Stop recording or open the Agent without returning to the main window.
 
 <p align="center">
-  <img src="docs/images/arco-recording-hud.png" alt="Arco recording control with Stop and Ask Arco" width="560">
+  <img src="docs/images/arco-recording-hud.png" alt="Arco recording control with Stop and Ask Arco" width="900">
 </p>
 
 ## A useful local meeting history
 
-Meetings begin untitled, can be renamed at any time, and can receive an Agent-generated title and summary. History remains searchable and is stored as readable local files rather than hidden inside a hosted account.
+Meetings begin untitled, can be renamed at any time, and can receive an Agent-generated title and summary. Each meeting can also hold multiple hand-written or Agent-saved Markdown notes. History and notes remain searchable and live as readable local files rather than being hidden inside a hosted account.
 
 <p align="center">
   <img src="docs/images/arco-history.png" alt="Arco local meeting history" width="1000">
@@ -59,6 +70,7 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
 | Automatic meeting output | Generates a title after enough evidence and a summary when the meeting ends; both prompts are configurable. | Meetings become useful records without requiring a title or note-taking ritual up front. |
+| Meeting-bound notes | Create multiple Markdown notes for one meeting, or save an Agent answer as a note; choose a separate notes directory when needed. | Manual thinking and AI output stay portable, editable, and connected to their transcript evidence. |
 | Local history | Stores Markdown transcripts and local sidecars under Arco's Application Support directory or a folder you choose. | Your meeting record remains portable, searchable, and under your control. |
 
 ## Why Arco
@@ -78,21 +90,22 @@ By default, transcripts and meeting state live at:
 ```
 
 - Choose a different transcript folder at any time; previously used locations remain readable in History.
+- Choose a separate notes folder; every note remains an independent Markdown file bound to its source meeting.
 - Arco streams audio for transcription but does not save raw PCM recordings.
 - With on-device transcription and diarization, speech processing stays on the Mac.
 - With Deepgram, audio is sent to Deepgram for transcription.
+- Deepgram credentials are verified by the Rust backend and stored in macOS Keychain; they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
 
-## Build the desktop app
+## Development
 
-### Requirements
+### Requirements for building from source
 
 - macOS 14 or newer
 - Apple Silicon recommended for on-device models
 - Node.js 22+, pnpm, Rust, and the Swift toolchain
 - Codex CLI or Claude Code for Agent features
-- `uv` (or Python with `websockets`) for Deepgram transcription
 
 ### Run from source
 
@@ -110,15 +123,15 @@ For a UI-only browser preview:
 pnpm dev
 ```
 
-To create a locally ad-hoc-signed macOS archive:
+To create the same locally ad-hoc-signed macOS archive used for preview releases:
 
 ```bash
 pnpm desktop:package
 ```
 
-The archive is written to `artifacts/Arco-local-macos-<arch>.zip`. Public distribution still requires Developer ID signing, notarization, and a release channel.
+The archive and checksum are written to `artifacts/Arco-macos-<arch>.zip` and `artifacts/Arco-macos-<arch>.zip.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
-Deepgram reads `DEEPGRAM_API_KEY` from the launch environment. See [`.env.example`](./.env.example). On-device models are downloaded on demand from **Settings → Audio & speakers → Recognition** and live under `~/Library/Application Support/Arco/models/`.
+For Deepgram, open **Settings → Audio & speakers → Recognition**, paste a key, and choose **Verify & save**. Arco verifies it through Deepgram's [official authentication endpoint](https://developers.deepgram.com/guides/fundamentals/authenticating), then stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
 
 ## The original Agent Skill is still here
 
@@ -153,7 +166,7 @@ pnpm desktop:package
 
 ## Architecture
 
-- **Tauri + Rust** owns windows, storage, capture lifecycle, Agent processes, and native session bindings.
+- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram streaming, credentials, Agent processes, and native session bindings.
 - **React + TypeScript** renders the main workspace, History, Settings, onboarding, and global Agent surfaces.
 - **Swift** captures macOS audio and runs the on-device transcription pipeline.
 - **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers and saved notes.

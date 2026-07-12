@@ -5,6 +5,7 @@ pub struct AppPaths {
     pub home: PathBuf,
     pub app_data: PathBuf,
     pub transcripts: PathBuf,
+    pub notes: PathBuf,
     pub legacy_transcripts: PathBuf,
     pub native_dir: PathBuf,
 }
@@ -22,7 +23,11 @@ impl AppPaths {
         let native_dir = std::env::var_os("ARCO_NATIVE_DIR")
             .map(PathBuf::from)
             .or_else(|| resource_dir.map(|path| path.join("native")))
-            .filter(|path| path.join("transcriber.py").exists())
+            .filter(|path| {
+                path.join("arco-deepgram-transcriber").exists()
+                    || path.join("runtime/arco-deepgram-transcriber").exists()
+                    || path.join("recorder").exists()
+            })
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .parent()
@@ -31,6 +36,7 @@ impl AppPaths {
             });
         Ok(Self {
             transcripts: app_data.join("transcripts"),
+            notes: app_data.join("notes"),
             legacy_transcripts: home.join(".claude").join("meeting-transcripts"),
             home,
             app_data,

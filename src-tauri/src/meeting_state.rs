@@ -1,6 +1,6 @@
 use crate::models::{
     AgentReply, AgentRunOutput, AgentSessionBinding, GeneratedMeetingArtifact, MeetingArtifacts,
-    MeetingSummary, PersistedAgentTurn,
+    MeetingSummary, PersistedAgentTurn, SavedNote,
 };
 use crate::storage::is_storage_source;
 use chrono::Local;
@@ -14,8 +14,9 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
-const SCHEMA_VERSION: u32 = 3;
-const PREVIOUS_SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 4;
+const PREVIOUS_SCHEMA_VERSION: u32 = 3;
+const SECOND_PREVIOUS_SCHEMA_VERSION: u32 = 2;
 const LEGACY_SCHEMA_VERSION: u32 = 1;
 const MAX_MEETING_ID_BYTES: usize = 120;
 const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
@@ -74,6 +75,56 @@ impl MeetingStateStore {
         let path = self.sidecar_path(meeting_id)?;
         let _guard = self.acquire_lock()?;
         Ok(self.read_state(meeting_id, &path)?.turns)
+    }
+
+    pub fn list_saved_notes(
+        &self,
+        meetings: &[MeetingSummary],
+        query: Option<&str>,
+    ) -> Result<Vec<SavedNote>, String> {
+        let normalized_query = query
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+        let _guard = self.acquire_lock()?;
+        let mut notes = Vec::new();
+
+        for meeting in meetings {
+            let path = self.sidecar_path(&meeting.id)?;
+            let state = self.read_state(&meeting.id, &path)?;
+            for turn in state.turns.into_iter().filter(|turn| turn.saved_as_note) {
+                if let Some(query) = normalized_query.as_deref() {
+                    let searchable = format!(
+                        "{}\n{}\n{}",
+                        meeting.title.as_deref().unwrap_or_default(),
+                        turn.question,
+                        turn.answer,
+                    )
+                    .to_lowercase();
+                    if !searchable.contains(query) {
+                        continue;
+                    }
+                }
+                notes.push(SavedNote {
+                    meeting: meeting.clone(),
+                    turn,
+                });
+            }
+        }
+
+        notes.sort_by(|left, right| {
+            let left_time = chrono::DateTime::parse_from_rfc3339(&left.turn.created_at)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(i64::MIN);
+            let right_time = chrono::DateTime::parse_from_rfc3339(&right.turn.created_at)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(i64::MIN);
+            right_time
+                .cmp(&left_time)
+                .then_with(|| right.meeting.started_at.cmp(&left.meeting.started_at))
+                .then_with(|| right.turn.id.cmp(&left.turn.id))
+        });
+        Ok(notes)
     }
 
     pub fn meeting_artifacts(&self, meeting_id: &str) -> Result<MeetingArtifacts, String> {
@@ -439,6 +490,42 @@ impl MeetingStateStore {
             return Ok(turn.clone());
         }
         turn.saved_as_note = saved;
+        if !saved {
+            turn.note_id = None;
+        }
+        let updated = turn.clone();
+        self.write_state(&path, &state)?;
+        Ok(updated)
+    }
+
+    pub fn link_saved_note(
+        &self,
+        meeting_id: &str,
+        turn_id: &str,
+        note_id: Option<&str>,
+    ) -> Result<PersistedAgentTurn, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        if turn_id.is_empty() || turn_id.len() > 160 || turn_id.chars().any(char::is_control) {
+            return Err("invalid agent turn id".into());
+        }
+        if note_id.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 320
+                || !value.ends_with(".md")
+                || value.chars().any(char::is_control)
+        }) {
+            return Err("invalid note id".into());
+        }
+
+        let _guard = self.acquire_lock()?;
+        let mut state = self.read_state(meeting_id, &path)?;
+        let turn = state
+            .turns
+            .iter_mut()
+            .find(|turn| turn.id == turn_id)
+            .ok_or_else(|| format!("agent turn not found for meeting {meeting_id}: {turn_id}"))?;
+        turn.saved_as_note = note_id.is_some();
+        turn.note_id = note_id.map(str::to_string);
         let updated = turn.clone();
         self.write_state(&path, &state)?;
         Ok(updated)
@@ -491,7 +578,7 @@ impl MeetingStateStore {
                 }
                 state.schema_version = SCHEMA_VERSION;
             }
-            PREVIOUS_SCHEMA_VERSION => {
+            SECOND_PREVIOUS_SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => {
                 state.schema_version = SCHEMA_VERSION;
             }
             SCHEMA_VERSION => {}
@@ -819,6 +906,12 @@ fn validate_state(meeting_id: &str, path: &Path, state: &MeetingStateFile) -> Re
             .transpose()
             .is_err()
             || validate_provider_turn_id(turn.provider_turn_id.as_deref()).is_err()
+            || turn.note_id.as_deref().is_some_and(|note_id| {
+                note_id.is_empty()
+                    || note_id.len() > 320
+                    || !note_id.ends_with(".md")
+                    || note_id.chars().any(char::is_control)
+            })
     }) {
         return Err(damaged_state_error(
             meeting_id,
@@ -848,6 +941,7 @@ fn new_persisted_turn(
         context_scope: context_scope.to_string(),
         created_at: reply.created_at.clone(),
         saved_as_note: false,
+        note_id: None,
         used_fallback,
         provider_session_id,
         provider_turn_id,

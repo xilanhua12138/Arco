@@ -1,0 +1,166 @@
+use serde::Serialize;
+
+const KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram";
+const KEYCHAIN_ACCOUNT: &str = "api-key";
+const DEEPGRAM_AUTH_URL: &str = "https://api.deepgram.com/v1/auth/token";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepgramCredentialStatus {
+    pub configured: bool,
+    pub verified: bool,
+    pub message: Option<String>,
+}
+
+impl DeepgramCredentialStatus {
+    fn missing() -> Self {
+        Self {
+            configured: false,
+            verified: false,
+            message: None,
+        }
+    }
+}
+
+pub fn normalize_api_key(value: &str) -> Result<String, String> {
+    let key = value.trim();
+    if key.is_empty() {
+        return Err("Paste a Deepgram API key first.".into());
+    }
+    if key.chars().any(char::is_whitespace) {
+        return Err("The Deepgram API key cannot contain spaces.".into());
+    }
+    if key.len() < 20 {
+        return Err("This does not look like a complete Deepgram API key.".into());
+    }
+    Ok(key.to_string())
+}
+
+pub fn status() -> DeepgramCredentialStatus {
+    match load_api_key() {
+        Ok(Some(_)) => DeepgramCredentialStatus {
+            configured: true,
+            verified: true,
+            message: None,
+        },
+        Ok(None) => DeepgramCredentialStatus::missing(),
+        Err(error) => DeepgramCredentialStatus {
+            configured: false,
+            verified: false,
+            message: Some(error),
+        },
+    }
+}
+
+pub fn save_verified_api_key(value: &str) -> Result<DeepgramCredentialStatus, String> {
+    let key = normalize_api_key(value)?;
+    validate_api_key(&key)?;
+    store_api_key(&key)?;
+    Ok(DeepgramCredentialStatus {
+        configured: true,
+        verified: true,
+        message: Some("Deepgram is ready.".into()),
+    })
+}
+
+pub fn remove_api_key() -> Result<DeepgramCredentialStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if load_api_key()?.is_some() {
+            security_framework::passwords::delete_generic_password(
+                KEYCHAIN_SERVICE,
+                KEYCHAIN_ACCOUNT,
+            )
+            .map_err(|error| format!("could not remove the Deepgram key from Keychain: {error}"))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("Arco stores Deepgram credentials in macOS Keychain.".into());
+    }
+    Ok(DeepgramCredentialStatus::missing())
+}
+
+pub fn load_api_key() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        match security_framework::passwords::get_generic_password(
+            KEYCHAIN_SERVICE,
+            KEYCHAIN_ACCOUNT,
+        ) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| "the Deepgram credential in Keychain is not valid UTF-8".into()),
+            Err(error) if error.code() == -25300 => Ok(None),
+            Err(error) => Err(format!(
+                "could not read the Deepgram credential from Keychain: {error}"
+            )),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+fn store_api_key(key: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        security_framework::passwords::set_generic_password(
+            KEYCHAIN_SERVICE,
+            KEYCHAIN_ACCOUNT,
+            key.as_bytes(),
+        )
+        .map_err(|error| format!("could not save the Deepgram key to Keychain: {error}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = key;
+        Err("Arco stores Deepgram credentials in macOS Keychain.".into())
+    }
+}
+
+fn validate_api_key(key: &str) -> Result<(), String> {
+    match ureq::get(DEEPGRAM_AUTH_URL)
+        .set("Authorization", &format!("Token {key}"))
+        .call()
+    {
+        Ok(response) if response.status() == 200 => Ok(()),
+        Ok(response) => Err(format!(
+            "Deepgram could not verify this key (HTTP {}).",
+            response.status()
+        )),
+        Err(ureq::Error::Status(401 | 403, _)) => {
+            Err("Deepgram rejected this API key. Check it and try again.".into())
+        }
+        Err(ureq::Error::Status(status, _)) => Err(format!(
+            "Deepgram could not verify this key (HTTP {status})."
+        )),
+        Err(ureq::Error::Transport(error)) => Err(format!(
+            "Could not reach Deepgram to verify the key: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_key_normalization_trims_without_exposing_the_secret() {
+        let raw = "  0123456789abcdef0123456789abcdef  ";
+        assert_eq!(normalize_api_key(raw).unwrap(), raw.trim());
+        let error = normalize_api_key("short key").unwrap_err();
+        assert!(!error.contains("short key"));
+    }
+
+    #[test]
+    fn missing_status_never_contains_a_credential_value() {
+        let status = DeepgramCredentialStatus::missing();
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(
+            json,
+            r#"{"configured":false,"verified":false,"message":null}"#
+        );
+    }
+}

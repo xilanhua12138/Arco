@@ -1,5 +1,7 @@
 pub mod agent;
 pub mod capture;
+pub mod deepgram;
+mod deepgram_credentials;
 #[cfg(target_os = "macos")]
 mod dock_icon;
 #[cfg(target_os = "macos")]
@@ -9,6 +11,7 @@ pub mod meeting_output;
 pub mod meeting_state;
 pub mod meetings;
 pub mod models;
+pub mod notes;
 mod overlay;
 pub mod paths;
 pub mod process;
@@ -64,15 +67,18 @@ mod dock_icon_contract_tests {
 
 use agent::AgentRunner;
 use capture::{CaptureConfig, CaptureManager};
+use deepgram_credentials::DeepgramCredentialStatus;
 use meeting_output::{
     generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
 };
 use meeting_state::MeetingStateStore;
 use meetings::MeetingStore;
 use models::{
-    CaptureState, GeneratedMeetingArtifact, MeetingDetail, MeetingSummary, PersistedAgentTurn,
-    ProviderConnectionTest, RuntimeStatus, TranscriptionConfig, TranscriptionModelStatus,
+    CaptureState, GeneratedMeetingArtifact, MeetingDetail, MeetingSummary, NoteDocument,
+    PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus, SavedNote, TranscriptionConfig,
+    TranscriptionModelStatus,
 };
+use notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage, NotesStorageSettings};
 use paths::AppPaths;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -90,12 +96,18 @@ pub struct AppState {
     output_run_lock: Mutex<()>,
     storage: TranscriptStorage,
     storage_change_lock: Mutex<()>,
+    notes: NoteStore,
+    notes_storage: NotesStorage,
+    notes_storage_change_lock: Mutex<()>,
+    notes_change_lock: Mutex<()>,
 }
 
 impl AppState {
     pub fn new(paths: AppPaths) -> Result<Self, String> {
         let agent_workspace = paths.app_data.join("agent-workspace");
         let storage = TranscriptStorage::load(paths.app_data.clone(), paths.transcripts.clone())?;
+        let notes_storage = NotesStorage::load(paths.app_data.clone(), paths.notes.clone())?;
+        let notes = NoteStore::new(notes_storage.note_roots())?;
         let meetings =
             MeetingStore::new(paths.transcripts.clone(), paths.legacy_transcripts.clone());
         meetings.set_roots(storage.meeting_roots())?;
@@ -111,6 +123,10 @@ impl AppState {
             output_run_lock: Mutex::new(()),
             storage,
             storage_change_lock: Mutex::new(()),
+            notes,
+            notes_storage,
+            notes_storage_change_lock: Mutex::new(()),
+            notes_change_lock: Mutex::new(()),
         })
     }
 }
@@ -145,6 +161,121 @@ fn set_transcript_directory(
         .set_transcript_root(state.storage.active_root())?;
     let _ = app.emit("arco:storage-changed", &settings);
     Ok(settings)
+}
+
+#[tauri::command(async)]
+fn notes_storage_settings(state: tauri::State<'_, AppState>) -> NotesStorageSettings {
+    state.notes_storage.settings()
+}
+
+#[tauri::command(async)]
+fn set_notes_directory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    directory: Option<String>,
+) -> Result<NotesStorageSettings, String> {
+    let _guard = state
+        .notes_storage_change_lock
+        .lock()
+        .map_err(|_| "notes storage coordinator is unavailable".to_string())?;
+    let _notes_guard = state
+        .notes_change_lock
+        .lock()
+        .map_err(|_| "notes coordinator is unavailable".to_string())?;
+    let settings = state
+        .notes_storage
+        .select_directory(directory.as_deref().map(std::path::Path::new))?;
+    state.notes.set_roots(state.notes_storage.note_roots())?;
+    let _ = app.emit("arco:notes-storage-changed", &settings);
+    Ok(settings)
+}
+
+#[tauri::command(async)]
+fn list_notes(
+    state: tauri::State<'_, AppState>,
+    query: Option<String>,
+) -> Result<Vec<NoteDocument>, String> {
+    let _guard = state
+        .notes_change_lock
+        .lock()
+        .map_err(|_| "notes coordinator is unavailable".to_string())?;
+    let active = state.capture.active_transcript_path();
+    let meetings = list_meetings_with_artifacts(
+        &state.meetings,
+        &state.meeting_state,
+        None,
+        active.as_deref(),
+    )?;
+
+    // v3 and older sidecars only stored a boolean. Materialize those saved
+    // Agent answers as regular Markdown files the first time Notes opens.
+    materialize_legacy_agent_notes(
+        &state.notes,
+        &state.notes_storage,
+        &state.meeting_state,
+        &meetings,
+    )?;
+
+    let mut notes = state.notes.list(query.as_deref())?;
+    for note in &mut notes {
+        if let Some(meeting) = note
+            .meeting_id
+            .as_deref()
+            .and_then(|id| meetings.iter().find(|meeting| meeting.id == id))
+        {
+            note.meeting_title = meeting.title.clone();
+        }
+    }
+    Ok(notes)
+}
+
+#[tauri::command(async)]
+fn save_note(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    note_id: Option<String>,
+    meeting_id: String,
+    title: String,
+    body: String,
+) -> Result<NoteDocument, String> {
+    let _guard = state
+        .notes_change_lock
+        .lock()
+        .map_err(|_| "notes coordinator is unavailable".to_string())?;
+    let active = state.capture.active_transcript_path();
+    let mut meeting = state.meetings.read(&meeting_id, active.as_deref())?.summary;
+    state.meeting_state.hydrate_meeting_summary(&mut meeting)?;
+    let note = state.notes.save_manual(
+        &state.notes_storage.active_root(),
+        note_id.as_deref(),
+        &meeting,
+        &title,
+        &body,
+    )?;
+    let _ = app.emit("arco:notes-changed", &note.id);
+    Ok(note)
+}
+
+#[tauri::command(async)]
+fn delete_note(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    note_id: String,
+) -> Result<(), String> {
+    let _guard = state
+        .notes_change_lock
+        .lock()
+        .map_err(|_| "notes coordinator is unavailable".to_string())?;
+    let note = state.notes.read(&note_id)?;
+    state.notes.delete(&note_id)?;
+    if let (Some(meeting_id), Some(turn_id)) = (note.meeting_id, note.agent_turn_id) {
+        state
+            .meeting_state
+            .link_saved_note(&meeting_id, &turn_id, None)?;
+        let _ = app.emit("arco:agent-thread-changed", &meeting_id);
+    }
+    let _ = app.emit("arco:notes-changed", &note_id);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -204,6 +335,23 @@ fn list_agent_turns(
 }
 
 #[tauri::command(async)]
+fn list_saved_notes(
+    state: tauri::State<'_, AppState>,
+    query: Option<String>,
+) -> Result<Vec<SavedNote>, String> {
+    let active = state.capture.active_transcript_path();
+    let meetings = list_meetings_with_artifacts(
+        &state.meetings,
+        &state.meeting_state,
+        None,
+        active.as_deref(),
+    )?;
+    state
+        .meeting_state
+        .list_saved_notes(&meetings, query.as_deref())
+}
+
+#[tauri::command(async)]
 fn set_agent_turn_saved(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -211,12 +359,54 @@ fn set_agent_turn_saved(
     turn_id: String,
     saved: bool,
 ) -> Result<PersistedAgentTurn, String> {
+    let _guard = state
+        .notes_change_lock
+        .lock()
+        .map_err(|_| "notes coordinator is unavailable".to_string())?;
     let active = state.capture.active_transcript_path();
-    state.meetings.read(&meeting_id, active.as_deref())?;
-    let turn = state
+    let mut meeting = state.meetings.read(&meeting_id, active.as_deref())?.summary;
+    state.meeting_state.hydrate_meeting_summary(&mut meeting)?;
+    let current = state
         .meeting_state
-        .set_saved(&meeting_id, &turn_id, saved)?;
+        .list(&meeting_id)?
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .ok_or_else(|| format!("agent turn not found for meeting {meeting_id}: {turn_id}"))?;
+    let turn = if saved {
+        if current
+            .note_id
+            .as_deref()
+            .is_some_and(|note_id| state.notes.read(note_id).is_ok())
+        {
+            current
+        } else {
+            let note =
+                state
+                    .notes
+                    .save_agent(&state.notes_storage.active_root(), &meeting, &current)?;
+            match state
+                .meeting_state
+                .link_saved_note(&meeting_id, &turn_id, Some(&note.id))
+            {
+                Ok(turn) => turn,
+                Err(error) => {
+                    let _ = state.notes.delete(&note.id);
+                    return Err(error);
+                }
+            }
+        }
+    } else {
+        if let Some(note_id) = current.note_id.as_deref() {
+            if state.notes.read(note_id).is_ok() {
+                state.notes.delete(note_id)?;
+            }
+        }
+        state
+            .meeting_state
+            .link_saved_note(&meeting_id, &turn_id, None)?
+    };
     let _ = app.emit("arco:agent-thread-changed", &meeting_id);
+    let _ = app.emit("arco:notes-changed", turn.note_id.as_deref());
     Ok(turn)
 }
 
@@ -231,6 +421,25 @@ fn test_agent_provider(
     provider: String,
 ) -> ProviderConnectionTest {
     state.agent.test_provider(&provider)
+}
+
+#[tauri::command(async)]
+fn deepgram_credential_status() -> DeepgramCredentialStatus {
+    deepgram_credentials::status()
+}
+
+#[tauri::command]
+async fn save_deepgram_api_key(api_key: String) -> Result<DeepgramCredentialStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        deepgram_credentials::save_verified_api_key(&api_key)
+    })
+    .await
+    .map_err(|error| format!("could not verify the Deepgram credential: {error}"))?
+}
+
+#[tauri::command(async)]
+fn remove_deepgram_api_key() -> Result<DeepgramCredentialStatus, String> {
+    deepgram_credentials::remove_api_key()
 }
 
 #[tauri::command(async)]
@@ -287,9 +496,17 @@ fn start_capture(
         .storage_change_lock
         .lock()
         .map_err(|_| "transcript storage coordinator is unavailable".to_string())?;
-    let capture = state
-        .capture
-        .start_with_transcription(&mode, transcription.unwrap_or_default())?;
+    let transcription = transcription.unwrap_or_default();
+    let deepgram_api_key = if transcription.provider == "deepgram" {
+        deepgram_credentials::load_api_key()?
+    } else {
+        None
+    };
+    let capture = state.capture.start_with_transcription_and_secret(
+        &mode,
+        transcription,
+        deepgram_api_key,
+    )?;
     if let Err(window_error) = overlay::show_hud(&app) {
         let rollback = state.capture.stop();
         return Err(match rollback {
@@ -352,10 +569,20 @@ fn run_agent(
     provider: String,
     used_fallback: Option<bool>,
     question: String,
+    agent_prompt: Option<String>,
     meeting_id: String,
     context_scope: Option<String>,
     workspace: Option<String>,
 ) -> Result<PersistedAgentTurn, String> {
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err("question cannot be empty".to_string());
+    }
+    let agent_prompt = agent_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(question.as_str());
     // Keep preflight, provider execution, and atomic sidecar commit in one
     // critical section. This conservatively serializes all provider sessions
     // and prevents two first turns from creating competing native bindings.
@@ -384,7 +611,7 @@ fn run_agent(
     let expected_session_id = binding.as_ref().map(|binding| binding.session_id.as_str());
     let output = state.agent.run_session(
         &provider,
-        &question,
+        agent_prompt,
         &meeting,
         context_scope,
         workspace.as_deref(),
@@ -469,12 +696,21 @@ pub fn run() {
             list_meetings,
             storage_settings,
             set_transcript_directory,
+            notes_storage_settings,
+            set_notes_directory,
+            list_notes,
+            save_note,
+            delete_note,
             read_meeting,
             rename_meeting,
             list_agent_turns,
+            list_saved_notes,
             set_agent_turn_saved,
             runtime_status,
             test_agent_provider,
+            deepgram_credential_status,
+            save_deepgram_api_key,
+            remove_deepgram_api_key,
             capture_status,
             transcription_model_status,
             prepare_transcription_model,

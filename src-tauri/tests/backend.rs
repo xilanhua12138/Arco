@@ -9,8 +9,10 @@ use arco_lib::meeting_output::{
 use arco_lib::meeting_state::MeetingStateStore;
 use arco_lib::meetings::{parse_meeting, MeetingStore};
 use arco_lib::models::{
-    AgentReply, AgentRunOutput, AgentSource, ProviderConnectionTest, TranscriptionConfig,
+    AgentReply, AgentRunOutput, AgentSource, MeetingSummary, ProviderConnectionTest,
+    TranscriptionConfig,
 };
+use arco_lib::notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage};
 use arco_lib::process::{configure_process_group, terminate_process_tree};
 use arco_lib::storage::{MeetingRoot, TranscriptStorage};
 use std::collections::HashMap;
@@ -32,6 +34,23 @@ fn persisted_reply(provider: &str, answer: &str) -> AgentReply {
             reference: "local:meeting-20260710-101500.md".into(),
         }],
         created_at: "2026-07-10T10:17:00+08:00".into(),
+    }
+}
+
+fn meeting_summary(id: &str, title: &str, started_at: &str) -> MeetingSummary {
+    MeetingSummary {
+        id: id.into(),
+        title: Some(title.into()),
+        generated_summary: None,
+        title_generation_status: "idle".into(),
+        summary_generation_status: "idle".into(),
+        started_at: started_at.into(),
+        duration_label: "20m".into(),
+        preview: "Meeting evidence".into(),
+        path: format!("/tmp/{id}.md"),
+        utterance_count: 1,
+        is_live: false,
+        source: "arco".into(),
     }
 }
 
@@ -96,6 +115,201 @@ fn transcript_storage_has_a_default_and_keeps_previous_custom_roots_readable() {
     assert!(reset.using_default);
     assert_eq!(reset.selected_directory, canonical_default);
     assert_eq!(reopened.meeting_roots().len(), 3);
+}
+
+#[test]
+fn notes_storage_defaults_to_markdown_and_keeps_previous_custom_roots_readable() {
+    let root = TempDir::new().unwrap();
+    let app_data = root.path().join("app-data");
+    let default = app_data.join("notes");
+    let custom_a = root.path().join("Notes A");
+    let custom_b = root.path().join("Notes B");
+    fs::create_dir_all(&custom_a).unwrap();
+    fs::create_dir_all(&custom_b).unwrap();
+
+    let storage = NotesStorage::load(app_data, default.clone()).unwrap();
+    assert_eq!(
+        storage.settings().selected_directory,
+        default.canonicalize().unwrap()
+    );
+    assert!(storage.settings().using_default);
+
+    storage.select_directory(Some(&custom_a)).unwrap();
+    let store = NoteStore::new(storage.note_roots()).unwrap();
+    let meeting = meeting_summary(
+        "local:meeting-20260712-165000.md",
+        "Storage review",
+        "2026-07-12T16:50:00+08:00",
+    );
+    let note_in_a = store
+        .save_manual(
+            &storage.active_root(),
+            None,
+            &meeting,
+            "Keep this note",
+            "This file stays in the first custom folder.",
+        )
+        .unwrap();
+    let selected_b = storage.select_directory(Some(&custom_b)).unwrap();
+    assert_eq!(
+        selected_b.selected_directory,
+        custom_b.canonicalize().unwrap()
+    );
+    assert!(!selected_b.using_default);
+    let roots = storage.note_roots();
+    assert_eq!(
+        roots.len(),
+        3,
+        "default and prior custom note folders remain readable"
+    );
+    assert_eq!(roots[0].source, "local");
+    store.set_roots(roots).unwrap();
+    assert_eq!(store.read(&note_in_a.id).unwrap(), note_in_a);
+}
+
+#[test]
+fn note_store_creates_edits_searches_and_reopens_meeting_bound_markdown() {
+    let root = TempDir::new().unwrap();
+    let app_data = root.path().join("app-data");
+    let storage = NotesStorage::load(app_data.clone(), app_data.join("notes")).unwrap();
+    let store = NoteStore::new(storage.note_roots()).unwrap();
+    let meeting = meeting_summary(
+        "local:meeting-20260712-170000.md",
+        "Launch review",
+        "2026-07-12T17:00:00+08:00",
+    );
+
+    let created = store
+        .save_manual(
+            &storage.active_root(),
+            None,
+            &meeting,
+            "Launch checklist",
+            "- [ ] Verify the native build\n- [ ] Share the release note",
+        )
+        .unwrap();
+    assert_eq!(created.title, "Launch checklist");
+    assert_eq!(created.source, "manual");
+    assert_eq!(created.meeting_id.as_deref(), Some(meeting.id.as_str()));
+    assert!(created.path.ends_with(".md"));
+    let markdown = fs::read_to_string(&created.path).unwrap();
+    assert!(markdown.contains("# Launch checklist"));
+    assert!(markdown.contains("- [ ] Verify the native build"));
+
+    let updated = store
+        .save_manual(
+            &storage.active_root(),
+            Some(&created.id),
+            &meeting,
+            "Launch checklist v2",
+            "Decision: keep every note inspectable as Markdown.",
+        )
+        .unwrap();
+    assert_eq!(updated.id, created.id);
+    assert_eq!(updated.title, "Launch checklist v2");
+    assert_eq!(store.read(&created.id).unwrap(), updated);
+    assert_eq!(
+        store.list(Some("inspectable")).unwrap(),
+        vec![updated.clone()]
+    );
+    assert!(store.list(Some("missing phrase")).unwrap().is_empty());
+
+    let second = store
+        .save_manual(
+            &storage.active_root(),
+            None,
+            &meeting,
+            "Owner follow-up",
+            "Confirm the release owner.",
+        )
+        .unwrap();
+    let same_meeting = store.list(Some("Launch review")).unwrap();
+    assert_eq!(same_meeting.len(), 2, "one meeting can own multiple notes");
+    assert!(same_meeting.iter().any(|note| note.id == created.id));
+    assert!(same_meeting.iter().any(|note| note.id == second.id));
+    assert!(store
+        .save_manual(&storage.active_root(), None, &meeting, "", "body")
+        .unwrap_err()
+        .contains("cannot be empty"));
+    assert!(store
+        .save_manual(
+            &storage.active_root(),
+            None,
+            &meeting,
+            &"x".repeat(121),
+            "body",
+        )
+        .unwrap_err()
+        .contains("at most 120"));
+
+    let reopened = NoteStore::new(storage.note_roots()).unwrap();
+    assert_eq!(reopened.read(&created.id).unwrap(), updated);
+    assert!(reopened
+        .read("local:../../secret.md")
+        .unwrap_err()
+        .contains("invalid note id"));
+    reopened.delete(&second.id).unwrap();
+    assert!(reopened.read(&second.id).unwrap_err().contains("not found"));
+}
+
+#[test]
+fn legacy_saved_agent_answer_materializes_once_as_a_meeting_bound_markdown_note() {
+    let root = TempDir::new().unwrap();
+    let app_data = root.path().join("app-data");
+    let storage = NotesStorage::load(app_data.clone(), app_data.join("notes")).unwrap();
+    let notes = NoteStore::new(storage.note_roots()).unwrap();
+    let meeting_state = MeetingStateStore::new(app_data.join("meeting-state"));
+    let meeting = meeting_summary(
+        "local:meeting-20260712-173000.md",
+        "Customer interview",
+        "2026-07-12T17:30:00+08:00",
+    );
+    let turn = meeting_state
+        .append_agent_turn(
+            &meeting.id,
+            &"What should we do next? ".repeat(12),
+            "transcript",
+            &persisted_reply("codex", "Follow up with the research team."),
+        )
+        .unwrap();
+    meeting_state
+        .set_saved(&meeting.id, &turn.id, true)
+        .unwrap();
+
+    assert_eq!(
+        materialize_legacy_agent_notes(
+            &notes,
+            &storage,
+            &meeting_state,
+            std::slice::from_ref(&meeting),
+        )
+        .unwrap(),
+        1
+    );
+    let created = notes.list(None).unwrap();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].meeting_id.as_deref(), Some(meeting.id.as_str()));
+    assert_eq!(created[0].meeting_title, meeting.title);
+    assert_eq!(created[0].agent_turn_id.as_deref(), Some(turn.id.as_str()));
+    assert!(created[0].title.chars().count() <= 120);
+    assert_eq!(
+        meeting_state.list(&meeting.id).unwrap()[0]
+            .note_id
+            .as_deref(),
+        Some(created[0].id.as_str())
+    );
+    assert_eq!(
+        materialize_legacy_agent_notes(
+            &notes,
+            &storage,
+            &meeting_state,
+            std::slice::from_ref(&meeting),
+        )
+        .unwrap(),
+        0,
+        "a linked Agent answer must never create duplicate Markdown files"
+    );
+    assert_eq!(notes.list(None).unwrap().len(), 1);
 }
 
 #[test]
@@ -291,7 +505,7 @@ fn provider_connection_test_reports_missing_auth_failure_timeout_and_output_limi
         "auth-failure-claude",
         "#!/bin/sh\ncat >/dev/null\necho 'Not logged in. Run claude login.' >&2\nexit 17\n",
     );
-    let auth_failure = AgentRunner::with_binary("claude", auth_failure, Duration::from_secs(2))
+    let auth_failure = AgentRunner::with_binary("claude", auth_failure, Duration::from_secs(5))
         .test_provider("claude");
     assert!(!auth_failure.ok);
     assert!(auth_failure.message.contains("status 17"));
@@ -565,7 +779,7 @@ fn meeting_state_artifact_commit_reuses_binding_without_appending_a_visible_turn
 }
 
 #[test]
-fn meeting_state_lazily_migrates_v2_and_persists_failed_artifact_as_v3() {
+fn meeting_state_lazily_migrates_v2_and_persists_failed_artifact_as_v4() {
     let root = TempDir::new().unwrap();
     let state_dir = root.path().join("meeting-state");
     fs::create_dir_all(&state_dir).unwrap();
@@ -597,7 +811,7 @@ fn meeting_state_lazily_migrates_v2_and_persists_failed_artifact_as_v3() {
     assert_eq!(store.list(meeting_id).unwrap(), Vec::new());
 
     let migrated: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
-    assert_eq!(migrated["schemaVersion"], 3);
+    assert_eq!(migrated["schemaVersion"], 4);
     assert_eq!(migrated["artifacts"]["summary"]["status"], "failed");
 }
 
@@ -1091,7 +1305,7 @@ fn meeting_state_lazily_migrates_v1_without_fabricating_native_sessions() {
         )
         .unwrap();
     let migrated: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
-    assert_eq!(migrated["schemaVersion"], 3);
+    assert_eq!(migrated["schemaVersion"], 4);
     assert_eq!(migrated["sessions"][0]["sessionId"], native_session);
     assert!(migrated["turns"][0]["providerSessionId"].is_null());
 }
@@ -1124,12 +1338,99 @@ fn meeting_state_persists_agent_turn_and_saved_note_across_reloads() {
     let saved = store.set_saved(meeting_id, &turn.id, true).unwrap();
     assert!(saved.saved_as_note);
     assert_eq!(
+        saved.note_id, None,
+        "legacy boolean saves have no Markdown link yet"
+    );
+    assert_eq!(
         saved.id, turn.id,
         "saving must not replace the stable turn id"
     );
 
+    let linked = store
+        .link_saved_note(meeting_id, &turn.id, Some("local:note-agent.md"))
+        .unwrap();
+    assert_eq!(linked.note_id.as_deref(), Some("local:note-agent.md"));
+    assert!(linked.saved_as_note);
+
     let reopened = MeetingStateStore::new(state_dir);
-    assert_eq!(reopened.list(meeting_id).unwrap(), vec![saved]);
+    assert_eq!(reopened.list(meeting_id).unwrap(), vec![linked]);
+}
+
+#[test]
+fn saved_note_collection_filters_searches_sorts_and_ignores_orphaned_state() {
+    let root = TempDir::new().unwrap();
+    let store = MeetingStateStore::new(root.path().join("meeting-state"));
+    let older_id = "local:meeting-20260709-101500.md";
+    let newer_id = "local:meeting-20260710-101500.md";
+    let orphan_id = "local:meeting-deleted.md";
+    let meetings = vec![
+        meeting_summary(older_id, "Roadmap review", "2026-07-09T10:15:00+08:00"),
+        meeting_summary(newer_id, "Product decision", "2026-07-10T10:15:00+08:00"),
+    ];
+
+    let mut older_reply = persisted_reply("codex", "Keep the transcript as inspectable evidence.");
+    older_reply.created_at = "2026-07-09T10:17:00+08:00".into();
+    let older = store
+        .append_agent_turn(
+            older_id,
+            "What should remain visible?",
+            "transcript",
+            &older_reply,
+        )
+        .unwrap();
+    store.set_saved(older_id, &older.id, true).unwrap();
+
+    let mut newer_reply = persisted_reply("codex", "Ship the dedicated Notes collection.");
+    newer_reply.created_at = "2026-07-10T10:17:00+08:00".into();
+    let newer = store
+        .append_agent_turn(newer_id, "What did we decide?", "transcript", &newer_reply)
+        .unwrap();
+    store.set_saved(newer_id, &newer.id, true).unwrap();
+
+    let unsaved = store
+        .append_agent_turn(
+            newer_id,
+            "Unsaved question",
+            "transcript",
+            &persisted_reply("codex", "Unsaved answer"),
+        )
+        .unwrap();
+    assert!(!unsaved.saved_as_note);
+
+    let orphan = store
+        .append_agent_turn(
+            orphan_id,
+            "Orphan question",
+            "transcript",
+            &persisted_reply("codex", "Orphan answer"),
+        )
+        .unwrap();
+    store.set_saved(orphan_id, &orphan.id, true).unwrap();
+
+    let notes = store.list_saved_notes(&meetings, None).unwrap();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(
+        notes[0].meeting.id, newer_id,
+        "newest saved note appears first"
+    );
+    assert_eq!(notes[0].turn.id, newer.id);
+    assert_eq!(notes[1].meeting.id, older_id);
+    assert!(notes.iter().all(|note| note.turn.saved_as_note));
+
+    let by_question = store
+        .list_saved_notes(&meetings, Some("what did we decide"))
+        .unwrap();
+    assert_eq!(by_question.len(), 1);
+    assert_eq!(by_question[0].turn.id, newer.id);
+
+    let by_meeting = store.list_saved_notes(&meetings, Some("roadmap")).unwrap();
+    assert_eq!(by_meeting.len(), 1);
+    assert_eq!(by_meeting[0].turn.id, older.id);
+
+    store.set_saved(newer_id, &newer.id, false).unwrap();
+    let remaining = store.list_saved_notes(&meetings, None).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].turn.id, older.id);
 }
 
 #[test]
@@ -2026,6 +2327,49 @@ fn capture_routes_local_models_without_requiring_a_deepgram_key() {
     assert!(args.contains("--language\nzh-CN"));
     assert!(args.contains("--diarization\nlocal-streaming"));
     assert!(args.contains("transcript-"));
+    assert_eq!(manager.stop().unwrap().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
+    let root = TempDir::new().unwrap();
+    let args_path = root.path().join("deepgram-args.txt");
+    let env_path = root.path().join("deepgram-env.txt");
+    let transcriber = executable_script(
+        root.path(),
+        "arco-deepgram-transcriber",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARCO_TEST_ARGS\"\nprintf '%s' \"$DEEPGRAM_API_KEY\" > \"$ARCO_TEST_SECRET\"\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    let mut config = fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n");
+    config.requires_ready_signal = true;
+    config.transcribers.deepgram = TranscriberDefinition {
+        command: CommandSpec::new(transcriber, Vec::new()),
+        requires_deepgram_key: true,
+        ready_timeout: Duration::from_secs(3),
+    };
+    config.environment.insert(
+        "ARCO_TEST_ARGS".into(),
+        args_path.to_string_lossy().into_owned(),
+    );
+    config.environment.insert(
+        "ARCO_TEST_SECRET".into(),
+        env_path.to_string_lossy().into_owned(),
+    );
+    let manager = CaptureManager::new(config);
+    let secret = "0123456789abcdef0123456789abcdef".to_string();
+
+    manager
+        .start_with_transcription_and_secret(
+            "both",
+            TranscriptionConfig::default(),
+            Some(secret.clone()),
+        )
+        .unwrap();
+
+    let args = fs::read_to_string(args_path).unwrap();
+    assert!(!args.contains(&secret));
+    assert_eq!(fs::read_to_string(env_path).unwrap(), secret);
     assert_eq!(manager.stop().unwrap().phase, "idle");
 }
 
