@@ -9,6 +9,7 @@ import { I18nProvider } from './i18n/i18n.ts'
 
 const surface = resolveSurface(window.location.search)
 document.documentElement.dataset.surface = surface
+document.documentElement.dataset.runtime = '__TAURI_INTERNALS__' in window ? 'desktop' : 'browser'
 
 const root = surface === 'hud'
   ? <RecordingHud />

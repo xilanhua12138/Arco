@@ -107,6 +107,29 @@ test('Agent overlay is a focused always-on-top conversation surface', async ({ p
   await expect(overlay).toHaveCSS('width', '720px')
 })
 
+test('native Agent overlay fills its WebView without browser QA offsets', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 560 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.providerConfig', JSON.stringify({
+      setupComplete: true,
+      primary: 'codex',
+      secondary: 'claude',
+    }))
+  })
+  await page.goto('/?surface=agent-overlay&demo=1')
+  await page.evaluate(() => {
+    document.documentElement.dataset.runtime = 'desktop'
+  })
+
+  const overlay = page.getByRole('dialog', { name: 'Ask Arco' })
+  const box = await overlay.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.round(box!.x)).toBe(0)
+  expect(Math.round(box!.y)).toBe(0)
+  expect(Math.round(box!.width)).toBe(720)
+  expect(Math.round(box!.height)).toBe(560)
+})
+
 test('global utility surfaces remain light when system appearance is dark', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.emulateMedia({ colorScheme: 'dark' })

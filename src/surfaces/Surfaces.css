@@ -332,7 +332,7 @@ html[data-surface="agent-overlay"] #root {
 
 /* Browser QA presents the native-sized surfaces in their intended screen positions. */
 @media (min-width: 700px) {
-  html[data-surface="hud"] .recording-hud {
+  html[data-runtime="browser"][data-surface="hud"] .recording-hud {
     position: fixed;
     left: 50%;
     bottom: 24px;
@@ -341,7 +341,7 @@ html[data-surface="agent-overlay"] #root {
     transform: translateX(-50%);
   }
 
-  html[data-surface="agent-overlay"] .agent-overlay-surface {
+  html[data-runtime="browser"][data-surface="agent-overlay"] .agent-overlay-surface {
     position: fixed;
     top: 20px;
     right: 20px;
@@ -349,5 +349,5 @@ html[data-surface="agent-overlay"] #root {
     height: 560px;
   }
 
-  html[data-surface="agent-overlay"] .agent-overlay-surface[data-transcript="closed"] { width: 432px; }
+  html[data-runtime="browser"][data-surface="agent-overlay"] .agent-overlay-surface[data-transcript="closed"] { width: 432px; }
 }
