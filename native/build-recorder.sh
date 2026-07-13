@@ -15,12 +15,14 @@ swiftc "$NATIVE_DIR/recorder.swift" -o "$OUTPUT" \
   -target "$TARGET" \
   -framework ScreenCaptureKit \
   -framework AVFoundation \
+  -framework AudioToolbox \
+  -framework CoreAudio \
   -framework CoreMedia \
   -Xlinker -sectcreate \
   -Xlinker __TEXT \
   -Xlinker __info_plist \
   -Xlinker "$NATIVE_DIR/recorder-Info.plist"
-"$NATIVE_DIR/codesign-local.sh" "$OUTPUT" app.arco.desktop.recorder
+"$NATIVE_DIR/codesign-local.sh" "$OUTPUT" app.arco.desktop
 
 # Tauri bundles this staging directory as `Resources/native`. Keeping the
 # runtime payload separate avoids shipping tests, bytecode caches, and build

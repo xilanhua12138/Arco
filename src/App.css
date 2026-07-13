@@ -906,8 +906,14 @@
 /* Stable Agent workbench, with glass limited to its local control island. */
 .agent-workspace { min-width: 0; min-height: 0; container-name: agent-workspace; container-type: inline-size; display: flex; flex-direction: column; overflow: hidden; background: var(--surface-document); }
 .agent-workspace-header { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 22px 24px 16px; border-bottom: 1px solid var(--line-thin); }
-.agent-workspace-header h2 { margin: 0; color: var(--ink-strong); font-size: 26px; font-weight: 600; line-height: 32px; letter-spacing: -0.01em; }
+.agent-workspace-header h2 { margin: 0; color: var(--ink-strong); font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -0.01em; }
 .agent-workspace-body { min-height: 0; flex: 1; overflow: auto; padding: 18px 24px 24px; }
+.agent-dock-state { min-height: 100%; display: grid; place-items: center; padding: 32px 20px; text-align: center; }
+.agent-dock-state > div { max-width: 260px; }
+.agent-dock-state h3 { margin: 0; color: var(--ink-strong); font-size: 17px; font-weight: 600; line-height: 24px; text-wrap: balance; }
+.agent-dock-state p { margin: 7px 0 0; color: var(--ink-muted); font-size: 13px; line-height: 20px; text-wrap: pretty; }
+.agent-dock-state button { min-height: 36px; margin-top: 18px; padding: 0 14px; border: 0; border-radius: 8px; color: var(--action-ink); background: var(--action); font: 600 12px/1 var(--font-sans); cursor: pointer; }
+.agent-dock-state button:hover { background: var(--action-hover); }
 .quick-action-list { overflow: hidden; border: 1px solid var(--line-thin); border-radius: 10px; }
 .quick-action-list button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 0; border-bottom: 1px solid var(--line-thin); color: var(--ink-strong); background: transparent; text-align: left; cursor: pointer; }
 .quick-action-list button:last-child { border-bottom: 0; }

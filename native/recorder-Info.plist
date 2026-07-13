@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>app.arco.desktop.recorder</string>
+  <string>app.arco.desktop</string>
   <key>CFBundleName</key>
   <string>Arco Audio Recorder</string>
   <key>CFBundleVersion</key>

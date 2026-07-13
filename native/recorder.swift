@@ -8,6 +8,7 @@
 import AVFoundation
 import AudioToolbox
 import CoreAudio
+import Darwin
 import Foundation
 import ScreenCaptureKit
 
@@ -25,84 +26,267 @@ guard ["both", "system", "mic"].contains(mode) else {
 
 final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var stream: SCStream?
+    private var systemTapID = AudioObjectID(kAudioObjectUnknown)
+    private var systemAggregateID = AudioObjectID(kAudioObjectUnknown)
+    private var systemIOProcID: AudioDeviceIOProcID?
+    private var systemFormat = AudioStreamBasicDescription()
     private var micEngine: AVAudioEngine?
     private var mixTimer: DispatchSourceTimer?
+    private var parentMonitor: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "app.arco.recorder")
+    private let lifecycleQueue = DispatchQueue(label: "app.arco.recorder.lifecycle")
     private let lock = NSLock()
     private var systemBuffer: [Int16] = []
     private var micBuffer: [Int16] = []
     private var loggedFormats = Set<String>()
+    private var systemCaptureStarted = !useSystem
+    private var microphoneCaptureStarted = !useMic
+    private var announcedReady = false
     private let output = FileHandle.standardOutput
 
     func start() {
+        startParentMonitor()
         startMixTimer()
         if useMic {
             startMicrophoneCapture()
         }
         if useSystem {
             startSystemCapture()
-        } else {
-            log("recorder started (mode=\(mode))")
         }
+        announceReadyIfNeeded()
+    }
+
+    private func startParentMonitor() {
+        let rawPID = (ProcessInfo.processInfo.environment["ARCO_PARENT_PID"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsedPID = Int32(rawPID), parsedPID > 1 else { return }
+        let parentPID = pid_t(parsedPID)
+        let timer = DispatchSource.makeTimerSource(queue: lifecycleQueue)
+        timer.schedule(
+            deadline: .now() + 0.5,
+            repeating: 0.5,
+            leeway: .milliseconds(100)
+        )
+        timer.setEventHandler { [weak self] in
+            guard kill(parentPID, 0) != 0, errno == ESRCH else { return }
+            self?.log("Arco parent process exited; stopping native recorder")
+            // The parent can disappear without running Tauri's shutdown hook
+            // (for example after a force quit or app replacement). Exiting
+            // closes stdout, which also lets the owned transcriber reach EOF.
+            exit(0)
+        }
+        timer.resume()
+        parentMonitor = timer
     }
 
     private func startSystemCapture() {
-        SCShareableContent.getExcludingDesktopWindows(
-            false,
-            onScreenWindowsOnly: false
-        ) { [weak self] content, error in
+        if #available(macOS 14.2, *) {
+            startCoreAudioTapCapture()
+        } else {
+            startScreenCaptureKitCapture()
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private func startCoreAudioTapCapture() {
+        log("starting Core Audio system tap")
+        let tapDescription = CATapDescription(monoGlobalTapButExcludeProcesses: [])
+        tapDescription.name = "Arco system audio"
+        tapDescription.isPrivate = true
+        tapDescription.muteBehavior = .unmuted
+
+        var tapID = AudioObjectID(kAudioObjectUnknown)
+        let createTapStatus = AudioHardwareCreateProcessTap(tapDescription, &tapID)
+        guard createTapStatus == noErr else {
+            fail("could not create Core Audio system tap: \(createTapStatus)")
+        }
+        systemTapID = tapID
+
+        guard let tapUID = Self.stringProperty(kAudioTapPropertyUID, device: tapID) else {
+            fail("could not read Core Audio system tap identifier")
+        }
+        let aggregateDescription: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "Arco system audio",
+            kAudioAggregateDeviceUIDKey: "app.arco.desktop.system-audio.\(UUID().uuidString)",
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceTapAutoStartKey: false,
+        ]
+        var aggregateID = AudioObjectID(kAudioObjectUnknown)
+        let createAggregateStatus = AudioHardwareCreateAggregateDevice(
+            aggregateDescription as CFDictionary,
+            &aggregateID
+        )
+        guard createAggregateStatus == noErr else {
+            fail("could not create Core Audio aggregate device: \(createAggregateStatus)")
+        }
+        systemAggregateID = aggregateID
+
+        // Follow Apple's Core Audio tap sample: create an empty aggregate
+        // device first, then mutate its tap list. Supplying a hardware output
+        // subdevice in the initial composition makes the HAL negotiate an
+        // unnecessary output stream and can block IOProc registration.
+        var tapListAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyTapList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var tapListSize: UInt32 = 0
+        var tapList: CFArray?
+        let tapListSizeStatus = AudioObjectGetPropertyDataSize(
+            aggregateID,
+            &tapListAddress,
+            0,
+            nil,
+            &tapListSize
+        )
+        guard tapListSizeStatus == noErr else {
+            fail("could not inspect Core Audio aggregate tap list: \(tapListSizeStatus)")
+        }
+        let readTapListStatus = withUnsafeMutablePointer(to: &tapList) { pointer in
+            AudioObjectGetPropertyData(
+                aggregateID,
+                &tapListAddress,
+                0,
+                nil,
+                &tapListSize,
+                pointer
+            )
+        }
+        guard readTapListStatus == noErr else {
+            fail("could not read Core Audio aggregate tap list: \(readTapListStatus)")
+        }
+        var tapUIDs = tapList as? [CFString] ?? []
+        tapUIDs.append(tapUID as CFString)
+        tapList = tapUIDs as CFArray
+        tapListSize += UInt32(MemoryLayout<CFString>.stride)
+        let setTapListStatus = withUnsafeMutablePointer(to: &tapList) { pointer in
+            AudioObjectSetPropertyData(
+                aggregateID,
+                &tapListAddress,
+                0,
+                nil,
+                tapListSize,
+                pointer
+            )
+        }
+        guard setTapListStatus == noErr else {
+            fail("could not attach Core Audio tap to aggregate device: \(setTapListStatus)")
+        }
+
+        guard let format = Self.waitForStreamFormat(for: aggregateID) else {
+            fail("could not read Core Audio system tap format")
+        }
+        guard format.mSampleRate > 0, format.mChannelsPerFrame > 0 else {
+            fail("Core Audio system tap returned an invalid format")
+        }
+        log(
+            "system tap format sampleRate=\(format.mSampleRate) "
+                + "channels=\(format.mChannelsPerFrame) "
+                + "bits=\(format.mBitsPerChannel) flags=\(format.mFormatFlags)"
+        )
+        systemFormat = format
+
+        log("registering Core Audio system tap IO callback")
+        var ioProcID: AudioDeviceIOProcID?
+        let createIOStatus = AudioDeviceCreateIOProcID(
+            aggregateID,
+            arcoAudioDeviceIOProc,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &ioProcID
+        )
+        guard createIOStatus == noErr, let ioProcID else {
+            fail("could not create Core Audio system tap IO callback: \(createIOStatus)")
+        }
+        systemIOProcID = ioProcID
+
+        let startStatus = AudioDeviceStart(aggregateID, ioProcID)
+        guard startStatus == noErr else {
+            AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
+            systemIOProcID = nil
+            fail("could not start Core Audio system tap: \(startStatus)")
+        }
+        log("system audio capture started with Core Audio tap")
+        markSystemCaptureStarted()
+    }
+
+    fileprivate func consumeSystemAudio(
+        _ inputData: UnsafePointer<AudioBufferList>?
+    ) {
+        guard let inputData,
+              let pcm = Self.extractInt16(inputData, format: systemFormat)
+        else { return }
+        lock.lock()
+        Self.appendBounded(pcm, to: &systemBuffer)
+        lock.unlock()
+    }
+
+    private func startScreenCaptureKitCapture() {
+        Task { [weak self] in
             guard let self else { return }
-            if let error {
+            do {
+                let content = try await SCShareableContent.current
+                self.configureScreenCaptureKit(with: content)
+            } catch {
                 self.fail("could not enumerate displays: \(error)")
             }
-            guard let display = content?.displays.first else {
-                self.fail("no display is available (check Screen Recording permission)")
-            }
+        }
+    }
 
-            let filter = SCContentFilter(
-                display: display,
-                excludingApplications: [],
-                exceptingWindows: []
-            )
-            let configuration = SCStreamConfiguration()
-            configuration.capturesAudio = true
-            configuration.sampleRate = sampleRate
-            configuration.channelCount = 1
-            configuration.excludesCurrentProcessAudio = true
-            // ScreenCaptureKit requires a screen output for audio to flow. The
-            // two-pixel, one-frame-per-second stream keeps its cost negligible.
-            configuration.width = 2
-            configuration.height = 2
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-            configuration.showsCursor = false
+    private func configureScreenCaptureKit(with content: SCShareableContent) {
+        guard let display = content.displays.first else {
+            fail("no display is available (check Screen Recording permission)")
+        }
 
-            let stream = SCStream(
-                filter: filter,
-                configuration: configuration,
-                delegate: self
+        let filter = SCContentFilter(
+            display: display,
+            excludingApplications: [],
+            exceptingWindows: []
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.sampleRate = sampleRate
+        configuration.channelCount = 1
+        configuration.excludesCurrentProcessAudio = true
+        // ScreenCaptureKit requires a screen output for audio to flow. The
+        // two-pixel, one-frame-per-second stream keeps its cost negligible.
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        configuration.showsCursor = false
+
+        let stream = SCStream(
+            filter: filter,
+            configuration: configuration,
+            delegate: self
+        )
+        self.stream = stream
+        do {
+            try stream.addStreamOutput(
+                self,
+                type: .audio,
+                sampleHandlerQueue: queue
             )
-            self.stream = stream
-            do {
-                try stream.addStreamOutput(
-                    self,
-                    type: .audio,
-                    sampleHandlerQueue: self.queue
-                )
-                try stream.addStreamOutput(
-                    self,
-                    type: .screen,
-                    sampleHandlerQueue: self.queue
-                )
-            } catch {
-                self.fail("could not add ScreenCaptureKit output: \(error)")
-            }
-            stream.startCapture { error in
-                if let error {
-                    self.fail("could not start system audio capture: \(error)")
-                }
-                self.log("recorder started (mode=\(mode))")
+            try stream.addStreamOutput(
+                self,
+                type: .screen,
+                sampleHandlerQueue: queue
+            )
+        } catch {
+            fail("could not add ScreenCaptureKit output: \(error)")
+        }
+        stream.startCapture { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.fail("could not start system audio capture: \(error)")
             }
         }
+        // ScreenCaptureKit has already accepted the stream and installed its
+        // remote queues when startCapture returns. On macOS 27 beta the
+        // completion handler can remain pending even while audio is flowing,
+        // so it cannot serve as the recorder readiness handshake. Any later
+        // startup failure still terminates the helper through the completion
+        // handler or SCStreamDelegate.
+        markSystemCaptureStarted()
     }
 
     private func startMicrophoneCapture() {
@@ -150,8 +334,52 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             try engine.start()
             micEngine = engine
             log("microphone capture started")
+            markMicrophoneCaptureStarted()
         } catch {
             fail("could not start microphone capture: \(error)")
+        }
+    }
+
+    private func markSystemCaptureStarted() {
+        lock.lock()
+        systemCaptureStarted = true
+        lock.unlock()
+        announceReadyIfNeeded()
+    }
+
+    private func markMicrophoneCaptureStarted() {
+        lock.lock()
+        microphoneCaptureStarted = true
+        lock.unlock()
+        announceReadyIfNeeded()
+    }
+
+    private func announceReadyIfNeeded() {
+        lock.lock()
+        let shouldAnnounce = systemCaptureStarted
+            && microphoneCaptureStarted
+            && !announcedReady
+        if shouldAnnounce {
+            announcedReady = true
+        }
+        lock.unlock()
+        guard shouldAnnounce else { return }
+        writeReadySignalIfRequested()
+        log("recorder started (mode=\(mode))")
+        log("ARCO_RECORDER_STARTED: \(mode)")
+    }
+
+    private func writeReadySignalIfRequested() {
+        let path = (ProcessInfo.processInfo.environment["ARCO_RECORDER_READY_FILE"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return }
+        do {
+            try Data("ready\n".utf8).write(
+                to: URL(fileURLWithPath: path),
+                options: .atomic
+            )
+        } catch {
+            fail("could not publish recorder readiness: \(error)")
         }
     }
 
@@ -382,6 +610,148 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         return status == noErr ? value as String : nil
     }
 
+    private static func streamFormat(
+        for device: AudioDeviceID
+    ) -> AudioStreamBasicDescription? {
+        var streamsAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var streamsSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            device,
+            &streamsAddress,
+            0,
+            nil,
+            &streamsSize
+        ) == noErr else { return nil }
+        let streamCount = Int(streamsSize) / MemoryLayout<AudioStreamID>.size
+        guard streamCount > 0 else { return nil }
+
+        var streams = [AudioStreamID](repeating: 0, count: streamCount)
+        guard AudioObjectGetPropertyData(
+            device,
+            &streamsAddress,
+            0,
+            nil,
+            &streamsSize,
+            &streams
+        ) == noErr else { return nil }
+
+        for stream in streams {
+            var directionAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioStreamPropertyDirection,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var direction: UInt32 = 0
+            var directionSize = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(
+                stream,
+                &directionAddress,
+                0,
+                nil,
+                &directionSize,
+                &direction
+            ) == noErr, direction == 1 else { continue }
+
+            var formatAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioStreamPropertyVirtualFormat,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var format = AudioStreamBasicDescription()
+            var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            if AudioObjectGetPropertyData(
+                stream,
+                &formatAddress,
+                0,
+                nil,
+                &formatSize,
+                &format
+            ) == noErr {
+                return format
+            }
+        }
+        return nil
+    }
+
+    private static func waitForStreamFormat(
+        for device: AudioDeviceID,
+        timeout: TimeInterval = 2
+    ) -> AudioStreamBasicDescription? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let format = streamFormat(for: device) {
+                return format
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while Date() < deadline
+        return nil
+    }
+
+    private static func extractInt16(
+        _ audioBuffers: UnsafePointer<AudioBufferList>,
+        format: AudioStreamBasicDescription
+    ) -> [Int16]? {
+        let flags = format.mFormatFlags
+        let isFloat = flags & kAudioFormatFlagIsFloat != 0
+        let isSignedInteger = flags & kAudioFormatFlagIsSignedInteger != 0
+        let bits = Int(format.mBitsPerChannel)
+        guard (isFloat && bits == 32) || (isSignedInteger && bits == 16) else {
+            return nil
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: audioBuffers)
+        )
+        let bytesPerSample = bits / 8
+        let frameCount = buffers.compactMap { buffer -> Int? in
+            guard buffer.mData != nil, buffer.mNumberChannels > 0 else { return nil }
+            return Int(buffer.mDataByteSize)
+                / bytesPerSample
+                / Int(buffer.mNumberChannels)
+        }.min() ?? 0
+        guard frameCount > 0 else { return nil }
+
+        var mono = [Float](repeating: 0, count: frameCount)
+        var channelCount = 0
+        for buffer in buffers {
+            guard let data = buffer.mData else { continue }
+            let channels = max(1, Int(buffer.mNumberChannels))
+            channelCount += channels
+            if isFloat {
+                let samples = data.bindMemory(
+                    to: Float32.self,
+                    capacity: frameCount * channels
+                )
+                for frame in 0 ..< frameCount {
+                    for channel in 0 ..< channels {
+                        mono[frame] += samples[frame * channels + channel]
+                    }
+                }
+            } else {
+                let samples = data.bindMemory(
+                    to: Int16.self,
+                    capacity: frameCount * channels
+                )
+                for frame in 0 ..< frameCount {
+                    for channel in 0 ..< channels {
+                        mono[frame] += Float(samples[frame * channels + channel]) / 32_768.0
+                    }
+                }
+            }
+        }
+        guard channelCount > 0 else { return nil }
+        if channelCount > 1 {
+            for frame in 0 ..< frameCount {
+                mono[frame] /= Float(channelCount)
+            }
+        }
+        return floatToInt16(resample(mono, from: format.mSampleRate))
+    }
+
     private static func floatToInt16(_ samples: [Float]) -> [Int16] {
         samples.map { sample in
             let clamped = max(-1.0, min(1.0, sample))
@@ -440,6 +810,16 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         log(message)
         exit(1)
     }
+}
+
+private let arcoAudioDeviceIOProc: AudioDeviceIOProc = {
+    _, _, inputData, _, _, _, clientData in
+    guard let clientData else { return noErr }
+    let recorder = Unmanaged<Recorder>
+        .fromOpaque(clientData)
+        .takeUnretainedValue()
+    recorder.consumeSystemAudio(inputData)
+    return noErr
 }
 
 let recorder = Recorder()

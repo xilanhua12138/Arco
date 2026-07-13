@@ -110,7 +110,7 @@ fn tester_returns_a_strong_no_signal_result_instead_of_false_success() {
     let silent = executable_script(
         root.path(),
         "silent-recorder",
-        "#!/bin/sh\nwhile :; do printf '\\000\\000\\000\\000'; done\n",
+        "#!/bin/sh\nprintf 'ARCO_RECORDER_STARTED: both\\n' >&2\nwhile :; do printf '\\000\\000\\000\\000'; done\n",
     );
     let result: AudioSetupCheck = AudioSetupTester::with_binary(silent, Duration::from_millis(80))
         .test("both")
@@ -118,4 +118,51 @@ fn tester_returns_a_strong_no_signal_result_instead_of_false_success() {
     assert!(!result.success);
     assert_eq!(result.system.ready, false);
     assert_eq!(result.microphone.ready, false);
+}
+
+#[test]
+fn tester_does_not_misclassify_an_unstarted_recorder_as_silence() {
+    let root = TempDir::new().unwrap();
+    let never_started = executable_script(
+        root.path(),
+        "never-started-recorder",
+        "#!/bin/sh\nwhile :; do printf '\\000\\000\\000\\000'; done\n",
+    );
+
+    let error = AudioSetupTester::with_timeouts(
+        never_started,
+        Duration::from_millis(80),
+        Duration::from_millis(30),
+    )
+    .test("system")
+    .unwrap_err();
+
+    assert!(
+        error.contains("did not start within"),
+        "unexpected startup error: {error}"
+    );
+    assert!(
+        !error.contains("no signal"),
+        "startup failures must not be reported as silence: {error}"
+    );
+}
+
+#[test]
+fn tester_samples_only_after_the_recorder_start_handshake() {
+    let root = TempDir::new().unwrap();
+    let delayed = executable_script(
+        root.path(),
+        "delayed-recorder",
+        "#!/bin/sh\nprintf '\\000\\000\\000\\000'\nprintf 'ARCO_RECORDER_STARTED: system\\n' >&2\nwhile :; do printf '\\050\\175\\000\\000'; done\n",
+    );
+
+    let result =
+        AudioSetupTester::with_timeouts(delayed, Duration::from_secs(2), Duration::from_millis(80))
+            .test("system")
+            .unwrap();
+
+    assert!(result.success);
+    assert!(result.system.ready);
+    assert!(result.system.level.unwrap() > 0.9);
+    assert!(!result.microphone.required);
 }

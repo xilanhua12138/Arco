@@ -5,8 +5,7 @@ pub mod deepgram;
 mod deepgram_credentials;
 #[cfg(target_os = "macos")]
 mod dock_icon;
-#[cfg(target_os = "macos")]
-mod fn_shortcut;
+mod listening_shortcut;
 mod material;
 pub mod meeting_output;
 pub mod meeting_state;
@@ -538,6 +537,9 @@ fn start_capture(
     )?;
     if let Err(window_error) = overlay::show_hud(&app) {
         let rollback = state.capture.stop();
+        if let Err(error) = overlay::release_capture_surfaces(&app) {
+            log::warn!("Arco could not release a partially opened recording HUD: {error}");
+        }
         return Err(match rollback {
             Ok(_) => format!("recording HUD could not open; capture was stopped: {window_error}"),
             Err(stop_error) => format!(
@@ -555,8 +557,8 @@ fn stop_capture(
     state: tauri::State<'_, AppState>,
 ) -> Result<CaptureState, String> {
     let result = state.capture.stop();
-    if let Err(error) = overlay::hide_capture_surfaces(&app) {
-        log::warn!("Arco stopped capture but could not hide its capture surfaces: {error}");
+    if let Err(error) = overlay::release_capture_surfaces(&app) {
+        log::warn!("Arco stopped capture but could not release its capture surfaces: {error}");
     }
     let _ = app.emit("arco:capture-changed", state.capture.status());
     result
@@ -691,8 +693,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            fn_shortcut::start(app.handle().clone());
+            if let Err(error) = listening_shortcut::register_default(app.handle()) {
+                log::warn!("Arco could not register its default listening shortcut: {error}");
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -719,7 +722,6 @@ pub fn run() {
             let paths = AppPaths::discover(resource_dir.as_deref())
                 .map_err(|error| std::io::Error::other(format!("Arco setup failed: {error}")))?;
             app.manage(AppState::new(paths).map_err(std::io::Error::other)?);
-            overlay::create_overlay_windows(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

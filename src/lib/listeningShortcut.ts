@@ -1,10 +1,16 @@
 export type ListeningShortcut = string | null
 
 export const LISTENING_SHORTCUT_STORAGE_KEY = 'arco.listeningShortcut.v1'
-export const DEFAULT_LISTENING_SHORTCUT = 'Fn+KeyM'
+export const DEFAULT_LISTENING_SHORTCUT = 'CommandOrControl+Shift+Space'
+export const LEGACY_FN_LISTENING_SHORTCUT = 'Fn+KeyM'
+
+export const shouldUseShortcutAsOnboardingTest = (
+  providerSetupOpen: boolean,
+  editingProviders: boolean,
+) => providerSetupOpen && !editingProviders
 
 const disabledValue = '__disabled__'
-const modifierOrder = ['Fn', 'CommandOrControl', 'Control', 'Alt', 'Shift'] as const
+const modifierOrder = ['CommandOrControl', 'Control', 'Alt', 'Shift'] as const
 const allowedKey = /^(?:Space|Enter|Tab|Backspace|Escape|Arrow(?:Up|Down|Left|Right)|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2]))$/
 
 export const isValidListeningShortcut = (value: string) => {
@@ -22,6 +28,10 @@ export const loadListeningShortcut = (): ListeningShortcut => {
   const stored = window.localStorage.getItem(LISTENING_SHORTCUT_STORAGE_KEY)
   if (stored === null) return DEFAULT_LISTENING_SHORTCUT
   if (stored === disabledValue) return null
+  if (stored === LEGACY_FN_LISTENING_SHORTCUT) {
+    window.localStorage.setItem(LISTENING_SHORTCUT_STORAGE_KEY, DEFAULT_LISTENING_SHORTCUT)
+    return DEFAULT_LISTENING_SHORTCUT
+  }
   return isValidListeningShortcut(stored) ? stored : DEFAULT_LISTENING_SHORTCUT
 }
 
@@ -47,7 +57,6 @@ export const formatListeningShortcut = (shortcut: ListeningShortcut) => {
     Control: '⌃',
     Alt: '⌥',
     Shift: '⇧',
-    Fn: 'fn',
   }
   const parts = shortcut.split('+')
   return [...parts.slice(0, -1).map((part) => labels[part] ?? part), keyLabel(parts.at(-1) ?? '')].join(' ')
@@ -60,7 +69,6 @@ type ShortcutKeyboardEvent = Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'c
 export const listeningShortcutFromKeyboardEvent = (event: ShortcutKeyboardEvent): ListeningShortcut => {
   if (['Meta', 'Control', 'Alt', 'Shift'].includes(event.key)) return null
   const modifiers: string[] = []
-  if (event.getModifierState?.('Fn')) modifiers.push('Fn')
   if (event.metaKey || event.ctrlKey) modifiers.push('CommandOrControl')
   if (event.altKey) modifiers.push('Alt')
   if (event.shiftKey) modifiers.push('Shift')

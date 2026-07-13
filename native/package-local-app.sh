@@ -55,7 +55,7 @@ fi
 COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/recorder" \
-  app.arco.desktop.recorder
+  app.arco.desktop
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/arco-deepgram-transcriber" \
   app.arco.desktop.deepgram-transcriber

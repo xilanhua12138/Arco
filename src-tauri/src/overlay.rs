@@ -1,5 +1,5 @@
 use tauri::{
-    App, AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow,
+    AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -169,27 +169,22 @@ fn set_surface_position(
 }
 
 pub fn show_hud(app: &AppHandle) -> Result<(), String> {
+    ensure_hud_window(app)?;
     let hud = set_surface_position(app, HUD_LABEL, hud_position)?;
     hud.show().map_err(|error| error.to_string())
-}
-
-pub fn hide_hud(app: &AppHandle) -> Result<(), String> {
-    app.get_webview_window(HUD_LABEL)
-        .ok_or_else(|| "Arco could not find its recording HUD".to_string())?
-        .hide()
-        .map_err(|error| error.to_string())
 }
 
 fn capture_surface_labels() -> [&'static str; 2] {
     [HUD_LABEL, AGENT_LABEL]
 }
 
-pub fn hide_capture_surfaces(app: &AppHandle) -> Result<(), String> {
+pub fn release_capture_surfaces(app: &AppHandle) -> Result<(), String> {
     let mut errors = Vec::new();
-    let results = [hide_hud(app), hide_agent(app)];
-    for (label, result) in capture_surface_labels().into_iter().zip(results) {
-        if let Err(error) = result {
-            errors.push(format!("{label}: {error}"));
+    for label in capture_surface_labels() {
+        if let Some(window) = app.get_webview_window(label) {
+            if let Err(error) = window.destroy() {
+                errors.push(format!("{label}: {error}"));
+            }
         }
     }
 
@@ -201,9 +196,7 @@ pub fn hide_capture_surfaces(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_or_focus_agent(app: &AppHandle) -> Result<bool, String> {
-    let agent = app
-        .get_webview_window(AGENT_LABEL)
-        .ok_or_else(|| "Arco could not find its Agent window".to_string())?;
+    let agent = ensure_agent_window(app)?;
     let physical_size = agent.inner_size().map_err(|error| error.to_string())?;
     let source_scale_factor = agent.scale_factor().map_err(|error| error.to_string())?;
     let requested = logical_size_from_physical(
@@ -240,9 +233,9 @@ fn apply_agent_size_and_position(
 }
 
 pub fn set_agent_transcript_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
-    let agent = app
-        .get_webview_window(AGENT_LABEL)
-        .ok_or_else(|| "Arco could not find its Agent window".to_string())?;
+    let Some(agent) = app.get_webview_window(AGENT_LABEL) else {
+        return Ok(());
+    };
     let monitor = preferred_monitor(app, AGENT_LABEL)?;
     apply_agent_size_and_position(
         &agent,
@@ -256,10 +249,10 @@ pub fn set_agent_transcript_visible(app: &AppHandle, visible: bool) -> Result<()
 }
 
 pub fn hide_agent(app: &AppHandle) -> Result<(), String> {
-    app.get_webview_window(AGENT_LABEL)
-        .ok_or_else(|| "Arco could not find its Agent window".to_string())?
-        .hide()
-        .map_err(|error| error.to_string())
+    let Some(agent) = app.get_webview_window(AGENT_LABEL) else {
+        return Ok(());
+    };
+    agent.hide().map_err(|error| error.to_string())
 }
 
 pub fn focus_main(app: &AppHandle) -> Result<(), String> {
@@ -292,7 +285,22 @@ fn configure_macos_overlay(_window: &WebviewWindow, _hud: bool) -> Result<(), St
     Ok(())
 }
 
-pub fn create_overlay_windows(app: &App) -> tauri::Result<()> {
+fn finish_overlay_setup(window: &WebviewWindow, is_hud: bool) {
+    #[cfg(target_os = "macos")]
+    material::apply_overlay_material(window);
+
+    if let Err(error) = configure_macos_overlay(window, is_hud) {
+        log::warn!(
+            "Arco could not configure {} across fullscreen Spaces: {error}",
+            window.label()
+        );
+    }
+}
+
+fn ensure_hud_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(hud) = app.get_webview_window(HUD_LABEL) {
+        return Ok(hud);
+    }
     let hud = WebviewWindowBuilder::new(
         app,
         HUD_LABEL,
@@ -315,8 +323,16 @@ pub fn create_overlay_windows(app: &App) -> tauri::Result<()> {
     .focusable(true)
     .accept_first_mouse(true)
     .visible(false)
-    .build()?;
+    .build()
+    .map_err(|error| error.to_string())?;
+    finish_overlay_setup(&hud, true);
+    Ok(hud)
+}
 
+fn ensure_agent_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(agent) = app.get_webview_window(AGENT_LABEL) {
+        return Ok(agent);
+    }
     let agent = WebviewWindowBuilder::new(
         app,
         AGENT_LABEL,
@@ -340,24 +356,10 @@ pub fn create_overlay_windows(app: &App) -> tauri::Result<()> {
     .focusable(true)
     .accept_first_mouse(true)
     .visible(false)
-    .build()?;
-
-    #[cfg(target_os = "macos")]
-    {
-        material::apply_overlay_material(&hud);
-        material::apply_overlay_material(&agent);
-    }
-
-    for (window, is_hud) in [(&hud, true), (&agent, false)] {
-        if let Err(error) = configure_macos_overlay(window, is_hud) {
-            log::warn!(
-                "Arco could not configure {} across fullscreen Spaces: {error}",
-                window.label()
-            );
-        }
-    }
-
-    Ok(())
+    .build()
+    .map_err(|error| error.to_string())?;
+    finish_overlay_setup(&agent, false);
+    Ok(agent)
 }
 
 #[cfg(test)]
@@ -374,8 +376,19 @@ mod tests {
     }
 
     #[test]
-    fn stopping_capture_owns_and_hides_every_global_capture_surface() {
+    fn stopping_capture_owns_and_releases_every_global_capture_surface() {
         assert_eq!(capture_surface_labels(), [HUD_LABEL, AGENT_LABEL]);
+    }
+
+    #[test]
+    fn app_setup_does_not_eagerly_create_hidden_capture_webviews() {
+        let setup_source = include_str!("lib.rs");
+        let overlay_source = include_str!("overlay.rs");
+
+        assert!(!setup_source.contains("overlay::create_overlay_windows(app)?"));
+        assert!(overlay_source.contains("ensure_hud_window(app)?"));
+        assert!(overlay_source.contains("ensure_agent_window(app)?"));
+        assert!(overlay_source.contains("release_capture_surfaces"));
     }
 
     #[test]

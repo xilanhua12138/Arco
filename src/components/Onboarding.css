@@ -380,6 +380,8 @@
 @keyframes onboarding-level-scan { 0% { transform: translateX(-110%); } 55%, 100% { transform: translateX(250%); } }
 
 .onboarding-shortcut { display: flex; flex-direction: column; justify-content: center; padding-bottom: 52px; }
+.onboarding-shortcut-feedback { min-height: 18px; display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--ink-muted); font-size: 11px; line-height: 18px; }
+.onboarding-shortcut-feedback-ready { color: var(--success); }
 .onboarding-complete { max-width: 580px; }
 .onboarding-complete dl { margin: 24px 0 0; border-top: 1px solid var(--line-thin); }
 .onboarding-complete dl div { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 44px; border-bottom: 1px solid var(--line-thin); }

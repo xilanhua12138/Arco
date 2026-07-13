@@ -1,25 +1,27 @@
 use crate::models::{AudioSetupCheck, AudioSourceCheck};
 use crate::paths::AppPaths;
 use crate::process::{configure_process_group, terminate_process_tree};
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 const DEFAULT_TEST_DURATION: Duration = Duration::from_secs(3);
+const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: usize = 16_000 * 4 * 5;
+const MAX_ERROR_BYTES: usize = 64 * 1024;
 const READY_LEVEL: f32 = 0.01;
 const RESTART_REQUIRED_PREFIX: &str = "ARCO_AUDIO_PERMISSION_RESTART_REQUIRED:";
+const RECORDER_STARTED_PREFIX: &str = "ARCO_RECORDER_STARTED:";
 
 #[derive(Clone, Debug)]
 pub struct AudioSetupTester {
     recorder: PathBuf,
+    startup_timeout: Duration,
     duration: Duration,
 }
 
@@ -28,11 +30,19 @@ impl AudioSetupTester {
         let bundled = paths.native_dir.join("recorder");
         let runtime = paths.native_dir.join("runtime").join("recorder");
         let recorder = if bundled.exists() { bundled } else { runtime };
-        Self::with_binary(recorder, DEFAULT_TEST_DURATION)
+        Self::with_timeouts(recorder, DEFAULT_STARTUP_TIMEOUT, DEFAULT_TEST_DURATION)
     }
 
     pub fn with_binary(recorder: PathBuf, duration: Duration) -> Self {
-        Self { recorder, duration }
+        Self::with_timeouts(recorder, DEFAULT_STARTUP_TIMEOUT, duration)
+    }
+
+    pub fn with_timeouts(recorder: PathBuf, startup_timeout: Duration, duration: Duration) -> Self {
+        Self {
+            recorder,
+            startup_timeout,
+            duration,
+        }
     }
 
     pub fn test(&self, mode: &str) -> Result<AudioSetupCheck, String> {
@@ -44,16 +54,13 @@ impl AudioSetupTester {
             ));
         }
 
-        let stderr_file = NamedTempFile::new()
-            .map_err(|error| format!("could not create audio check error buffer: {error}"))?;
         let mut command = Command::new(&self.recorder);
         command
             .arg(mode)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(stderr_file.reopen().map_err(|error| {
-                format!("could not open audio check error buffer: {error}")
-            })?));
+            .stderr(Stdio::piped())
+            .env("ARCO_PARENT_PID", std::process::id().to_string());
         configure_process_group(&mut command)
             .map_err(|error| format!("could not isolate audio check process: {error}"))?;
         let mut child = command
@@ -63,8 +70,12 @@ impl AudioSetupTester {
             .stdout
             .take()
             .ok_or_else(|| "audio recorder did not expose its PCM stream".to_string())?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "audio recorder did not expose its diagnostics".to_string())?;
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
-        let reader = thread::spawn(move || {
+        let stdout_reader = thread::spawn(move || {
             let mut buffer = [0u8; 8_192];
             loop {
                 match stdout.read(&mut buffer) {
@@ -78,15 +89,68 @@ impl AudioSetupTester {
                 }
             }
         });
+        let (error_sender, error_receiver) = mpsc::channel::<Vec<u8>>();
+        let stderr_reader = thread::spawn(move || {
+            let mut buffer = [0u8; 2_048];
+            loop {
+                match stderr.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(size) => {
+                        if error_sender.send(buffer[..size].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
 
-        let started = Instant::now();
+        let launched = Instant::now();
+        let mut sample_started = None;
         let mut bytes = Vec::new();
+        let mut error_bytes = Vec::new();
         let mut early_status = None;
-        while started.elapsed() < self.duration {
+        loop {
             while let Ok(chunk) = receiver.try_recv() {
+                if sample_started.is_none() {
+                    continue;
+                }
                 let remaining = MAX_CAPTURE_BYTES.saturating_sub(bytes.len());
                 bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
             }
+            drain_bounded(&error_receiver, &mut error_bytes, MAX_ERROR_BYTES);
+
+            if sample_started.is_none() {
+                let detail = String::from_utf8_lossy(&error_bytes);
+                if recorder_started(&detail, mode) {
+                    bytes.clear();
+                    sample_started = Some(Instant::now());
+                } else if launched.elapsed() >= self.startup_timeout {
+                    let _ = terminate_process_tree(&mut child, TERMINATION_GRACE);
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    drain_bounded(&error_receiver, &mut error_bytes, MAX_ERROR_BYTES);
+                    let final_detail = String::from_utf8_lossy(&error_bytes);
+                    let detail = final_detail.trim();
+                    let suffix = if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {detail}")
+                    };
+                    return Err(format!(
+                        "audio recorder did not start within {:.1} seconds{suffix}",
+                        self.startup_timeout.as_secs_f32()
+                    ));
+                }
+            }
+
+            if sample_started
+                .map(|started: Instant| started.elapsed() >= self.duration)
+                .unwrap_or(false)
+            {
+                break;
+            }
+
             match child.try_wait() {
                 Ok(Some(status)) => {
                     early_status = Some(status);
@@ -95,7 +159,8 @@ impl AudioSetupTester {
                 Ok(None) => thread::sleep(Duration::from_millis(15)),
                 Err(error) => {
                     let _ = terminate_process_tree(&mut child, TERMINATION_GRACE);
-                    let _ = reader.join();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Err(format!("could not wait for audio recorder: {error}"));
                 }
             }
@@ -126,15 +191,20 @@ impl AudioSetupTester {
         } else {
             let _ = terminate_process_tree(&mut child, TERMINATION_GRACE);
         }
-        let _ = reader.join();
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
         while let Ok(chunk) = receiver.try_recv() {
+            if sample_started.is_none() {
+                continue;
+            }
             let remaining = MAX_CAPTURE_BYTES.saturating_sub(bytes.len());
             bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
         }
+        drain_bounded(&error_receiver, &mut error_bytes, MAX_ERROR_BYTES);
 
         if let Some(status) = early_status {
             if !status.success() {
-                let detail = fs::read_to_string(stderr_file.path()).unwrap_or_default();
+                let detail = String::from_utf8_lossy(&error_bytes);
                 let code = status
                     .code()
                     .map(|value| value.to_string())
@@ -143,8 +213,28 @@ impl AudioSetupTester {
             }
         }
 
+        if sample_started.is_none() {
+            return Err("audio recorder exited before its start handshake".into());
+        }
+
         analyze_interleaved_pcm(mode, &bytes)
     }
+}
+
+fn drain_bounded(receiver: &mpsc::Receiver<Vec<u8>>, target: &mut Vec<u8>, limit: usize) {
+    while let Ok(chunk) = receiver.try_recv() {
+        let remaining = limit.saturating_sub(target.len());
+        target.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+}
+
+fn recorder_started(detail: &str, mode: &str) -> bool {
+    detail.lines().any(|line| {
+        line.trim()
+            .strip_prefix(RECORDER_STARTED_PREFIX)
+            .map(str::trim)
+            == Some(mode)
+    })
 }
 
 fn format_recorder_error(code: &str, detail: &str) -> String {

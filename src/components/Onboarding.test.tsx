@@ -45,7 +45,8 @@ const renderOnboarding = (overrides: Partial<React.ComponentProps<typeof Onboard
     transcriptionConfig: deepgramConfig,
     transcriptionModels: [],
     deepgramCredential: emptyDeepgram,
-    listeningShortcut: 'Fn+KeyM',
+    listeningShortcut: 'CommandOrControl+Shift+Space',
+    shortcutTestCount: 0,
     audioMode: 'both',
     onRefreshRuntimes: vi.fn().mockResolvedValue(runtimes),
     onTestProvider: vi.fn().mockResolvedValue(true),
@@ -58,8 +59,8 @@ const renderOnboarding = (overrides: Partial<React.ComponentProps<typeof Onboard
     onSkip: vi.fn(),
     ...overrides,
   }
-  render(<I18nProvider><Onboarding {...props} /></I18nProvider>)
-  return { props, onComplete }
+  const view = render(<I18nProvider><Onboarding {...props} /></I18nProvider>)
+  return { props, onComplete, ...view }
 }
 
 const continueToAgent = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -182,7 +183,7 @@ describe('Onboarding', () => {
       testedProvider: null,
       transcriptionConfig: deepgramConfig,
       audioMode: 'both',
-      listeningShortcut: 'Fn+KeyM',
+      listeningShortcut: 'CommandOrControl+Shift+Space',
     }))
 
     renderOnboarding({ deepgramCredential: { configured: true, verified: true, message: null } })
@@ -192,6 +193,61 @@ describe('Onboarding', () => {
     expect(screen.getByRole('button', { name: 'Agent' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Transcription' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Shortcut' })).toBeDisabled()
+  })
+
+  it('confirms a real global shortcut press in place instead of starting an invisible recording', () => {
+    window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      step: 4,
+      furthestStep: 4,
+      agentChoice: 'transcript',
+      primary: null,
+      secondary: null,
+      testedProvider: null,
+      transcriptionConfig: deepgramConfig,
+      audioMode: 'both',
+      listeningShortcut: 'CommandOrControl+Shift+Space',
+    }))
+    const { props, rerender } = renderOnboarding({
+      deepgramCredential: { configured: true, verified: true, message: null },
+      shortcutTestCount: 0,
+    } as Partial<React.ComponentProps<typeof Onboarding>>)
+
+    expect(screen.getByText('Press ⌘ ⇧ Space once to test it.')).toBeVisible()
+    expect(screen.queryByText('Shortcut test passed. It will start or stop listening after setup.')).not.toBeInTheDocument()
+
+    const nextProps = { ...props, shortcutTestCount: 1 } as React.ComponentProps<typeof Onboarding>
+    rerender(<I18nProvider><Onboarding {...nextProps} /></I18nProvider>)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Shortcut test passed. It will start or stop listening after setup.')
+  })
+
+  it('does not claim the shortcut works while the user is recording a replacement', async () => {
+    const user = userEvent.setup()
+    window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      step: 4,
+      furthestStep: 4,
+      agentChoice: 'transcript',
+      primary: null,
+      secondary: null,
+      testedProvider: null,
+      transcriptionConfig: deepgramConfig,
+      audioMode: 'both',
+      listeningShortcut: 'CommandOrControl+Shift+Space',
+    }))
+    const { props, rerender } = renderOnboarding({ shortcutTestCount: 0 })
+    rerender(
+      <I18nProvider>
+        <Onboarding {...props} shortcutTestCount={1} />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByText('Shortcut test passed. It will start or stop listening after setup.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Change listening shortcut' }))
+
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeVisible()
+    expect(screen.queryByText('Shortcut test passed. It will start or stop listening after setup.')).not.toBeInTheDocument()
   })
 
   it('checks system audio and microphone independently without asking for a meeting type', async () => {
@@ -245,6 +301,8 @@ describe('Onboarding', () => {
     expect(screen.getByText('Say a few words near this Mac')).toBeVisible()
     act(() => vi.advanceTimersByTime(1000))
     expect(screen.getByRole('button', { name: 'Listening… 2' })).toBeDisabled()
+    act(() => vi.advanceTimersByTime(2000))
+    expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled()
 
     await act(async () => resolveAudio({
       mode: 'system',

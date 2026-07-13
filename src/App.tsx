@@ -27,7 +27,7 @@ import {
   type GenerationSettings,
 } from './lib/generationSettings'
 import type { AudioMode } from './types'
-import type { DeepgramCredentialStatus, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
+import type { DeepgramCredentialStatus, MeetingDetail, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
 import {
   loadTranscriptionConfig,
   saveTranscriptionConfig,
@@ -35,9 +35,14 @@ import {
 import {
   loadListeningShortcut,
   saveListeningShortcut,
+  shouldUseShortcutAsOnboardingTest,
   type ListeningShortcut,
 } from './lib/listeningShortcut'
-import { registerListeningShortcut, unregisterListeningShortcut } from './lib/listeningShortcutRuntime'
+import {
+  NATIVE_LISTENING_SHORTCUT_EVENT,
+  registerListeningShortcut,
+  unregisterListeningShortcut,
+} from './lib/listeningShortcutRuntime'
 import { completeOnboarding, loadOnboardingState } from './lib/onboarding'
 import { useI18n } from './i18n/i18n'
 
@@ -74,6 +79,7 @@ function App() {
   const [editingProviders, setEditingProviders] = useState(false)
   const [listeningShortcut, setListeningShortcut] = useState<ListeningShortcut>(loadListeningShortcut)
   const [shortcutError, setShortcutError] = useState<string | null>(null)
+  const [shortcutTestCount, setShortcutTestCount] = useState(0)
   const [storageSettings, setStorageSettings] = useState<TranscriptStorageSettings | undefined>()
   const [notesStorageSettings, setNotesStorageSettings] = useState<NotesStorageSettings | undefined>()
   const [storageChanging, setStorageChanging] = useState(false)
@@ -199,11 +205,17 @@ function App() {
   }, [arco, audioMode, transcriptionConfig])
 
   useEffect(() => {
-    toggleListeningRef.current = () => void toggleListening()
-  }, [toggleListening])
+    toggleListeningRef.current = () => {
+      if (shouldUseShortcutAsOnboardingTest(providerSetupOpen, editingProviders)) {
+        setShortcutTestCount((count) => count + 1)
+        return
+      }
+      void toggleListening()
+    }
+  }, [editingProviders, providerSetupOpen, toggleListening])
 
   useEffect(() => {
-    if (!arco.isDesktop || !listeningShortcut) return
+    if (!arco.isDesktop) return
     let disposed = false
     void registerListeningShortcut(listeningShortcut, () => toggleListeningRef.current())
       .then(() => {
@@ -221,6 +233,45 @@ function App() {
   // Registration is owned for the lifetime of the desktop window; changes are swapped below.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arco.isDesktop])
+
+  useEffect(() => {
+    if (!arco.isDesktop) return
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen(NATIVE_LISTENING_SHORTCUT_EVENT, () => toggleListeningRef.current()).then((next) => {
+      if (disposed) next()
+      else unlisten = next
+    })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [arco.isDesktop])
+
+  const startListeningShortcutRecording = async () => {
+    setShortcutError(null)
+    if (!arco.isDesktop) return true
+    const activeShortcut = registeredShortcutRef.current ?? listeningShortcut
+    try {
+      await unregisterListeningShortcut(activeShortcut)
+      registeredShortcutRef.current = null
+      return true
+    } catch (cause) {
+      setShortcutError(cause instanceof Error ? cause.message : String(cause))
+      return false
+    }
+  }
+
+  const cancelListeningShortcutRecording = async () => {
+    if (!arco.isDesktop || registeredShortcutRef.current !== null || listeningShortcut === null) return
+    try {
+      await registerListeningShortcut(listeningShortcut, () => toggleListeningRef.current())
+      registeredShortcutRef.current = listeningShortcut
+      setShortcutError(null)
+    } catch (cause) {
+      setShortcutError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
 
   const changeListeningShortcut = async (next: ListeningShortcut) => {
     const previous = registeredShortcutRef.current
@@ -396,19 +447,29 @@ function App() {
     }
   }, [arco.isDesktop, mergeTranscriptionModelStatus])
 
-  useEffect(() => {
-    if (!arco.isDesktop || listeningShortcut !== 'Fn+KeyM') return
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    void listen('arco:fn-m-pressed', () => toggleListeningRef.current()).then((next) => {
-      if (disposed) next()
-      else unlisten = next
-    })
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
-  }, [arco.isDesktop, listeningShortcut])
+  const openAgentSetup = () => {
+    setEditingProviders(true)
+    setProviderSetupOpen(true)
+  }
+
+  const renderAgentDock = (meeting: MeetingDetail | null) => (
+    <InsightPanel
+      meeting={meeting}
+      replies={arco.agentReplies}
+      runtimes={arco.runtimes}
+      provider={providerRoute.provider}
+      primaryProvider={providerConfig.primary ?? providerRoute.provider}
+      isFailover={providerRoute.isFailover}
+      running={arco.agentRunning}
+      onAsk={arco.askAgent}
+      onToggleSaved={arco.setAgentTurnSaved}
+      workspace={agentWorkspace.workspace}
+      onChooseWorkspace={agentWorkspace.chooseWorkspace}
+      onConnectAgent={openAgentSetup}
+      showHeader
+      live={arco.capture.phase === 'recording' && meeting?.summary.id === arco.capture.activeMeetingId}
+    />
+  )
 
   if (providerSetupOpen && !editingProviders) {
     return (
@@ -418,6 +479,7 @@ function App() {
         transcriptionModels={transcriptionModels}
         deepgramCredential={deepgramCredential}
         listeningShortcut={listeningShortcut}
+        shortcutTestCount={shortcutTestCount}
         audioMode={audioMode}
         onRefreshRuntimes={arco.refreshRuntimes}
         onTestProvider={async (provider) => (await arcoBridge.testAgentProvider(provider)).ok}
@@ -439,6 +501,8 @@ function App() {
         onTestAudio={arcoBridge.testAudioSetup}
         onRelaunch={arcoBridge.relaunchApp}
         onChangeListeningShortcut={changeListeningShortcut}
+        onStartListeningShortcutRecording={startListeningShortcutRecording}
+        onCancelListeningShortcutRecording={cancelListeningShortcutRecording}
         onComplete={async (result) => {
           saveProviderConfig(result.providerConfig)
           setProviderConfig(result.providerConfig)
@@ -491,8 +555,18 @@ function App() {
 
         {page === 'current' ? (
           <section className="current-page" aria-label={t('app.currentMeetingAria')}>
-            {arco.capture.phase !== 'recording' ? (
-              <div className="current-workspace current-workspace-idle">
+            {arco.capture.phase === 'recording' && (
+              <TopBar
+                meeting={currentMeeting?.summary ?? null}
+                meetingDetail={currentMeeting}
+                capture={arco.capture}
+                onRenameMeeting={arco.renameMeeting}
+              />
+            )}
+            <div className={`current-workspace ${arco.capture.phase === 'recording' ? '' : 'current-workspace-idle'}`}>
+              {arco.capture.phase === 'recording' ? (
+                <TranscriptPane meeting={currentMeeting} capture={arco.capture} loading={arco.loading} />
+              ) : (
                 <CurrentIdleState
                   capture={arco.capture}
                   meetings={arco.meetings}
@@ -507,35 +581,9 @@ function App() {
                     void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
                   }}
                 />
-              </div>
-            ) : (
-              <>
-                <TopBar
-                  meeting={currentMeeting?.summary ?? null}
-                  meetingDetail={currentMeeting}
-                  capture={arco.capture}
-                  onRenameMeeting={arco.renameMeeting}
-                />
-                <div className="current-workspace">
-                  <TranscriptPane meeting={currentMeeting} capture={arco.capture} loading={arco.loading} />
-                  {providerRoute.provider && (
-                    <InsightPanel
-                      meeting={currentMeeting}
-                      replies={arco.agentReplies}
-                      runtimes={arco.runtimes}
-                      provider={providerRoute.provider}
-                      primaryProvider={providerConfig.primary ?? providerRoute.provider}
-                      isFailover={providerRoute.isFailover}
-                      running={arco.agentRunning}
-                      onAsk={arco.askAgent}
-                      onToggleSaved={arco.setAgentTurnSaved}
-                      workspace={agentWorkspace.workspace}
-                      onChooseWorkspace={agentWorkspace.chooseWorkspace}
-                    />
-                  )}
-                </div>
-              </>
-            )}
+              )}
+              {arco.capture.phase === 'recording' && renderAgentDock(currentMeeting)}
+            </div>
           </section>
         ) : page === 'history' ? (
           <HistoryPage
@@ -586,21 +634,7 @@ function App() {
             )}
             <div className="current-workspace">
               <TranscriptPane meeting={arco.meeting} capture={arco.capture} loading={arco.loading} />
-              {providerRoute.provider && (
-                <InsightPanel
-                  meeting={arco.meeting}
-                  replies={arco.agentReplies}
-                  runtimes={arco.runtimes}
-                  provider={providerRoute.provider}
-                  primaryProvider={providerConfig.primary ?? providerRoute.provider}
-                  isFailover={providerRoute.isFailover}
-                  running={arco.agentRunning}
-                  onAsk={arco.askAgent}
-                  onToggleSaved={arco.setAgentTurnSaved}
-                  workspace={agentWorkspace.workspace}
-                  onChooseWorkspace={agentWorkspace.chooseWorkspace}
-                />
-              )}
+              {renderAgentDock(arco.meeting)}
             </div>
           </section>
         )}
@@ -633,6 +667,8 @@ function App() {
         onChooseNotesDirectory={chooseNotesDirectory}
         onResetNotesDirectory={resetNotesDirectory}
         onChangeListeningShortcut={changeListeningShortcut}
+        onStartListeningShortcutRecording={startListeningShortcutRecording}
+        onCancelListeningShortcutRecording={cancelListeningShortcutRecording}
         onChangeGenerationSettings={changeGenerationSettings}
         audioMode={displayedAudioMode}
         onChangeAudioMode={changeAudioMode}
@@ -722,6 +758,8 @@ function App() {
           initialConfig={providerConfig}
           listeningShortcut={listeningShortcut}
           onChangeListeningShortcut={changeListeningShortcut}
+          onStartListeningShortcutRecording={startListeningShortcutRecording}
+          onCancelListeningShortcutRecording={cancelListeningShortcutRecording}
           onRefresh={arco.refreshRuntimes}
           onTest={async (provider) => (await arcoBridge.testAgentProvider(provider)).ok}
           onComplete={(nextConfig) => {

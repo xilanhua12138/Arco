@@ -13,6 +13,8 @@ interface ProviderSetupProps {
   initialConfig?: ProviderConfig
   listeningShortcut?: ListeningShortcut
   onChangeListeningShortcut?: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
+  onStartListeningShortcutRecording?: () => boolean | Promise<boolean>
+  onCancelListeningShortcutRecording?: () => void | Promise<void>
   onRefresh?: () => Promise<RuntimeStatus[] | void> | RuntimeStatus[] | void
   onTest: (provider: ProviderId) => Promise<boolean>
   onComplete: (config: ProviderConfig) => void
@@ -50,6 +52,8 @@ export function ProviderSetup({
   initialConfig,
   listeningShortcut = DEFAULT_LISTENING_SHORTCUT,
   onChangeListeningShortcut = () => true,
+  onStartListeningShortcutRecording,
+  onCancelListeningShortcutRecording,
   onRefresh,
   onTest,
   onComplete,
@@ -369,7 +373,12 @@ export function ProviderSetup({
                 <Command size={30} strokeWidth={1.5} aria-hidden="true" />
                 <h2 id="provider-shortcut-heading">{t('onboarding.startAnywhere')}</h2>
                 <p>{t('onboarding.shortcutHelp')}</p>
-                <ShortcutRecorder value={listeningShortcut} onChange={onChangeListeningShortcut} />
+                <ShortcutRecorder
+                  value={listeningShortcut}
+                  onChange={onChangeListeningShortcut}
+                  onStartRecording={onStartListeningShortcutRecording}
+                  onCancelRecording={onCancelListeningShortcutRecording}
+                />
                 <small>{t('onboarding.shortcutSettings')}</small>
               </section>
             )}

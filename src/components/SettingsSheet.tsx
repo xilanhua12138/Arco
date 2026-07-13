@@ -70,6 +70,8 @@ interface SettingsSheetProps {
   listeningShortcut?: ListeningShortcut
   shortcutError?: string | null
   onChangeListeningShortcut?: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
+  onStartListeningShortcutRecording?: () => boolean | Promise<boolean>
+  onCancelListeningShortcutRecording?: () => void | Promise<void>
   storageSettings?: TranscriptStorageSettings
   storageChanging?: boolean
   notesStorageSettings?: NotesStorageSettings
@@ -118,6 +120,8 @@ export function SettingsSheet({
   listeningShortcut = null,
   shortcutError = null,
   onChangeListeningShortcut = () => true,
+  onStartListeningShortcutRecording,
+  onCancelListeningShortcutRecording,
   storageSettings = {
     defaultDirectory: '~/Library/Application Support/Arco/transcripts',
     selectedDirectory: '~/Library/Application Support/Arco/transcripts',
@@ -306,7 +310,12 @@ export function SettingsSheet({
                       <strong className="general-setting-title"><Keyboard size={15} aria-hidden="true" /> {t('settings.startStopListening')}</strong>
                       <small>{t('settings.startStopListeningHelp')}</small>
                     </span>
-                    <ShortcutRecorder value={listeningShortcut} onChange={onChangeListeningShortcut} />
+                    <ShortcutRecorder
+                      value={listeningShortcut}
+                      onChange={onChangeListeningShortcut}
+                      onStartRecording={onStartListeningShortcutRecording}
+                      onCancelRecording={onCancelListeningShortcutRecording}
+                    />
                   </div>
                 </div>
                 {shortcutError && <p className="shortcut-settings-error" role="alert">{shortcutError}</p>}

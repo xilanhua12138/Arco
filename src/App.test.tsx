@@ -127,7 +127,7 @@ describe('Arco consumer conversation workspace', () => {
     expect(screen.queryByRole('combobox', { name: 'Agent provider' })).not.toBeInTheDocument()
   })
 
-  it('uses one focused CTA instead of an empty Transcript and Agent workspace before the first meeting', async () => {
+  it('keeps the focused start action alone until the first meeting begins', async () => {
     const user = userEvent.setup()
     vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([])
     vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(idleCapture)
@@ -139,7 +139,7 @@ describe('Arco consumer conversation workspace', () => {
     expect(within(idle).getByRole('heading', { name: 'Start listening' })).toBeVisible()
     expect(within(idle).queryByText('Start a new meeting when you are ready. Its live transcript and Agent will appear here.')).not.toBeInTheDocument()
     const shortcuts = within(idle).getByRole('region', { name: 'Shortcuts' })
-    expect([...shortcuts.querySelectorAll('kbd')].map((key) => key.textContent)).toEqual(['Fn', 'M', '⌘', 'K'])
+    expect([...shortcuts.querySelectorAll('kbd')].map((key) => key.textContent)).toEqual(['⌘', '⇧', 'Space', '⌘', 'K'])
     expect(within(idle).getByRole('region', { name: 'On this Mac' })).toHaveTextContent('0')
     expect(screen.queryByRole('heading', { name: 'Transcript' })).not.toBeInTheDocument()
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
@@ -147,6 +147,7 @@ describe('Arco consumer conversation workspace', () => {
 
     await user.click(within(idle).getByRole('button', { name: 'Start listening' }))
     expect(startCapture).toHaveBeenCalledWith('both', expect.any(Object))
+    expect(await findAgentWorkspace()).toBeVisible()
   })
 
   it('keeps Current in its start-listening state while idle even when History has meetings', async () => {
@@ -197,14 +198,21 @@ describe('Arco consumer conversation workspace', () => {
     window.localStorage.removeItem(ONBOARDING_STORAGE_KEY)
     vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([])
     vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(idleCapture)
+    vi.spyOn(arcoBridge, 'startCapture').mockResolvedValue(liveCapture)
 
     render(<App />)
     const setup = await screen.findByRole('main', { name: 'Stay in the conversation' })
     await user.click(within(setup).getByRole('button', { name: 'Set up later' }))
 
     expect(screen.queryByRole('main', { name: 'Stay in the conversation' })).not.toBeInTheDocument()
-    expect(await screen.findByRole('region', { name: 'Start listening' })).toBeVisible()
+    const idle = await screen.findByRole('region', { name: 'Start listening' })
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
+    await user.click(within(idle).getByRole('button', { name: 'Start listening' }))
+    const agent = await findAgentWorkspace()
+    expect(within(agent).getByRole('heading', { name: 'Ask Arco' })).toBeVisible()
+    expect(within(agent).getByText('Connect Codex or Claude in Arco first.')).toBeVisible()
+    await user.click(within(agent).getByRole('button', { name: 'Set up Agent' }))
+    expect(await screen.findByRole('dialog', { name: 'Connect Codex or Claude' })).toBeVisible()
   })
 
   it('uses the configured secondary only when the primary CLI is unavailable', async () => {
@@ -218,8 +226,8 @@ describe('Arco consumer conversation workspace', () => {
     render(<App />)
     const agent = await findAgentWorkspace()
 
-    expect(within(agent).getByText('Codex is unavailable. Using Claude.')).toBeVisible()
-    await user.click(within(agent).getByRole('button', { name: 'Answer what was asked' }))
+    expect(await within(agent).findByText('Codex is unavailable. Using Claude.')).toBeVisible()
+    await user.click(await within(agent).findByRole('button', { name: 'Answer what was asked' }))
     await waitFor(() => expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({ provider: 'claude' })))
   })
 
@@ -231,7 +239,9 @@ describe('Arco consumer conversation workspace', () => {
       name: 'Product direction · weekly working session',
     })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
-    expect(await findAgentWorkspace()).toBeVisible()
+    const agent = await findAgentWorkspace()
+    expect(agent).toBeVisible()
+    expect(within(agent).getByRole('heading', { name: 'Ask Arco' })).toBeVisible()
     expect(await findTranscriptEvidence()).toBeVisible()
     expect(screen.getByText(/It should know enough about my work/)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Meeting details' })).toBeVisible()
@@ -379,7 +389,7 @@ describe('Arco consumer conversation workspace', () => {
     render(<App />)
     const agent = await findAgentWorkspace()
 
-    await user.click(within(agent).getByRole('button', { name: /Answer what was asked/i }))
+    await user.click(await within(agent).findByRole('button', { name: /Answer what was asked/i }))
 
     expect(await screen.findByText(/Arco becomes more than a recorder/)).toBeVisible()
     const contextDisclosure = screen.getByRole('button', { name: 'Context used · 2' })
@@ -407,7 +417,7 @@ describe('Arco consumer conversation workspace', () => {
     const agent = await findAgentWorkspace()
 
     expect(listAgentTurns).toHaveBeenCalledWith('demo-live')
-    expect(within(agent).getByText('What did we decide?')).toBeVisible()
+    expect(await within(agent).findByText('What did we decide?')).toBeVisible()
     expect(within(agent).getByText('The persisted answer survives an app restart.')).toBeVisible()
     expect(within(agent).getByRole('button', { name: 'Saved note' })).toBeVisible()
   })

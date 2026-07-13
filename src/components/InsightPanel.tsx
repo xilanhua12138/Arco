@@ -29,8 +29,8 @@ interface InsightPanelProps {
   meeting: MeetingDetail | null
   replies: PersistedAgentTurn[]
   runtimes: RuntimeStatus[]
-  provider: ProviderId
-  primaryProvider: ProviderId
+  provider: ProviderId | null
+  primaryProvider: ProviderId | null
   isFailover: boolean
   running: boolean
   onAsk: (input: AskAgentInput) => Promise<boolean> | boolean
@@ -40,6 +40,7 @@ interface InsightPanelProps {
   live?: boolean
   onClose?: () => void
   showHeader?: boolean
+  onConnectAgent?: () => void
 }
 
 const sourceIcon = (kind: PersistedAgentTurn['sources'][number]['kind']) => {
@@ -63,6 +64,7 @@ export function InsightPanel({
   live = false,
   onClose,
   showHeader = false,
+  onConnectAgent,
 }: InsightPanelProps) {
   const { t } = useI18n()
   const [scope, setScope] = useState<ContextScope>('transcript')
@@ -73,7 +75,9 @@ export function InsightPanel({
   const [openContextTurnId, setOpenContextTurnId] = useState<string | null>(null)
   const [savingTurnId, setSavingTurnId] = useState<string | null>(null)
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
-  const runtime = runtimes.find((candidate) => candidate.provider === provider)
+  const runtime = provider
+    ? runtimes.find((candidate) => candidate.provider === provider)
+    : undefined
   const workspaceMissing = scope === 'workspace' && !workspace
   const quickPrompts = [
     { label: t('agent.quick.answer.label'), prompt: t('agent.quick.answer.prompt') },
@@ -83,7 +87,7 @@ export function InsightPanel({
   const submit = async (displayQuestion = question, agentPrompt?: string) => {
     const normalizedQuestion = displayQuestion.trim()
     const normalizedAgentPrompt = agentPrompt?.trim()
-    if (!meeting || !normalizedQuestion || running || pendingQuestion || !runtime?.available || workspaceMissing) return
+    if (!meeting || !provider || !normalizedQuestion || running || pendingQuestion || !runtime?.available || workspaceMissing) return
     setRequestError(false)
     setPendingQuestion(normalizedQuestion)
     setQuestion('')
@@ -141,6 +145,28 @@ export function InsightPanel({
       )}
 
       <div className="insight-scroll agent-workspace-body">
+        {!provider && (
+          <section className="agent-dock-state" aria-label={t('agent.connectAgentTitle')}>
+            <div>
+              <h3>{t('agent.connectAgentTitle')}</h3>
+              <p>{t('agent.connectFirst')}</p>
+              {onConnectAgent && (
+                <button type="button" onClick={onConnectAgent}>{t('agent.setUpAgent')}</button>
+              )}
+            </div>
+          </section>
+        )}
+
+        {provider && !meeting && (
+          <section className="agent-dock-state" aria-label={t('agent.waitingForMeeting')}>
+            <div>
+              <h3>{t('agent.waitingForMeeting')}</h3>
+              <p>{t('agent.startListeningHelp')}</p>
+            </div>
+          </section>
+        )}
+
+        {provider && meeting && <>
         {!runtime?.available && (
           <div className="inline-notice inline-notice-warning" role="status">
             <CircleAlert size={16} />
@@ -259,9 +285,10 @@ export function InsightPanel({
             {t('agent.thinking')}
           </div>
         )}
+        </>}
       </div>
 
-      <form
+      {provider && meeting && <form
         className="ask-composer"
         onSubmit={(event) => {
           event.preventDefault()
@@ -367,7 +394,7 @@ export function InsightPanel({
             <ArrowUp size={16} />
           </button>
         </div>
-      </form>
+      </form>}
     </main>
   )
 }

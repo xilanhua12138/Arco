@@ -266,7 +266,7 @@ test('onboarding resumes at audio check after an app reload and keeps downloaded
   await expect(page.getByText('Ready on this Mac')).toHaveCount(2)
 })
 
-test('an idle Current restores the centered first-version launch surface without explanatory copy', async ({ page }) => {
+test('an idle Current keeps one focused launch surface until listening begins', async ({ page }) => {
   await page.setViewportSize({ width: 1240, height: 820 })
   await gotoConfigured(page, '/?demo=empty')
 
@@ -274,7 +274,7 @@ test('an idle Current restores the centered first-version launch surface without
   await expect(idle.getByRole('heading', { name: 'Start listening' })).toBeVisible()
   await expect(idle.getByText('Start a new meeting when you are ready. Its live transcript and Agent will appear here.')).toHaveCount(0)
   await expect(idle.getByRole('region', { name: 'On this Mac' })).toContainText('0')
-  await expect(idle.getByRole('region', { name: 'Shortcuts' }).locator('kbd')).toHaveText(['Fn', 'M', '⌘', 'K'])
+  await expect(idle.getByRole('region', { name: 'Shortcuts' }).locator('kbd')).toHaveText(['⌘', '⇧', 'Space', '⌘', 'K'])
   await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
   await expect(page.getByRole('heading', { name: 'Transcript' })).toHaveCount(0)
   await expect(page.getByRole('main', { name: 'Ask Arco' })).toHaveCount(0)
@@ -291,7 +291,9 @@ test('an idle Current restores the centered first-version launch surface without
 
   await idle.getByRole('button', { name: 'Start listening' }).click()
   await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
-  await expect(page.getByRole('main', { name: 'Ask Arco' })).toBeVisible()
+  const agent = page.getByRole('main', { name: 'Ask Arco' })
+  await expect(agent).toBeVisible()
+  await expect(agent.getByRole('textbox', { name: 'Ask the agent about this meeting' })).toBeVisible()
 })
 
 test('the listening shortcut can be changed from Settings and updates the idle shortcut receipt', async ({ page }) => {
@@ -332,6 +334,7 @@ test('Current keeps transcript primary with Agent visible at its right', async (
   await expect(page.getByRole('heading', { level: 1, name: 'Product direction · weekly working session' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
   await expect(agent).toBeVisible()
+  await expect(agent.getByRole('heading', { name: 'Ask Arco' })).toHaveCSS('font-size', '16px')
   await expect(transcript).toBeVisible()
   await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
   await expect(page.getByRole('dialog', { name: 'Ask Arco' })).toHaveCount(0)

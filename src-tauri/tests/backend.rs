@@ -2133,7 +2133,7 @@ fn fake_capture_config(root: &TempDir, transcriber_source: &str) -> CaptureConfi
     let recorder = executable_script(
         root.path(),
         "fake-recorder",
-        "#!/bin/sh\nwhile :; do printf '\\0\\0'; sleep 1; done\n",
+        "#!/bin/sh\nprintf 'ready\\n' > \"$ARCO_RECORDER_READY_FILE\"\nwhile :; do printf '\\0\\0'; sleep 1; done\n",
     );
     let transcriber = executable_script(root.path(), "fake-transcriber", transcriber_source);
     CaptureConfig {
@@ -2151,6 +2151,37 @@ fn fake_capture_config(root: &TempDir, transcriber_source: &str) -> CaptureConfi
         environment: HashMap::new(),
         requires_ready_signal: false,
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_passes_its_parent_pid_to_the_native_recorder() {
+    let root = TempDir::new().unwrap();
+    let observed_parent = root.path().join("recorder-parent-pid.txt");
+    let recorder = executable_script(
+        root.path(),
+        "parent-aware-recorder",
+        "#!/bin/sh\nprintf '%s' \"$ARCO_PARENT_PID\" > \"$ARCO_TEST_PARENT_PID_PATH\"\nprintf 'ready\\n' > \"$ARCO_RECORDER_READY_FILE\"\nwhile :; do printf '\\0\\0'; sleep 1; done\n",
+    );
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.recorder = RecorderSpec::Executable(recorder);
+    config.requires_ready_signal = true;
+    config.environment.insert(
+        "ARCO_TEST_PARENT_PID_PATH".into(),
+        observed_parent.to_string_lossy().into_owned(),
+    );
+    let manager = CaptureManager::new(config);
+
+    manager.start("mic").unwrap();
+    assert_eq!(
+        fs::read_to_string(&observed_parent).unwrap(),
+        std::process::id().to_string(),
+        "the recorder must be able to terminate itself when Arco disappears"
+    );
+    assert_eq!(manager.stop().unwrap().phase, "idle");
 }
 
 #[cfg(unix)]
@@ -2256,6 +2287,30 @@ fn capture_does_not_report_recording_until_transcriber_signals_ready() {
     let recording = manager.start("both").unwrap();
     assert_eq!(recording.phase, "recording");
     assert_eq!(manager.stop().unwrap().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_does_not_report_recording_until_the_recorder_signals_ready() {
+    let root = TempDir::new().unwrap();
+    let recorder = executable_script(
+        root.path(),
+        "never-ready-recorder",
+        "#!/bin/sh\nwhile :; do printf '\\0\\0\\0\\0'; done\n",
+    );
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.recorder = RecorderSpec::Executable(recorder);
+    config.requires_ready_signal = true;
+    config.transcribers.deepgram.ready_timeout = Duration::from_secs(1);
+    let manager = CaptureManager::new(config);
+
+    let error = manager.start("system").unwrap_err();
+
+    assert!(error.contains("recorder did not become ready"), "{error}");
+    assert_eq!(manager.status().phase, "error");
 }
 
 #[cfg(unix)]

@@ -15,6 +15,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
+const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone, Debug)]
 pub struct CommandSpec {
     pub program: PathBuf,
@@ -148,6 +150,33 @@ pub fn discover_local_transcriber(paths: &AppPaths) -> Option<PathBuf> {
 struct CaptureChildren {
     recorder: Child,
     transcriber: Child,
+}
+
+struct PipelineReadySignals {
+    recorder: PathBuf,
+    transcriber: PathBuf,
+}
+
+impl PipelineReadySignals {
+    fn new(log_dir: &Path, suffix: &str) -> Self {
+        let signals = Self {
+            recorder: log_dir.join(format!("recorder-ready-{suffix}.signal")),
+            transcriber: log_dir.join(format!("transcriber-ready-{suffix}.signal")),
+        };
+        signals.clear();
+        signals
+    }
+
+    fn clear(&self) {
+        let _ = fs::remove_file(&self.recorder);
+        let _ = fs::remove_file(&self.transcriber);
+    }
+}
+
+impl Drop for PipelineReadySignals {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 struct CaptureInner {
@@ -386,12 +415,10 @@ impl CaptureManager {
 
         let recorder_log = open_log(&self.config.log_dir.join("recorder.log"))?;
         let transcriber_log = open_log(&self.config.log_dir.join("transcriber.log"))?;
-        let ready_file = self.config.log_dir.join(format!(
-            "transcriber-ready-{}-{}.signal",
-            std::process::id(),
-            now.timestamp_micros()
-        ));
-        let _ = fs::remove_file(&ready_file);
+        let ready_signals = PipelineReadySignals::new(
+            &self.config.log_dir,
+            &format!("{}-{}", std::process::id(), now.timestamp_micros()),
+        );
         let mut recorder_command = Command::new(&recorder_binary);
         recorder_command
             .arg(mode)
@@ -400,7 +427,9 @@ impl CaptureManager {
             .stderr(Stdio::from(recorder_log.try_clone().map_err(|error| {
                 format!("could not clone recorder log: {error}")
             })?))
-            .envs(&self.config.environment);
+            .envs(&self.config.environment)
+            .env("ARCO_PARENT_PID", std::process::id().to_string())
+            .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;
         let mut recorder = recorder_command
@@ -424,7 +453,7 @@ impl CaptureManager {
             )?))
             .stderr(Stdio::from(transcriber_log))
             .envs(&self.config.environment)
-            .env("ARCO_READY_FILE", &ready_file)
+            .env("ARCO_READY_FILE", &ready_signals.transcriber)
             .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
         if let Some(api_key) = deepgram_api_key
             .map(str::trim)
@@ -455,16 +484,15 @@ impl CaptureManager {
         if self.config.requires_ready_signal {
             if let Err(error) = wait_for_pipeline_ready(
                 &mut children,
-                &ready_file,
+                &ready_signals.recorder,
+                &ready_signals.transcriber,
                 transcriber_definition.ready_timeout,
             ) {
                 terminate_recorder_then_transcriber(&mut children);
-                let _ = fs::remove_file(&ready_file);
                 let _ = finalize_transcript(&transcript, "error");
                 return Err(error);
             }
         }
-        let _ = fs::remove_file(&ready_file);
 
         Ok((children, transcript, started_at, destination.source))
     }
@@ -515,10 +543,12 @@ fn interrupt_active_capture(inner: &mut CaptureInner) {
 
 fn wait_for_pipeline_ready(
     children: &mut CaptureChildren,
-    ready_file: &Path,
-    timeout: Duration,
+    recorder_ready_file: &Path,
+    transcriber_ready_file: &Path,
+    transcriber_timeout: Duration,
 ) -> Result<(), String> {
     let started = Instant::now();
+    let recorder_timeout = transcriber_timeout.min(MAX_RECORDER_READY_TIMEOUT);
     loop {
         match children.recorder.try_wait() {
             Ok(Some(status)) => {
@@ -546,13 +576,21 @@ fn wait_for_pipeline_ready(
             }
             Ok(None) => {}
         }
-        if ready_file.is_file() {
+        let recorder_ready = recorder_ready_file.is_file();
+        let transcriber_ready = transcriber_ready_file.is_file();
+        if recorder_ready && transcriber_ready {
             return Ok(());
         }
-        if started.elapsed() >= timeout {
+        if !recorder_ready && started.elapsed() >= recorder_timeout {
+            return Err(format!(
+                "native recorder did not become ready within {:.1} seconds",
+                recorder_timeout.as_secs_f64()
+            ));
+        }
+        if !transcriber_ready && started.elapsed() >= transcriber_timeout {
             return Err(format!(
                 "live transcriber did not become ready within {:.1} seconds",
-                timeout.as_secs_f64()
+                transcriber_timeout.as_secs_f64()
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -919,5 +957,15 @@ mod tests {
         );
         assert!(!program.to_string_lossy().contains("python"));
         assert!(!program.to_string_lossy().contains("uv"));
+    }
+
+    #[test]
+    fn bundled_native_recorder_exits_after_its_arco_parent_disappears() {
+        let source = include_str!("../../native/recorder.swift");
+
+        assert!(source.contains("ARCO_PARENT_PID"));
+        assert!(source.contains("kill(parentPID, 0)"));
+        assert!(source.contains("errno == ESRCH"));
+        assert!(source.contains("Arco parent process exited"));
     }
 }

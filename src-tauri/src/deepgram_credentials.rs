@@ -1,6 +1,7 @@
 use serde::Serialize;
 
-const KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram";
+const KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram.v2";
+const LEGACY_KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram";
 const KEYCHAIN_ACCOUNT: &str = "api-key";
 const DEEPGRAM_AUTH_URL: &str = "https://api.deepgram.com/v1/auth/token";
 
@@ -59,22 +60,13 @@ fn status_from_presence(presence: Result<bool, String>) -> DeepgramCredentialSta
 fn has_api_key() -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
-        use security_framework::item::{ItemClass, ItemSearchOptions};
-
-        let result = ItemSearchOptions::new()
-            .class(ItemClass::generic_password())
-            .service(KEYCHAIN_SERVICE)
-            .account(KEYCHAIN_ACCOUNT)
-            .load_attributes(true)
-            .skip_authenticated_items(true)
-            .search();
-        match result {
-            Ok(items) => Ok(!items.is_empty()),
-            Err(error) if error.code() == -25300 => Ok(false),
-            Err(error) => Err(format!(
-                "could not inspect the Deepgram credential in Keychain: {error}"
-            )),
+        if has_keychain_item(KEYCHAIN_SERVICE)? {
+            return Ok(true);
         }
+        if !has_keychain_item(LEGACY_KEYCHAIN_SERVICE)? {
+            return Ok(false);
+        }
+        load_api_key().map(|key| key.is_some())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -96,12 +88,17 @@ pub fn save_verified_api_key(value: &str) -> Result<DeepgramCredentialStatus, St
 pub fn remove_api_key() -> Result<DeepgramCredentialStatus, String> {
     #[cfg(target_os = "macos")]
     {
-        if load_api_key()?.is_some() {
-            security_framework::passwords::delete_generic_password(
-                KEYCHAIN_SERVICE,
-                KEYCHAIN_ACCOUNT,
-            )
-            .map_err(|error| format!("could not remove the Deepgram key from Keychain: {error}"))?;
+        for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+            match security_framework::passwords::delete_generic_password(service, KEYCHAIN_ACCOUNT)
+            {
+                Ok(()) => {}
+                Err(error) if error.code() == -25300 => {}
+                Err(error) => {
+                    return Err(format!(
+                        "could not remove the Deepgram key from Keychain: {error}"
+                    ));
+                }
+            }
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -114,18 +111,16 @@ pub fn remove_api_key() -> Result<DeepgramCredentialStatus, String> {
 pub fn load_api_key() -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
     {
-        match security_framework::passwords::get_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        ) {
-            Ok(bytes) => String::from_utf8(bytes)
-                .map(Some)
-                .map_err(|_| "the Deepgram credential in Keychain is not valid UTF-8".into()),
-            Err(error) if error.code() == -25300 => Ok(None),
-            Err(error) => Err(format!(
-                "could not read the Deepgram credential from Keychain: {error}"
-            )),
-        }
+        let bytes = load_with_legacy_migration(
+            || load_keychain_item(KEYCHAIN_SERVICE),
+            || load_keychain_item(LEGACY_KEYCHAIN_SERVICE),
+            |bytes| store_keychain_item(KEYCHAIN_SERVICE, bytes),
+            || delete_keychain_item(LEGACY_KEYCHAIN_SERVICE),
+        )?;
+        bytes
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| "the Deepgram credential in Keychain is not valid UTF-8".into())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -136,17 +131,82 @@ pub fn load_api_key() -> Result<Option<String>, String> {
 fn store_api_key(key: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        security_framework::passwords::set_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-            key.as_bytes(),
-        )
-        .map_err(|error| format!("could not save the Deepgram key to Keychain: {error}"))
+        store_keychain_item(KEYCHAIN_SERVICE, key.as_bytes())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = key;
         Err("Arco stores Deepgram credentials in macOS Keychain.".into())
+    }
+}
+
+fn load_with_legacy_migration<LoadCurrent, LoadLegacy, StoreCurrent, DeleteLegacy>(
+    load_current: LoadCurrent,
+    load_legacy: LoadLegacy,
+    store_current: StoreCurrent,
+    delete_legacy: DeleteLegacy,
+) -> Result<Option<Vec<u8>>, String>
+where
+    LoadCurrent: FnOnce() -> Result<Option<Vec<u8>>, String>,
+    LoadLegacy: FnOnce() -> Result<Option<Vec<u8>>, String>,
+    StoreCurrent: FnOnce(&[u8]) -> Result<(), String>,
+    DeleteLegacy: FnOnce() -> Result<(), String>,
+{
+    if let Some(bytes) = load_current()? {
+        return Ok(Some(bytes));
+    }
+    let Some(bytes) = load_legacy()? else {
+        return Ok(None);
+    };
+    store_current(&bytes)?;
+    let _ = delete_legacy();
+    Ok(Some(bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn has_keychain_item(service: &str) -> Result<bool, String> {
+    use security_framework::item::{ItemClass, ItemSearchOptions};
+
+    let result = ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(KEYCHAIN_ACCOUNT)
+        .load_attributes(true)
+        .search();
+    match result {
+        Ok(items) => Ok(!items.is_empty()),
+        Err(error) if error.code() == -25300 => Ok(false),
+        Err(error) => Err(format!(
+            "could not inspect the Deepgram credential in Keychain: {error}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn load_keychain_item(service: &str) -> Result<Option<Vec<u8>>, String> {
+    match security_framework::passwords::get_generic_password(service, KEYCHAIN_ACCOUNT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(error) => Err(format!(
+            "could not read the Deepgram credential from Keychain: {error}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn store_keychain_item(service: &str, bytes: &[u8]) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(service, KEYCHAIN_ACCOUNT, bytes)
+        .map_err(|error| format!("could not save the Deepgram key to Keychain: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn delete_keychain_item(service: &str) -> Result<(), String> {
+    match security_framework::passwords::delete_generic_password(service, KEYCHAIN_ACCOUNT) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()),
+        Err(error) => Err(format!(
+            "could not remove the legacy Deepgram key from Keychain: {error}"
+        )),
     }
 }
 
@@ -214,5 +274,69 @@ mod tests {
             status_from_presence(Err("metadata lookup failed".into())).message,
             Some("metadata lookup failed".into()),
         );
+    }
+
+    #[test]
+    fn current_keychain_entry_is_used_without_touching_the_legacy_item() {
+        use std::cell::Cell;
+
+        let legacy_touched = Cell::new(false);
+        let value = load_with_legacy_migration(
+            || Ok(Some(b"current-secret".to_vec())),
+            || {
+                legacy_touched.set(true);
+                Ok(Some(b"legacy-secret".to_vec()))
+            },
+            |_| panic!("current credential must not be rewritten"),
+            || panic!("legacy credential must not be deleted"),
+        )
+        .unwrap();
+
+        assert_eq!(value, Some(b"current-secret".to_vec()));
+        assert!(!legacy_touched.get());
+    }
+
+    #[test]
+    fn legacy_keychain_entry_is_copied_before_the_old_acl_is_deleted() {
+        use std::cell::RefCell;
+
+        let events = RefCell::new(Vec::new());
+        let value = load_with_legacy_migration(
+            || Ok(None),
+            || Ok(Some(b"legacy-secret".to_vec())),
+            |bytes| {
+                assert_eq!(bytes, b"legacy-secret");
+                events.borrow_mut().push("stored-current");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("deleted-legacy");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(value, Some(b"legacy-secret".to_vec()));
+        assert_eq!(*events.borrow(), ["stored-current", "deleted-legacy"]);
+    }
+
+    #[test]
+    fn failed_migration_never_deletes_the_only_saved_key() {
+        use std::cell::Cell;
+
+        let deleted = Cell::new(false);
+        let error = load_with_legacy_migration(
+            || Ok(None),
+            || Ok(Some(b"legacy-secret".to_vec())),
+            |_| Err("new item failed".into()),
+            || {
+                deleted.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "new item failed");
+        assert!(!deleted.get());
     }
 }

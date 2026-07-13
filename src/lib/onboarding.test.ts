@@ -39,12 +39,40 @@ describe('first-run onboarding state', () => {
         diarization: 'lseend-ami-streaming' as const,
       },
       audioMode: 'both' as const,
-      listeningShortcut: 'Fn+KeyM' as const,
+      listeningShortcut: 'CommandOrControl+Shift+Space' as const,
     }
 
     saveOnboardingDraft(draft)
 
     expect(loadOnboardingDraft()).toEqual(draft)
+  })
+
+  it('keeps onboarding progress while migrating the legacy Fn shortcut', () => {
+    window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      step: 4,
+      furthestStep: 4,
+      agentChoice: 'transcript',
+      primary: null,
+      secondary: null,
+      testedProvider: null,
+      transcriptionConfig: {
+        provider: 'deepgram',
+        model: 'nova-3',
+        language: 'zh-CN',
+        diarization: 'provider',
+      },
+      audioMode: 'both',
+      listeningShortcut: 'Fn+KeyM',
+    }))
+
+    expect(loadOnboardingDraft()).toMatchObject({
+      step: 4,
+      furthestStep: 4,
+      listeningShortcut: 'CommandOrControl+Shift+Space',
+    })
+    expect(JSON.parse(window.localStorage.getItem(ONBOARDING_DRAFT_STORAGE_KEY) ?? '{}'))
+      .toMatchObject({ step: 4, listeningShortcut: 'CommandOrControl+Shift+Space' })
   })
 
   it('drops malformed or future drafts instead of trapping the user', () => {
@@ -70,7 +98,7 @@ describe('first-run onboarding state', () => {
         diarization: 'provider' as const,
       },
       audioMode: 'both' as const,
-      listeningShortcut: 'Fn+KeyM' as const,
+      listeningShortcut: 'CommandOrControl+Shift+Space' as const,
     }
     saveOnboardingDraft(draft)
 

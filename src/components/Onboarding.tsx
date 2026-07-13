@@ -57,6 +57,7 @@ interface OnboardingProps {
   transcriptionModels: TranscriptionModelStatus[]
   deepgramCredential: DeepgramCredentialStatus
   listeningShortcut: ListeningShortcut
+  shortcutTestCount: number
   audioMode: AudioMode
   onRefreshRuntimes: () => Promise<RuntimeStatus[] | void> | RuntimeStatus[] | void
   onTestProvider: (provider: ProviderId) => Promise<boolean>
@@ -68,6 +69,8 @@ interface OnboardingProps {
   onTestAudio: (mode: AudioMode) => Promise<AudioSetupCheck>
   onRelaunch: () => void | Promise<void>
   onChangeListeningShortcut: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
+  onStartListeningShortcutRecording?: () => boolean | Promise<boolean>
+  onCancelListeningShortcutRecording?: () => void | Promise<void>
   onComplete: (result: OnboardingResult) => void | Promise<void>
   onSkip: () => void
 }
@@ -122,6 +125,7 @@ export function Onboarding({
   transcriptionModels,
   deepgramCredential,
   listeningShortcut,
+  shortcutTestCount,
   onRefreshRuntimes,
   onTestProvider,
   onSaveDeepgramApiKey,
@@ -129,6 +133,8 @@ export function Onboarding({
   onTestAudio,
   onRelaunch,
   onChangeListeningShortcut,
+  onStartListeningShortcutRecording,
+  onCancelListeningShortcutRecording,
   onComplete,
   onSkip,
 }: OnboardingProps) {
@@ -164,6 +170,8 @@ export function Onboarding({
   const [workingAudioSource, setWorkingAudioSource] = useState<AudioSource | null>(null)
   const [audioCountdown, setAudioCountdown] = useState(3)
   const [shortcut, setShortcut] = useState(initialDraft?.listeningShortcut ?? listeningShortcut)
+  const [shortcutTestBaseline, setShortcutTestBaseline] = useState(shortcutTestCount)
+  const [shortcutRecording, setShortcutRecording] = useState(false)
   const [finishing, setFinishing] = useState(false)
 
   const primary = selectedPrimary ?? firstAvailable
@@ -223,7 +231,7 @@ export function Onboarding({
     if (workingAudioSource === null) return
     setAudioCountdown(3)
     const timer = window.setInterval(() => {
-      setAudioCountdown((current) => Math.max(1, current - 1))
+      setAudioCountdown((current) => Math.max(0, current - 1))
     }, 1000)
     return () => window.clearInterval(timer)
   }, [workingAudioSource])
@@ -235,6 +243,7 @@ export function Onboarding({
 
   const reveal = (next: number) => {
     setFurthestStep((current) => Math.max(current, next))
+    if (next === 4) setShortcutTestBaseline(shortcutTestCount)
     setStep(next)
   }
 
@@ -412,7 +421,10 @@ export function Onboarding({
 
   const changeShortcut = async (next: ListeningShortcut) => {
     const changed = await onChangeListeningShortcut(next)
-    if (changed) setShortcut(next)
+    if (changed) {
+      setShortcut(next)
+      setShortcutTestBaseline(shortcutTestCount)
+    }
     return changed
   }
 
@@ -449,10 +461,11 @@ export function Onboarding({
     const check = audioChecks[source]
     const result = check.result
     const isDetecting = workingAudioSource === source
+    const isStarting = isDetecting && audioCountdown === 0
     const isReady = check.state === 'passed' && result?.ready === true
     const isFailed = check.state === 'failed'
     const description = isDetecting
-      ? t('onboarding.detecting')
+      ? isStarting ? t('common.starting') : t('onboarding.detecting')
       : isReady
         ? source === 'system' ? t('onboarding.systemReady') : t('onboarding.micReady')
         : isFailed
@@ -460,7 +473,7 @@ export function Onboarding({
           : source === 'system' ? t('onboarding.playSomething') : t('onboarding.saySomething')
     const idleLabel = source === 'system' ? t('onboarding.checkSystemAudio') : t('onboarding.checkMicrophone')
     const buttonLabel = isDetecting
-      ? t('onboarding.listeningCountdown', { seconds: audioCountdown })
+      ? isStarting ? t('common.starting') : t('onboarding.listeningCountdown', { seconds: audioCountdown })
       : check.state === 'idle' ? idleLabel : t('onboarding.checkAgain')
     return (
       <div className={isDetecting ? 'onboarding-source-detecting' : isReady ? 'onboarding-source-ready' : isFailed ? 'onboarding-source-failed' : ''}>
@@ -705,7 +718,33 @@ export function Onboarding({
                 <Command size={30} strokeWidth={1.5} aria-hidden="true" />
                 <h2 id="onboarding-shortcut-heading">{t('onboarding.startAnywhere')}</h2>
                 <p>{t('onboarding.shortcutHelp')}</p>
-                <ShortcutRecorder value={shortcut} onChange={changeShortcut} />
+                <ShortcutRecorder
+                  value={shortcut}
+                  onChange={changeShortcut}
+                  onStartRecording={onStartListeningShortcutRecording}
+                  onCancelRecording={onCancelListeningShortcutRecording}
+                  onRecordingChange={(recording) => {
+                    setShortcutRecording(recording)
+                    if (recording) setShortcutTestBaseline(shortcutTestCount)
+                  }}
+                />
+                {!shortcutRecording && shortcut && (
+                  <div
+                    className={`onboarding-shortcut-feedback ${shortcutTestCount > shortcutTestBaseline ? 'onboarding-shortcut-feedback-ready' : ''}`}
+                    role={shortcutTestCount > shortcutTestBaseline ? 'status' : undefined}
+                  >
+                    {shortcutTestCount > shortcutTestBaseline && <Check size={14} aria-hidden="true" />}
+                    {t(
+                      shortcutTestCount > shortcutTestBaseline
+                        ? 'onboarding.shortcutTestPassed'
+                        : 'onboarding.shortcutTestHelp',
+                      { shortcut: formatListeningShortcut(shortcut) },
+                    )}
+                  </div>
+                )}
+                {!shortcutRecording && !shortcut && (
+                  <div className="onboarding-shortcut-feedback">{t('onboarding.shortcutDisabled')}</div>
+                )}
                 <small>{t('onboarding.shortcutSettings')}</small>
               </section>
             )}
