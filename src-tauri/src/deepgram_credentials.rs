@@ -425,4 +425,15 @@ mod tests {
             "Keychain must only be opened once per app session"
         );
     }
+
+    #[test]
+    fn preview_packaging_unregisters_non_installed_app_copies() {
+        let packaging = include_str!("../../native/package-local-app.sh");
+
+        assert!(
+            packaging.contains("unregister_app \"$APP\"")
+                && packaging.contains("unregister_app \"$MOUNT_POINT/Arco.app\""),
+            "build and mounted-DMG app copies must not remain registered as alternate Arco identities"
+        );
+    }
 }

@@ -56,4 +56,14 @@ describe('AgentOverlay', () => {
 
     expect(hide).toHaveBeenCalledTimes(1)
   })
+
+  it('exposes the shared title bar as a native drag region without making controls draggable', async () => {
+    render(<AgentOverlay />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Ask Arco' })
+    const header = dialog.querySelector('.agent-overlay-shared-header')
+    expect(header).toHaveAttribute('data-tauri-drag-region', 'true')
+    expect(screen.getByRole('button', { name: 'Hide transcript' })).not.toHaveAttribute('data-tauri-drag-region')
+    expect(screen.getByRole('button', { name: 'Close Agent' })).not.toHaveAttribute('data-tauri-drag-region')
+  })
 })
