@@ -40,6 +40,7 @@ const hasEmptyDemoMode = () => !hasTauriRuntime() && demoMode() === 'empty'
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const demoTurnsKey = 'arco.demoAgentTurns'
 const demoCaptureKey = 'arco.demoCapture'
+const demoTranscriptEmptyKey = 'arco.demoTranscriptEmpty'
 const demoMeetingOutputsKey = 'arco.demoMeetingOutputs'
 const demoStorageKey = 'arco.demoTranscriptStorage'
 const demoTranscriptionModelsKey = 'arco.demoTranscriptionModels'
@@ -238,7 +239,11 @@ export const arcoBridge = {
     }
     const meeting = demoMeetingDetails[id]
     if (!meeting) throw new Error('Meeting not found')
-    return { ...meeting, summary: withDemoMeetingOutput(meeting.summary) }
+    return {
+      ...meeting,
+      summary: withDemoMeetingOutput(meeting.summary),
+      lines: window.localStorage.getItem(demoTranscriptEmptyKey) === 'true' ? [] : meeting.lines,
+    }
   },
 
   async storageSettings(): Promise<TranscriptStorageSettings> {

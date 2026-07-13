@@ -51,9 +51,9 @@ export function AgentOverlay() {
 
   return (
     <section className="agent-overlay-surface" role="dialog" aria-label={t('agent.askArco')} data-transcript={transcriptVisible ? 'open' : 'closed'}>
-      <header className="agent-overlay-shared-header">
-        <div className="agent-overlay-agent-header">
-          <h2>{t('agent.askArco')}</h2>
+      <header className="agent-overlay-shared-header" data-tauri-drag-region>
+        <div className="agent-overlay-agent-header" data-tauri-drag-region>
+          <h2 data-tauri-drag-region>{t('agent.askArco')}</h2>
           {!transcriptVisible && (
             <div className="agent-overlay-window-actions">
               <button type="button" className="agent-transcript-toggle agent-transcript-show" onClick={() => resizeForTranscript(true)} aria-label={t('agent.showTranscript')}>
@@ -67,8 +67,8 @@ export function AgentOverlay() {
           )}
         </div>
         {transcriptVisible && (
-          <div className="agent-overlay-transcript-header">
-            <h2>{t('transcript.heading')}</h2>
+          <div className="agent-overlay-transcript-header" data-tauri-drag-region>
+            <h2 data-tauri-drag-region>{t('transcript.heading')}</h2>
             <div className="agent-overlay-window-actions">
               {live && <span className="agent-live-status">{t('agent.live')}</span>}
               <button type="button" className="agent-transcript-toggle" onClick={() => resizeForTranscript(false)} aria-label={t('agent.hideTranscript')}>

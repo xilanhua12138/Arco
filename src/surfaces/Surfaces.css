@@ -249,6 +249,7 @@ html[data-surface="agent-overlay"] #root {
 .transcript-pane-compact .empty-workspace p { max-width: 220px; font-size: 11px; line-height: 17px; }
 .transcript-pane-compact .jump-live-button { right: 10px; bottom: 10px; padding: 7px 9px; font-size: 10px; }
 .transcript-pane-compact .transcript-lines { padding-bottom: 48px; }
+.transcript-pane-compact .transcript-lines-empty { padding-bottom: 0; }
 .agent-overlay-surface .ask-composer textarea { height: 40px; }
 
 .agent-overlay-header-actions {

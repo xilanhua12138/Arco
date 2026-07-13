@@ -18,10 +18,18 @@ DMG_ROOT="$STAGING/dmg-root"
 MOUNT_POINT="/Volumes/$VOLUME_NAME"
 BACKGROUND="$STAGING/background.png"
 RW_DMG="$STAGING/Arco-rw.dmg"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 MOUNTED=0
+
+unregister_app() {
+  if [ -x "$LSREGISTER" ] && [ -d "$1" ]; then
+    "$LSREGISTER" -u "$1" >/dev/null 2>&1 || true
+  fi
+}
 
 cleanup() {
   if [ "$MOUNTED" -eq 1 ]; then
+    unregister_app "$MOUNT_POINT/Arco.app"
     hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
   fi
   rm -rf "$STAGING"
@@ -51,6 +59,7 @@ if [ -e "$APP/Contents/MacOS/arco-deepgram-transcriber" ]; then
   echo "Deepgram sidecar was incorrectly selected as the app executable" >&2
   exit 1
 fi
+unregister_app "$APP"
 
 COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
 "$ROOT/native/codesign-local.sh" \
@@ -131,6 +140,7 @@ if find "$MOUNT_POINT" -name '._*' -print -quit | grep -q .; then
   echo "DMG contains AppleDouble metadata that would invalidate the app signature" >&2
   exit 1
 fi
+unregister_app "$MOUNT_POINT/Arco.app"
 hdiutil detach "$MOUNT_POINT" >/dev/null
 MOUNTED=0
 (cd "$ARTIFACT_DIR" && shasum -a 256 "$(basename "$OUTPUT")") > "$OUTPUT.sha256"

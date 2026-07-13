@@ -130,6 +130,51 @@ test('native Agent overlay fills its WebView without browser QA offsets', async 
   expect(Math.round(box!.height)).toBe(560)
 })
 
+test('live transcript waiting state is centered in Current and the Agent overlay', async ({ page }) => {
+  await page.setViewportSize({ width: 1240, height: 820 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.providerConfig', JSON.stringify({
+      setupComplete: true,
+      primary: 'codex',
+      secondary: 'claude',
+    }))
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-live',
+      startedAt: new Date().toISOString(),
+      message: null,
+    }))
+    window.localStorage.setItem('arco.demoTranscriptEmpty', 'true')
+  })
+
+  const expectWaitingStateCentered = async () => {
+    const transcript = page.getByRole('complementary', { name: 'Meeting transcript' })
+    const body = transcript.locator('.transcript-scroll')
+    const waiting = transcript.locator('.awaiting-audio')
+    await expect(waiting.getByRole('heading', { name: 'Listening for the first words' })).toBeVisible()
+    const [bodyBox, waitingBox] = await Promise.all([body.boundingBox(), waiting.boundingBox()])
+    expect(bodyBox).not.toBeNull()
+    expect(waitingBox).not.toBeNull()
+    expect(Math.abs(
+      waitingBox!.x + waitingBox!.width / 2 - (bodyBox!.x + bodyBox!.width / 2),
+    )).toBeLessThanOrEqual(1)
+    expect(Math.abs(
+      waitingBox!.y + waitingBox!.height / 2 - (bodyBox!.y + bodyBox!.height / 2),
+    )).toBeLessThanOrEqual(1)
+  }
+
+  await page.goto('/?demo=1')
+  await expectWaitingStateCentered()
+
+  await page.setViewportSize({ width: 720, height: 560 })
+  await page.goto('/?surface=agent-overlay&demo=1')
+  await page.evaluate(() => {
+    document.documentElement.dataset.runtime = 'desktop'
+  })
+  await expect(page.locator('.agent-overlay-shared-header')).toHaveAttribute('data-tauri-drag-region', 'true')
+  await expectWaitingStateCentered()
+})
+
 test('global utility surfaces remain light when system appearance is dark', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.emulateMedia({ colorScheme: 'dark' })

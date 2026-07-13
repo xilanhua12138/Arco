@@ -126,6 +126,7 @@ export function TranscriptPane({ meeting, capture, loading, compact = false, sho
   const lastSequence = meeting?.lines.at(-1)?.sequence
   const active = capture.phase === 'recording' && meeting?.summary.id === capture.activeMeetingId
   const generatedSummary = meeting?.summary.generatedSummary?.trim() ?? ''
+  const transcriptEmpty = meeting?.lines.length === 0
 
   useEffect(() => {
     if (!followingLive || !active) return
@@ -179,9 +180,9 @@ export function TranscriptPane({ meeting, capture, loading, compact = false, sho
     <aside className={`transcript-pane transcript-surface ${compact ? 'transcript-pane-compact' : ''}`} aria-label={t('transcript.aria')}>
       {showHeader && <TranscriptHeader />}
       <div className="transcript-scroll" ref={scrollRef} onScroll={handleScroll}>
-        <article className="transcript-document">
+        <article className={`transcript-document ${transcriptEmpty ? 'transcript-document-empty' : ''}`}>
           {generatedSummary && <MeetingSummaryDocument summary={generatedSummary} />}
-          <div className="transcript-lines">
+          <div className={`transcript-lines ${transcriptEmpty ? 'transcript-lines-empty' : ''}`}>
             {meeting.lines.length === 0 ? (
               <div className="awaiting-audio">
                 <AudioWaveform size={24} />
