@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="420" viewBox="0 0 660 420">
+  <defs>
+    <radialGradient id="blue" cx="0" cy="0" r="1" gradientTransform="translate(92 42) rotate(42) scale(390 285)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C7EEFF" stop-opacity=".78"/>
+      <stop offset="1" stop-color="#C7EEFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coral" cx="0" cy="0" r="1" gradientTransform="translate(606 390) rotate(-138) scale(390 275)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD7CE" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#FFD7CE" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="surface" x1="0" y1="0" x2="660" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FBFD"/>
+      <stop offset=".53" stop-color="#FBFBFC"/>
+      <stop offset="1" stop-color="#FCF8F7"/>
+    </linearGradient>
+    <linearGradient id="arrowTrack" x1="260" y1="222" x2="400" y2="222" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".34"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity=".76"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".34"/>
+    </linearGradient>
+    <filter id="trackShadow" x="242" y="199" width="176" height="48" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#395166" flood-opacity=".1"/>
+    </filter>
+  </defs>
+
+  <rect width="660" height="420" fill="url(#surface)"/>
+  <rect width="660" height="420" fill="url(#blue)"/>
+  <rect width="660" height="420" fill="url(#coral)"/>
+  <rect x=".5" y=".5" width="659" height="419" rx="1.5" fill="none" stroke="#FFFFFF" stroke-opacity=".8"/>
+
+  <text x="330" y="62" text-anchor="middle" fill="#111315" font-family="Avenir Next, -apple-system, BlinkMacSystemFont, sans-serif" font-size="27" font-weight="600" letter-spacing="-.5">Install Arco</text>
+  <text x="330" y="89" text-anchor="middle" fill="#111315" fill-opacity=".58" font-family="Avenir Next, -apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Drag Arco to Applications</text>
+
+  <g filter="url(#trackShadow)">
+    <rect x="252" y="207" width="156" height="32" rx="16" fill="url(#arrowTrack)"/>
+  </g>
+  <path d="M285 223H375" fill="none" stroke="#17191B" stroke-opacity=".72" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M366 214L375 223L366 232" fill="none" stroke="#17191B" stroke-opacity=".72" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <text x="330" y="389" text-anchor="middle" fill="#111315" fill-opacity=".38" font-family="Avenir Next, -apple-system, BlinkMacSystemFont, sans-serif" font-size="11">macOS 14+  ·  Apple Silicon</text>
+</svg>

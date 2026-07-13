@@ -12,9 +12,12 @@ APP="$TARGET_DIR/release/bundle/macos/Arco.app"
 ARTIFACT_DIR="$ROOT/artifacts"
 ARCH=$(uname -m)
 OUTPUT="$ARTIFACT_DIR/Arco-macos-$ARCH.dmg"
+VOLUME_NAME="Arco Installer"
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/arco-package.XXXXXX")
 DMG_ROOT="$STAGING/dmg-root"
-MOUNT_POINT="$STAGING/mount"
+MOUNT_POINT="/Volumes/$VOLUME_NAME"
+BACKGROUND="$STAGING/background.png"
+RW_DMG="$STAGING/Arco-rw.dmg"
 MOUNTED=0
 
 cleanup() {
@@ -26,8 +29,10 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 cd "$ROOT"
-rm -rf "$APP"
-pnpm tauri build --bundles app
+if [ "${ARCO_PACKAGE_SKIP_BUILD:-0}" != "1" ]; then
+  rm -rf "$APP"
+  pnpm tauri build --bundles app
+fi
 
 if [ ! -x "$APP/Contents/MacOS/arco" ]; then
   echo "Arco.app is missing its main desktop executable" >&2
@@ -53,23 +58,57 @@ codesign --verify --deep --strict --verbose=2 "$STAGING/Arco.app"
 
 mkdir -p "$ARTIFACT_DIR"
 rm -f "$OUTPUT"
-mkdir -p "$DMG_ROOT" "$MOUNT_POINT"
+mkdir -p "$DMG_ROOT"
 COPYFILE_DISABLE=1 ditto --norsrc "$STAGING/Arco.app" "$DMG_ROOT/Arco.app"
 ln -s /Applications "$DMG_ROOT/Applications"
+sips \
+  -s format png \
+  -z 840 1320 \
+  -s dpiWidth 144 \
+  -s dpiHeight 144 \
+  "$ROOT/native/dmg-background.svg" \
+  --out "$BACKGROUND" >/dev/null
+
 COPYFILE_DISABLE=1 hdiutil create \
-  -volname "Arco" \
+  -volname "$VOLUME_NAME" \
   -srcfolder "$DMG_ROOT" \
+  -format UDRW \
+  -ov \
+  "$RW_DMG" >/dev/null
+
+if [ -e "$MOUNT_POINT" ]; then
+  echo "Cannot style the DMG while $MOUNT_POINT is already mounted. Eject it and try again." >&2
+  exit 1
+fi
+hdiutil attach -readwrite -nobrowse -mountpoint "$MOUNT_POINT" "$RW_DMG" >/dev/null
+MOUNTED=1
+mkdir -p "$MOUNT_POINT/.background"
+COPYFILE_DISABLE=1 ditto --norsrc "$BACKGROUND" "$MOUNT_POINT/.background/background.png"
+osascript "$ROOT/native/dmg-layout.applescript" "$VOLUME_NAME" "$MOUNT_POINT" >/dev/null
+sync
+hdiutil detach "$MOUNT_POINT" >/dev/null
+MOUNTED=0
+
+hdiutil convert "$RW_DMG" \
   -format UDZO \
   -imagekey zlib-level=9 \
   -ov \
-  "$OUTPUT" >/dev/null
+  -o "$OUTPUT" >/dev/null
 
 hdiutil verify "$OUTPUT" >/dev/null
+if [ -e "$MOUNT_POINT" ]; then
+  echo "Cannot verify the DMG while $MOUNT_POINT is already mounted. Eject it and try again." >&2
+  exit 1
+fi
 hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$OUTPUT" >/dev/null
 MOUNTED=1
 codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Arco.app"
 if [ ! -L "$MOUNT_POINT/Applications" ]; then
   echo "DMG is missing the Applications shortcut" >&2
+  exit 1
+fi
+if [ ! -f "$MOUNT_POINT/.background/background.png" ]; then
+  echo "DMG is missing its branded background" >&2
   exit 1
 fi
 if find "$MOUNT_POINT" -name '._*' -print -quit | grep -q .; then
