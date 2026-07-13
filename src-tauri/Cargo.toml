@@ -1,6 +1,6 @@
 [package]
 name = "Arco"
-version = "0.1.3"
+version = "0.1.4"
 description = "AI-native meeting copilot powered by the user's local agent CLI"
 authors = ["Arco contributors"]
 license = "MIT"

@@ -285,16 +285,30 @@ fn configure_macos_overlay(_window: &WebviewWindow, _hud: bool) -> Result<(), St
     Ok(())
 }
 
-fn finish_overlay_setup(window: &WebviewWindow, is_hud: bool) {
-    #[cfg(target_os = "macos")]
-    material::apply_overlay_material(window);
+#[cfg(target_os = "macos")]
+fn finish_overlay_setup(window: &WebviewWindow, is_hud: bool) -> Result<(), String> {
+    let setup_window = window.clone();
+    let label = window.label().to_string();
+    let (send_result, receive_result) = std::sync::mpsc::sync_channel(1);
 
-    if let Err(error) = configure_macos_overlay(window, is_hud) {
-        log::warn!(
-            "Arco could not configure {} across fullscreen Spaces: {error}",
-            window.label()
-        );
-    }
+    window
+        .run_on_main_thread(move || {
+            material::apply_overlay_material(&setup_window);
+            let _ = send_result.send(configure_macos_overlay(&setup_window, is_hud));
+        })
+        .map_err(|error| format!("could not dispatch {label} setup to the main thread: {error}"))?;
+
+    receive_result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| {
+            format!("timed out while configuring {label} on the main thread: {error}")
+        })?
+        .map_err(|error| format!("could not configure {label} across fullscreen Spaces: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn finish_overlay_setup(window: &WebviewWindow, is_hud: bool) -> Result<(), String> {
+    configure_macos_overlay(window, is_hud)
 }
 
 fn ensure_hud_window(app: &AppHandle) -> Result<WebviewWindow, String> {
@@ -325,7 +339,10 @@ fn ensure_hud_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .visible(false)
     .build()
     .map_err(|error| error.to_string())?;
-    finish_overlay_setup(&hud, true);
+    if let Err(error) = finish_overlay_setup(&hud, true) {
+        let _ = hud.destroy();
+        return Err(error);
+    }
     Ok(hud)
 }
 
@@ -358,7 +375,10 @@ fn ensure_agent_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .visible(false)
     .build()
     .map_err(|error| error.to_string())?;
-    finish_overlay_setup(&agent, false);
+    if let Err(error) = finish_overlay_setup(&agent, false) {
+        let _ = agent.destroy();
+        return Err(error);
+    }
     Ok(agent)
 }
 
@@ -389,6 +409,22 @@ mod tests {
         assert!(overlay_source.contains("ensure_hud_window(app)?"));
         assert!(overlay_source.contains("ensure_agent_window(app)?"));
         assert!(overlay_source.contains("release_capture_surfaces"));
+    }
+
+    #[test]
+    fn native_overlay_mutations_are_dispatched_to_the_macos_main_thread() {
+        let overlay_source = include_str!("overlay.rs");
+        let main_thread_dispatch = [".run_on_main", "_thread(move ||"].concat();
+        let completion_wait = ["recv", "_timeout"].concat();
+
+        assert!(
+            overlay_source.contains(&main_thread_dispatch),
+            "NSWindow mutations must never run directly on a Tokio command worker"
+        );
+        assert!(
+            overlay_source.contains(&completion_wait),
+            "overlay setup must finish before the recording HUD is shown"
+        );
     }
 
     #[test]

@@ -221,7 +221,7 @@ html[data-surface="agent-overlay"] #root {
 .agent-overlay-surface .quick-action-list button { padding: 11px 12px; }
 .agent-overlay-surface .agent-reply { margin-top: 16px; padding-top: 16px; }
 .agent-overlay-surface .agent-reply p { font-size: 14px; line-height: 22px; }
-.agent-overlay-surface .ask-composer { margin: 0 11px 11px; padding: 11px; }
+.agent-overlay-surface .ask-composer { margin: 0 16px 16px; padding: 11px; }
 .agent-overlay-surface .ask-composer textarea { font-size: 13px; line-height: 20px; }
 
 .transcript-pane-compact .utterance {

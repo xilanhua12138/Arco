@@ -8,7 +8,7 @@ fn material_for_macos_version(version: Option<&str>) -> NativeMaterial {
     let major_version = version.and_then(parse_macos_major_version);
 
     match major_version {
-        Some(26..) => NativeMaterial::LiquidGlass,
+        Some(26) => NativeMaterial::LiquidGlass,
         _ => NativeMaterial::Vibrancy,
     }
 }
@@ -121,18 +121,22 @@ mod tests {
     use window_vibrancy::NSGlassEffectViewStyle;
 
     #[test]
-    fn macos_26_and_newer_use_liquid_glass() {
+    fn macos_26_uses_liquid_glass() {
         assert_eq!(
             material_for_macos_version(Some("26.0")),
             NativeMaterial::LiquidGlass
         );
         assert_eq!(
-            material_for_macos_version(Some("27.1.2")),
-            NativeMaterial::LiquidGlass
-        );
-        assert_eq!(
             material_for_macos_version(Some(" 26.0.1\n")),
             NativeMaterial::LiquidGlass
+        );
+    }
+
+    #[test]
+    fn unvalidated_future_macos_versions_use_vibrancy() {
+        assert_eq!(
+            material_for_macos_version(Some("27.1.2")),
+            NativeMaterial::Vibrancy
         );
     }
 

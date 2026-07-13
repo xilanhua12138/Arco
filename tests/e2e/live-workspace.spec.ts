@@ -74,6 +74,20 @@ test('Agent overlay is a focused always-on-top conversation surface', async ({ p
   await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
   await expect(page.getByText(/It should know enough about my work/)).toBeVisible()
 
+  const [agentHeadingBox, quickActionsBox, composerBox] = await Promise.all([
+    overlay.getByRole('heading', { name: 'Ask Arco' }).boundingBox(),
+    overlay.locator('.quick-action-list').boundingBox(),
+    overlay.locator('.ask-composer').boundingBox(),
+  ])
+  expect(agentHeadingBox).not.toBeNull()
+  expect(quickActionsBox).not.toBeNull()
+  expect(composerBox).not.toBeNull()
+  expect(Math.abs(agentHeadingBox!.x - quickActionsBox!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(composerBox!.x - quickActionsBox!.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(
+    composerBox!.x + composerBox!.width - (quickActionsBox!.x + quickActionsBox!.width),
+  )).toBeLessThanOrEqual(1)
+
   const box = await overlay.boundingBox()
   expect(box).not.toBeNull()
   expect(Math.round(box!.width)).toBe(720)
@@ -346,6 +360,7 @@ test('Current keeps transcript primary with Agent visible at its right', async (
   await expect(agent).toBeVisible()
   await expect(agent.getByRole('heading', { name: 'Ask Arco' })).toHaveCSS('font-size', '16px')
   await expect(transcript).toBeVisible()
+  await expect(transcript.getByRole('heading', { name: 'Transcript' })).toHaveCSS('font-size', '16px')
   await expect(page.getByRole('button', { name: /Open Agent|Close Agent/i })).toHaveCount(0)
   await expect(page.getByRole('dialog', { name: 'Ask Arco' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Stop listening' })).toHaveCount(1)
