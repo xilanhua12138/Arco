@@ -859,7 +859,7 @@
 .meeting-summary-copy ol { display: grid; gap: 4px; padding-left: 20px; }
 .meeting-summary-copy li { padding-left: 2px; }
 .transcript-surface-header { min-height: 70px; flex: 0 0 auto; display: flex; align-items: center; padding: 22px 20px 16px; border-bottom: 1px solid var(--line-thin); }
-.transcript-surface-header h2 { margin: 0; color: var(--ink-strong); font-size: 18px; font-weight: 600; line-height: 32px; letter-spacing: -0.01em; }
+.transcript-surface-header h2 { margin: 0; color: var(--ink-strong); font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -0.01em; }
 
 .utterance {
   display: grid;

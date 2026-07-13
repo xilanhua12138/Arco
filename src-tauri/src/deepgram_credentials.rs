@@ -1,9 +1,13 @@
 use serde::Serialize;
+use std::sync::{Mutex, OnceLock};
 
-const KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram.v2";
+const KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram.v3";
+const PREVIOUS_KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram.v2";
 const LEGACY_KEYCHAIN_SERVICE: &str = "app.arco.desktop.deepgram";
 const KEYCHAIN_ACCOUNT: &str = "api-key";
 const DEEPGRAM_AUTH_URL: &str = "https://api.deepgram.com/v1/auth/token";
+
+static SESSION_API_KEY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,13 +64,16 @@ fn status_from_presence(presence: Result<bool, String>) -> DeepgramCredentialSta
 fn has_api_key() -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
-        if has_keychain_item(KEYCHAIN_SERVICE)? {
-            return Ok(true);
+        for service in [
+            KEYCHAIN_SERVICE,
+            PREVIOUS_KEYCHAIN_SERVICE,
+            LEGACY_KEYCHAIN_SERVICE,
+        ] {
+            if has_keychain_item(service)? {
+                return Ok(true);
+            }
         }
-        if !has_keychain_item(LEGACY_KEYCHAIN_SERVICE)? {
-            return Ok(false);
-        }
-        load_api_key().map(|key| key.is_some())
+        Ok(false)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -78,6 +85,7 @@ pub fn save_verified_api_key(value: &str) -> Result<DeepgramCredentialStatus, St
     let key = normalize_api_key(value)?;
     validate_api_key(&key)?;
     store_api_key(&key)?;
+    cache_api_key(Some(key))?;
     Ok(DeepgramCredentialStatus {
         configured: true,
         verified: true,
@@ -86,9 +94,14 @@ pub fn save_verified_api_key(value: &str) -> Result<DeepgramCredentialStatus, St
 }
 
 pub fn remove_api_key() -> Result<DeepgramCredentialStatus, String> {
+    cache_api_key(None)?;
     #[cfg(target_os = "macos")]
     {
-        for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+        for service in [
+            KEYCHAIN_SERVICE,
+            PREVIOUS_KEYCHAIN_SERVICE,
+            LEGACY_KEYCHAIN_SERVICE,
+        ] {
             match security_framework::passwords::delete_generic_password(service, KEYCHAIN_ACCOUNT)
             {
                 Ok(()) => {}
@@ -111,16 +124,18 @@ pub fn remove_api_key() -> Result<DeepgramCredentialStatus, String> {
 pub fn load_api_key() -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
     {
-        let bytes = load_with_legacy_migration(
-            || load_keychain_item(KEYCHAIN_SERVICE),
-            || load_keychain_item(LEGACY_KEYCHAIN_SERVICE),
-            |bytes| store_keychain_item(KEYCHAIN_SERVICE, bytes),
-            || delete_keychain_item(LEGACY_KEYCHAIN_SERVICE),
-        )?;
-        bytes
-            .map(String::from_utf8)
-            .transpose()
-            .map_err(|_| "the Deepgram credential in Keychain is not valid UTF-8".into())
+        load_cached_api_key(session_api_key(), || {
+            let bytes = load_with_legacy_migration(
+                load_current_keychain_item,
+                || load_keychain_item(PREVIOUS_KEYCHAIN_SERVICE),
+                || load_keychain_item(LEGACY_KEYCHAIN_SERVICE),
+                store_current_keychain_item,
+            )?;
+            bytes
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|_| "the Deepgram credential in Keychain is not valid UTF-8".into())
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -131,7 +146,7 @@ pub fn load_api_key() -> Result<Option<String>, String> {
 fn store_api_key(key: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        store_keychain_item(KEYCHAIN_SERVICE, key.as_bytes())
+        store_current_keychain_item(key.as_bytes())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -140,27 +155,99 @@ fn store_api_key(key: &str) -> Result<(), String> {
     }
 }
 
-fn load_with_legacy_migration<LoadCurrent, LoadLegacy, StoreCurrent, DeleteLegacy>(
+fn session_api_key() -> &'static Mutex<Option<String>> {
+    SESSION_API_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn cache_api_key(value: Option<String>) -> Result<(), String> {
+    let mut cached = session_api_key()
+        .lock()
+        .map_err(|_| "the in-memory Deepgram credential cache is unavailable".to_string())?;
+    *cached = value;
+    Ok(())
+}
+
+fn load_cached_api_key<Load>(
+    cache: &Mutex<Option<String>>,
+    load: Load,
+) -> Result<Option<String>, String>
+where
+    Load: FnOnce() -> Result<Option<String>, String>,
+{
+    let mut cached = cache
+        .lock()
+        .map_err(|_| "the in-memory Deepgram credential cache is unavailable".to_string())?;
+    if cached.is_some() {
+        return Ok(cached.clone());
+    }
+    let loaded = load()?;
+    if loaded.is_some() {
+        *cached = loaded.clone();
+    }
+    Ok(loaded)
+}
+
+fn load_with_legacy_migration<LoadCurrent, LoadPrevious, LoadLegacy, StoreCurrent>(
     load_current: LoadCurrent,
+    load_previous: LoadPrevious,
     load_legacy: LoadLegacy,
     store_current: StoreCurrent,
-    delete_legacy: DeleteLegacy,
 ) -> Result<Option<Vec<u8>>, String>
 where
     LoadCurrent: FnOnce() -> Result<Option<Vec<u8>>, String>,
+    LoadPrevious: FnOnce() -> Result<Option<Vec<u8>>, String>,
     LoadLegacy: FnOnce() -> Result<Option<Vec<u8>>, String>,
     StoreCurrent: FnOnce(&[u8]) -> Result<(), String>,
-    DeleteLegacy: FnOnce() -> Result<(), String>,
 {
     if let Some(bytes) = load_current()? {
         return Ok(Some(bytes));
     }
-    let Some(bytes) = load_legacy()? else {
-        return Ok(None);
+    let bytes = match load_previous()? {
+        Some(bytes) => bytes,
+        None => match load_legacy()? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        },
     };
     store_current(&bytes)?;
-    let _ = delete_legacy();
     Ok(Some(bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn load_current_keychain_item() -> Result<Option<Vec<u8>>, String> {
+    use security_framework::os::macos::keychain::SecKeychain;
+
+    let keychain = SecKeychain::default()
+        .map_err(|error| format!("could not open the login Keychain: {error}"))?;
+    match keychain.find_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
+        Ok((password, _item)) => Ok(Some(password.to_vec())),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(error) => Err(format!(
+            "could not read the Deepgram credential from Keychain: {error}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn store_current_keychain_item(bytes: &[u8]) -> Result<(), String> {
+    use security_framework::os::macos::keychain::SecKeychain;
+
+    let keychain = SecKeychain::default()
+        .map_err(|error| format!("could not open the login Keychain: {error}"))?;
+    keychain
+        .set_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, bytes)
+        .map_err(|error| format!("could not save the Deepgram key to Keychain: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn load_keychain_item(service: &str) -> Result<Option<Vec<u8>>, String> {
+    match security_framework::passwords::get_generic_password(service, KEYCHAIN_ACCOUNT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(error) => Err(format!(
+            "could not read the Deepgram credential from Keychain: {error}"
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -182,33 +269,10 @@ fn has_keychain_item(service: &str) -> Result<bool, String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn load_keychain_item(service: &str) -> Result<Option<Vec<u8>>, String> {
-    match security_framework::passwords::get_generic_password(service, KEYCHAIN_ACCOUNT) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(error) => Err(format!(
-            "could not read the Deepgram credential from Keychain: {error}"
-        )),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn store_keychain_item(service: &str, bytes: &[u8]) -> Result<(), String> {
-    security_framework::passwords::set_generic_password(service, KEYCHAIN_ACCOUNT, bytes)
-        .map_err(|error| format!("could not save the Deepgram key to Keychain: {error}"))
-}
-
-#[cfg(target_os = "macos")]
-fn delete_keychain_item(service: &str) -> Result<(), String> {
-    match security_framework::passwords::delete_generic_password(service, KEYCHAIN_ACCOUNT) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == -25300 => Ok(()),
-        Err(error) => Err(format!(
-            "could not remove the legacy Deepgram key from Keychain: {error}"
-        )),
-    }
-}
+// The v2 entry used the SecItem compatibility shim. The v3 entry is created
+// explicitly in the login Keychain by the signed Arco process, so its default
+// ACL trusts Arco. Older entries remain only as migration fallbacks and are
+// removed when the user explicitly clears the credential.
 
 fn validate_api_key(key: &str) -> Result<(), String> {
     match ureq::get(DEEPGRAM_AUTH_URL)
@@ -280,63 +344,85 @@ mod tests {
     fn current_keychain_entry_is_used_without_touching_the_legacy_item() {
         use std::cell::Cell;
 
+        let previous_touched = Cell::new(false);
         let legacy_touched = Cell::new(false);
         let value = load_with_legacy_migration(
             || Ok(Some(b"current-secret".to_vec())),
+            || {
+                previous_touched.set(true);
+                Ok(Some(b"previous-secret".to_vec()))
+            },
             || {
                 legacy_touched.set(true);
                 Ok(Some(b"legacy-secret".to_vec()))
             },
             |_| panic!("current credential must not be rewritten"),
-            || panic!("legacy credential must not be deleted"),
         )
         .unwrap();
 
         assert_eq!(value, Some(b"current-secret".to_vec()));
+        assert!(!previous_touched.get());
         assert!(!legacy_touched.get());
     }
 
     #[test]
-    fn legacy_keychain_entry_is_copied_before_the_old_acl_is_deleted() {
+    fn previous_keychain_entry_is_copied_without_touching_the_oldest_acl() {
         use std::cell::RefCell;
 
         let events = RefCell::new(Vec::new());
         let value = load_with_legacy_migration(
             || Ok(None),
-            || Ok(Some(b"legacy-secret".to_vec())),
+            || Ok(Some(b"previous-secret".to_vec())),
+            || panic!("the oldest Keychain item must not be opened"),
             |bytes| {
-                assert_eq!(bytes, b"legacy-secret");
+                assert_eq!(bytes, b"previous-secret");
                 events.borrow_mut().push("stored-current");
-                Ok(())
-            },
-            || {
-                events.borrow_mut().push("deleted-legacy");
                 Ok(())
             },
         )
         .unwrap();
 
-        assert_eq!(value, Some(b"legacy-secret".to_vec()));
-        assert_eq!(*events.borrow(), ["stored-current", "deleted-legacy"]);
+        assert_eq!(value, Some(b"previous-secret".to_vec()));
+        assert_eq!(*events.borrow(), ["stored-current"]);
     }
 
     #[test]
-    fn failed_migration_never_deletes_the_only_saved_key() {
-        use std::cell::Cell;
-
-        let deleted = Cell::new(false);
+    fn failed_migration_leaves_the_only_saved_key_untouched() {
         let error = load_with_legacy_migration(
+            || Ok(None),
             || Ok(None),
             || Ok(Some(b"legacy-secret".to_vec())),
             |_| Err("new item failed".into()),
-            || {
-                deleted.set(true);
-                Ok(())
-            },
         )
         .unwrap_err();
 
         assert_eq!(error, "new item failed");
-        assert!(!deleted.get());
+    }
+
+    #[test]
+    fn second_capture_reuses_the_session_credential_without_reopening_keychain() {
+        use std::sync::Mutex;
+
+        let cache = Mutex::new(None);
+        let reads = std::cell::Cell::new(0);
+
+        let first = load_cached_api_key(&cache, || {
+            reads.set(reads.get() + 1);
+            Ok(Some("session-secret".into()))
+        })
+        .unwrap();
+        let second = load_cached_api_key(&cache, || {
+            reads.set(reads.get() + 1);
+            Ok(Some("unexpected-second-read".into()))
+        })
+        .unwrap();
+
+        assert_eq!(first.as_deref(), Some("session-secret"));
+        assert_eq!(second.as_deref(), Some("session-secret"));
+        assert_eq!(
+            reads.get(),
+            1,
+            "Keychain must only be opened once per app session"
+        );
     }
 }
