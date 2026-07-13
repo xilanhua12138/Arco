@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import appCss from '../App.css?raw'
 import onboardingCss from '../components/Onboarding.css?raw'
+import defaultCapabilityJson from '../../src-tauri/capabilities/default.json?raw'
 import tauriConfigJson from '../../src-tauri/tauri.conf.json?raw'
 
 describe('native window chrome geometry', () => {
+  it('allows the webview drag regions to move the native window', () => {
+    const defaultCapability = JSON.parse(defaultCapabilityJson) as {
+      permissions: string[]
+    }
+
+    expect(defaultCapability.permissions).toContain('core:window:allow-start-dragging')
+  })
+
   it('keeps the macOS traffic lights aligned with the sidebar content grid', () => {
     const tauriConfig = JSON.parse(tauriConfigJson) as {
       app: {

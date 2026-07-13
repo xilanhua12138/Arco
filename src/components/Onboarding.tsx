@@ -5,18 +5,30 @@ import {
   ChevronRight,
   Cloud,
   Command,
+  Download,
   HardDrive,
   Headphones,
   MessageSquareText,
   Mic,
   RefreshCw,
 } from 'lucide-react'
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useI18n } from '../i18n/i18n'
+import type { TranslationKey } from '../i18n/messages'
+import {
+  loadOnboardingDraft,
+  saveOnboardingDraft,
+  clearOnboardingDraft,
+  type OnboardingDraft,
+} from '../lib/onboarding'
 import { createProviderConfig, type ProviderConfig } from '../lib/providerConfig'
-import { localModelDescriptor } from '../lib/transcriptionConfig'
+import {
+  diarizationModels,
+  transcriptionModels as localModelDescriptors,
+} from '../lib/transcriptionConfig'
 import type {
   AudioMode,
+  AudioSourceCheck,
   AudioSetupCheck,
   DeepgramCredentialStatus,
   LocalDiarizationModelId,
@@ -51,9 +63,10 @@ interface OnboardingProps {
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
   onPrepareTranscriptionModel: (
     model: LocalTranscriptionModelId,
-    diarizationModel: LocalDiarizationModelId,
+    diarizationModel?: LocalDiarizationModelId,
   ) => Promise<TranscriptionModelStatus[]>
   onTestAudio: (mode: AudioMode) => Promise<AudioSetupCheck>
+  onRelaunch: () => void | Promise<void>
   onChangeListeningShortcut: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
   onComplete: (result: OnboardingResult) => void | Promise<void>
   onSkip: () => void
@@ -61,9 +74,27 @@ interface OnboardingProps {
 
 type AgentChoice = 'agent' | 'transcript'
 type AsyncState = 'idle' | 'working' | 'passed' | 'failed'
+type AudioSource = 'system' | 'microphone'
+
+interface AudioSourceSetupState {
+  state: AsyncState
+  result: AudioSourceCheck | null
+  error: string | null
+  restartRequired: boolean
+}
 
 const providerIds: ProviderId[] = ['codex', 'claude']
-const localModel: LocalTranscriptionModelId = 'nemotron-speech-3.5-streaming'
+const defaultLocalModel: LocalTranscriptionModelId = 'nemotron-speech-3.5-streaming'
+const defaultDiarizationModel: LocalDiarizationModelId = 'sortformer-streaming'
+const restartRequiredPrefix = 'ARCO_AUDIO_PERMISSION_RESTART_REQUIRED:'
+const localModelDetailKeys: Record<LocalTranscriptionModelId, TranslationKey> = {
+  'nemotron-speech-3.5-streaming': 'model.nemotron',
+  'whisper-tiny': 'model.whisperTiny',
+  'whisper-base': 'model.whisperBase',
+  'whisper-small': 'model.whisperSmall',
+  'whisper-medium': 'model.whisperMedium',
+  'whisper-large': 'model.whisperLarge',
+}
 
 const providerName = (provider: ProviderId) => provider === 'codex' ? 'Codex' : 'Claude'
 const runtimeName = (provider: ProviderId) => provider === 'codex' ? 'Codex CLI' : 'Claude Code'
@@ -71,50 +102,83 @@ const runtimeName = (provider: ProviderId) => provider === 'codex' ? 'Codex CLI'
 const modelReady = (models: readonly TranscriptionModelStatus[], id: TranscriptionModelStatus['id']) =>
   models.some((model) => model.id === id && model.installed && model.phase === 'ready')
 
+const modelStatus = (models: readonly TranscriptionModelStatus[], id: TranscriptionModelStatus['id']) =>
+  models.find((model) => model.id === id)
+
+const modelBusy = (status: TranscriptionModelStatus | undefined) => (
+  status ? ['downloading', 'optimizing', 'loading'].includes(status.phase) : false
+)
+
+const emptyAudioSourceState = (): AudioSourceSetupState => ({
+  state: 'idle',
+  result: null,
+  error: null,
+  restartRequired: false,
+})
+
 export function Onboarding({
   runtimes,
   transcriptionConfig: initialTranscription,
   transcriptionModels,
   deepgramCredential,
   listeningShortcut,
-  audioMode: initialAudioMode,
   onRefreshRuntimes,
   onTestProvider,
   onSaveDeepgramApiKey,
   onPrepareTranscriptionModel,
   onTestAudio,
+  onRelaunch,
   onChangeListeningShortcut,
   onComplete,
   onSkip,
 }: OnboardingProps) {
   const { locale, setLocale, t } = useI18n()
+  const [initialDraft] = useState(loadOnboardingDraft)
   const firstAvailable = providerIds.find((provider) => (
     runtimes.some((runtime) => runtime.provider === provider && runtime.available)
   )) ?? null
-  const [step, setStep] = useState(0)
-  const [furthestStep, setFurthestStep] = useState(0)
-  const [agentChoice, setAgentChoice] = useState<AgentChoice>('agent')
-  const [selectedPrimary, setPrimary] = useState<ProviderId | null>(null)
-  const [secondary, setSecondary] = useState<ProviderId | null>(null)
-  const [providerTest, setProviderTest] = useState<AsyncState>('idle')
-  const [testedProvider, setTestedProvider] = useState<ProviderId | null>(null)
+  const [step, setStep] = useState(initialDraft?.step ?? 0)
+  const [furthestStep, setFurthestStep] = useState(initialDraft?.furthestStep ?? 0)
+  const [agentChoice, setAgentChoice] = useState<AgentChoice>(initialDraft?.agentChoice ?? 'agent')
+  const [selectedPrimary, setPrimary] = useState<ProviderId | null>(initialDraft?.primary ?? null)
+  const [secondary, setSecondary] = useState<ProviderId | null>(initialDraft?.secondary ?? null)
+  const [providerTest, setProviderTest] = useState<AsyncState>(() => {
+    if (!initialDraft?.testedProvider || initialDraft.testedProvider !== initialDraft.primary) return 'idle'
+    return runtimes.some((runtime) => runtime.provider === initialDraft.primary && runtime.available) ? 'passed' : 'idle'
+  })
+  const [testedProvider, setTestedProvider] = useState<ProviderId | null>(initialDraft?.testedProvider ?? null)
   const [refreshing, setRefreshing] = useState(false)
-  const [transcription, setTranscription] = useState<TranscriptionConfig>(initialTranscription)
+  const [transcription, setTranscription] = useState<TranscriptionConfig>(initialDraft?.transcriptionConfig ?? initialTranscription)
   const [modelsOverride, setModelsOverride] = useState<TranscriptionModelStatus[] | null>(null)
   const [credentialOverride, setCredentialOverride] = useState<DeepgramCredentialStatus | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [transcriptionState, setTranscriptionState] = useState<AsyncState>('idle')
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
-  const [audioMode, setAudioMode] = useState(initialAudioMode)
-  const [audioState, setAudioState] = useState<AsyncState>('idle')
-  const [audioResult, setAudioResult] = useState<AudioSetupCheck | null>(null)
-  const [audioError, setAudioError] = useState<string | null>(null)
-  const [shortcut, setShortcut] = useState(listeningShortcut)
+  const [preparingModel, setPreparingModel] = useState<TranscriptionModelStatus['id'] | null>(null)
+  const [modelErrors, setModelErrors] = useState<Partial<Record<TranscriptionModelStatus['id'], string>>>({})
+  const audioMode: AudioMode = 'both'
+  const [audioChecks, setAudioChecks] = useState<Record<AudioSource, AudioSourceSetupState>>(() => ({
+    system: emptyAudioSourceState(),
+    microphone: emptyAudioSourceState(),
+  }))
+  const [workingAudioSource, setWorkingAudioSource] = useState<AudioSource | null>(null)
+  const [audioCountdown, setAudioCountdown] = useState(3)
+  const [shortcut, setShortcut] = useState(initialDraft?.listeningShortcut ?? listeningShortcut)
   const [finishing, setFinishing] = useState(false)
 
   const primary = selectedPrimary ?? firstAvailable
   const models = modelsOverride ?? transcriptionModels
   const credential = credentialOverride ?? deepgramCredential
+  const selectedLocalModel: LocalTranscriptionModelId = transcription.provider === 'local'
+    ? transcription.model as LocalTranscriptionModelId
+    : defaultLocalModel
+  const selectedDiarizationModel: LocalDiarizationModelId = transcription.provider === 'local'
+    && transcription.diarization !== 'none'
+    && transcription.diarization !== 'provider'
+    ? transcription.diarization as LocalDiarizationModelId
+    : defaultDiarizationModel
+  const selectedLocalStatus = modelStatus(models, selectedLocalModel)
+  const selectedDiarizationStatus = modelStatus(models, selectedDiarizationModel)
 
   const steps = [
     t('onboarding.step.welcome'),
@@ -128,22 +192,46 @@ export function Onboarding({
   const runtimeFor = (provider: ProviderId) => runtimes.find((runtime) => runtime.provider === provider)
   const providerReady = agentChoice === 'transcript'
     || (primary !== null && providerTest === 'passed' && testedProvider === primary)
-  const localReady = modelReady(models, localModel) && modelReady(models, 'sortformer-streaming')
+  const localReady = modelReady(models, selectedLocalModel) && modelReady(models, selectedDiarizationModel)
   const transcriptionReady = transcription.provider === 'deepgram'
     ? credential.configured && credential.verified
     : localReady
-  const audioReady = audioState === 'passed' && audioResult?.mode === audioMode && audioResult.success
+  const audioReady = (['system', 'microphone'] as const).every((source) => (
+    audioChecks[source].state === 'passed' && audioChecks[source].result?.ready
+  ))
   const canContinue = [true, providerReady, transcriptionReady, audioReady, true, false][step]
+
+  const onboardingDraft = useMemo<OnboardingDraft>(() => ({
+    version: 1,
+    step: Math.max(1, Math.min(5, step)) as OnboardingDraft['step'],
+    furthestStep: Math.max(1, Math.min(5, furthestStep)) as OnboardingDraft['furthestStep'],
+    agentChoice,
+    primary,
+    secondary,
+    testedProvider: providerTest === 'passed' ? testedProvider : null,
+    transcriptionConfig: transcription,
+    audioMode,
+    listeningShortcut: shortcut,
+  }), [agentChoice, audioMode, furthestStep, primary, providerTest, secondary, shortcut, step, testedProvider, transcription])
+
+  useEffect(() => {
+    if (step === 0) return
+    saveOnboardingDraft(onboardingDraft)
+  }, [onboardingDraft, step])
+
+  useEffect(() => {
+    if (workingAudioSource === null) return
+    setAudioCountdown(3)
+    const timer = window.setInterval(() => {
+      setAudioCountdown((current) => Math.max(1, current - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [workingAudioSource])
 
   const progressSummary = useMemo(() => ({
     agent: agentChoice === 'transcript' ? t('onboarding.transcriptOnly') : primary ? providerName(primary) : t('common.notSet'),
     transcription: transcription.provider === 'deepgram' ? 'Deepgram' : t('onboarding.onThisMac'),
-    audio: audioMode === 'both'
-      ? t('settings.scenario.hybrid.title')
-      : audioMode === 'system'
-        ? t('settings.scenario.online.title')
-        : t('settings.scenario.room.title'),
-  }), [agentChoice, audioMode, primary, t, transcription.provider])
+  }), [agentChoice, primary, t, transcription.provider])
 
   const reveal = (next: number) => {
     setFurthestStep((current) => Math.max(current, next))
@@ -198,7 +286,12 @@ export function Onboarding({
     setTranscriptionState('idle')
     setTranscription(provider === 'deepgram'
       ? { provider: 'deepgram', model: 'nova-3', language: transcription.language, diarization: 'provider' }
-      : { provider: 'local', model: localModel, language: transcription.language, diarization: 'sortformer-streaming' })
+      : {
+          provider: 'local',
+          model: selectedLocalModel,
+          language: transcription.language,
+          diarization: selectedDiarizationModel,
+        })
   }
 
   const changeLanguage = (language: TranscriptionLanguage) => {
@@ -220,35 +313,101 @@ export function Onboarding({
     }
   }
 
-  const prepareLocal = async () => {
-    if (transcriptionState === 'working') return
-    setTranscriptionState('working')
+  const changeLocalModel = (model: LocalTranscriptionModelId) => {
+    setTranscription((current) => ({
+      provider: 'local',
+      model,
+      language: current.language,
+      diarization: current.provider === 'local' && current.diarization !== 'none'
+        ? current.diarization
+        : defaultDiarizationModel,
+    }))
     setTranscriptionError(null)
+  }
+
+  const changeDiarizationModel = (diarization: LocalDiarizationModelId) => {
+    setTranscription((current) => ({
+      provider: 'local',
+      model: current.provider === 'local' ? current.model : defaultLocalModel,
+      language: current.language,
+      diarization,
+    }))
+    setTranscriptionError(null)
+  }
+
+  const prepareLocalModel = async (target: LocalTranscriptionModelId | LocalDiarizationModelId) => {
+    if (preparingModel || modelBusy(modelStatus(models, target))) return
+    setPreparingModel(target)
+    setModelErrors((current) => ({ ...current, [target]: undefined }))
     try {
-      const next = await onPrepareTranscriptionModel(localModel, 'sortformer-streaming')
+      const next = target === selectedLocalModel
+        ? await onPrepareTranscriptionModel(selectedLocalModel)
+        : await onPrepareTranscriptionModel(selectedLocalModel, target as LocalDiarizationModelId)
       setModelsOverride(next)
-      setTranscriptionState(
-        modelReady(next, localModel) && modelReady(next, 'sortformer-streaming') ? 'passed' : 'failed',
-      )
+      const status = modelStatus(next, target)
+      if (!status?.installed || status.phase !== 'ready') {
+        setModelErrors((current) => ({
+          ...current,
+          [target]: status?.error ?? t('onboarding.localFailed'),
+        }))
+      }
     } catch (cause) {
-      setTranscriptionState('failed')
-      setTranscriptionError(cause instanceof Error ? cause.message : t('onboarding.localFailed'))
+      setModelErrors((current) => ({
+        ...current,
+        [target]: cause instanceof Error ? cause.message : t('onboarding.localFailed'),
+      }))
+    } finally {
+      setPreparingModel(null)
     }
   }
 
-  const runAudioCheck = async () => {
-    if (audioState === 'working') return
-    setAudioState('working')
-    setAudioResult(null)
-    setAudioError(null)
+  const runAudioCheck = async (source: AudioSource) => {
+    if (workingAudioSource !== null) return
+    const mode: AudioMode = source === 'system' ? 'system' : 'mic'
+    setWorkingAudioSource(source)
+    setAudioChecks((current) => ({
+      ...current,
+      [source]: { ...emptyAudioSourceState(), state: 'working' },
+    }))
     try {
-      const result = await onTestAudio(audioMode)
-      setAudioResult(result)
-      setAudioState(result.success ? 'passed' : 'failed')
+      const result = await onTestAudio(mode)
+      const sourceResult = result[source]
+      setAudioChecks((current) => ({
+        ...current,
+        [source]: {
+          state: sourceResult.ready ? 'passed' : 'failed',
+          result: sourceResult,
+          error: null,
+          restartRequired: false,
+        },
+      }))
     } catch (cause) {
-      setAudioState('failed')
-      setAudioError(cause instanceof Error ? cause.message : t('onboarding.audioFailed'))
+      const nativeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
+      const message = nativeMessage.trim()
+        || (source === 'system' ? t('onboarding.systemNotDetected') : t('onboarding.micNotDetected'))
+      const restartRequired = source === 'system' && message.startsWith(restartRequiredPrefix)
+      setAudioChecks((current) => ({
+        ...current,
+        [source]: {
+          state: 'failed',
+          result: null,
+          error: restartRequired ? message.slice(restartRequiredPrefix.length).trim() : message,
+          restartRequired,
+        },
+      }))
+    } finally {
+      setWorkingAudioSource(null)
     }
+  }
+
+  const relaunch = async () => {
+    saveOnboardingDraft(onboardingDraft)
+    await onRelaunch()
+  }
+
+  const skip = () => {
+    clearOnboardingDraft()
+    onSkip()
   }
 
   const changeShortcut = async (next: ListeningShortcut) => {
@@ -270,6 +429,52 @@ export function Onboarding({
     }
   }
 
+  const modelActionLabel = (
+    id: TranscriptionModelStatus['id'],
+    status: TranscriptionModelStatus | undefined,
+    idleLabel: string,
+  ) => {
+    if (status?.phase === 'downloading') return `${Math.round((status.progress ?? 0) * 100)}%`
+    if (status?.phase === 'optimizing') return t('common.optimizing')
+    if (status?.phase === 'loading') return t('common.loading')
+    if (preparingModel === id) return t('onboarding.downloading')
+    return idleLabel
+  }
+
+  const renderAudioSource = (
+    source: AudioSource,
+    icon: ReactNode,
+    title: string,
+  ) => {
+    const check = audioChecks[source]
+    const result = check.result
+    const isDetecting = workingAudioSource === source
+    const isReady = check.state === 'passed' && result?.ready === true
+    const isFailed = check.state === 'failed'
+    const description = isDetecting
+      ? t('onboarding.detecting')
+      : isReady
+        ? source === 'system' ? t('onboarding.systemReady') : t('onboarding.micReady')
+        : isFailed
+          ? check.error || result?.message || (source === 'system' ? t('onboarding.systemNotDetected') : t('onboarding.micNotDetected'))
+          : source === 'system' ? t('onboarding.playSomething') : t('onboarding.saySomething')
+    const idleLabel = source === 'system' ? t('onboarding.checkSystemAudio') : t('onboarding.checkMicrophone')
+    const buttonLabel = isDetecting
+      ? t('onboarding.listeningCountdown', { seconds: audioCountdown })
+      : check.state === 'idle' ? idleLabel : t('onboarding.checkAgain')
+    return (
+      <div className={isDetecting ? 'onboarding-source-detecting' : isReady ? 'onboarding-source-ready' : isFailed ? 'onboarding-source-failed' : ''}>
+        {icon}
+        <span><strong>{title}</strong><small>{description}</small></span>
+        {isReady && <Check className="onboarding-source-check" size={16} aria-hidden="true" />}
+        {isDetecting && <i className="onboarding-level-detecting" aria-hidden="true" />}
+        <button type="button" className="onboarding-audio-test" onClick={() => runAudioCheck(source)} disabled={workingAudioSource !== null}>
+          <AudioWaveform size={15} /> {buttonLabel}
+        </button>
+      </div>
+    )
+  }
+
   const languagePicker = (
     <label className="provider-setup-language onboarding-language-picker">
       <span className="sr-only">{t('settings.appLanguage')}</span>
@@ -283,11 +488,11 @@ export function Onboarding({
   if (step === 0) {
     return (
       <main className="onboarding-page onboarding-landing" aria-labelledby="onboarding-welcome-heading">
-        <header className="onboarding-landing-bar">
+        <header className="onboarding-landing-bar" data-tauri-drag-region>
           <div className="onboarding-brand"><img src="/arco-icon.png" alt="" draggable={false} /> Arco</div>
           <div className="onboarding-landing-tools">
             {languagePicker}
-            <button type="button" className="onboarding-text-button" onClick={onSkip}>{t('onboarding.setUpLater')}</button>
+            <button type="button" className="onboarding-text-button" onClick={skip}>{t('onboarding.setUpLater')}</button>
           </div>
         </header>
 
@@ -346,11 +551,11 @@ export function Onboarding({
             )
           })}
         </ol>
-        <button type="button" className="onboarding-skip-rail" onClick={onSkip}>{t('onboarding.setUpLater')}</button>
+        <button type="button" className="onboarding-skip-rail" onClick={skip}>{t('onboarding.setUpLater')}</button>
       </aside>
 
       <section className="onboarding-main">
-        <header className="onboarding-header">
+        <header className="onboarding-header" data-tauri-drag-region>
           <button type="button" className="onboarding-back-top" onClick={() => setStep((current) => current - 1)}>
             <ChevronLeft size={16} /> {t('common.back')}
           </button>
@@ -435,9 +640,41 @@ export function Onboarding({
                     )}
                   </div>
                 ) : (
-                  <div className="onboarding-transcription-action onboarding-local-action">
-                    <div><strong>{localModelDescriptor(localModel)?.label}</strong><small>{localModelDescriptor(localModel)?.downloadSize} · {t('onboarding.speakerSeparationIncluded')}</small></div>
-                    {localReady ? <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.readyOnMac')}</span> : <button type="button" onClick={prepareLocal} disabled={transcriptionState === 'working'}>{transcriptionState === 'working' ? t('onboarding.downloading') : t('settings.downloadAndUse')}</button>}
+                  <div className="onboarding-local-models">
+                    <div className="onboarding-model-setup-row">
+                      <label>
+                        <span>{t('onboarding.speechModel')}</span>
+                        <select aria-label={t('onboarding.speechModel')} value={selectedLocalModel} onChange={(event) => changeLocalModel(event.target.value as LocalTranscriptionModelId)}>
+                          {localModelDescriptors.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.downloadSize}</option>)}
+                        </select>
+                        <small>{t(localModelDetailKeys[selectedLocalModel])}</small>
+                        {(modelErrors[selectedLocalModel] || selectedLocalStatus?.error) && <em role="alert">{modelErrors[selectedLocalModel] || selectedLocalStatus?.error}</em>}
+                      </label>
+                      {modelReady(models, selectedLocalModel) ? (
+                        <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.readyOnMac')}</span>
+                      ) : (
+                        <button type="button" onClick={() => prepareLocalModel(selectedLocalModel)} disabled={Boolean(preparingModel) || modelBusy(selectedLocalStatus)}>
+                          <Download size={14} /> {modelActionLabel(selectedLocalModel, selectedLocalStatus, t('onboarding.downloadSpeechModel'))}
+                        </button>
+                      )}
+                    </div>
+                    <div className="onboarding-model-setup-row">
+                      <label>
+                        <span>{t('onboarding.speakerModel')}</span>
+                        <select aria-label={t('onboarding.speakerModel')} value={selectedDiarizationModel} onChange={(event) => changeDiarizationModel(event.target.value as LocalDiarizationModelId)}>
+                          {diarizationModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                        </select>
+                        <small>{t(diarizationModels.find((model) => model.id === selectedDiarizationModel)?.detailKey ?? 'settings.sortformerDescription')}</small>
+                        {(modelErrors[selectedDiarizationModel] || selectedDiarizationStatus?.error) && <em role="alert">{modelErrors[selectedDiarizationModel] || selectedDiarizationStatus?.error}</em>}
+                      </label>
+                      {modelReady(models, selectedDiarizationModel) ? (
+                        <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.readyOnMac')}</span>
+                      ) : (
+                        <button type="button" onClick={() => prepareLocalModel(selectedDiarizationModel)} disabled={Boolean(preparingModel) || modelBusy(selectedDiarizationStatus) || !modelReady(models, selectedLocalModel)}>
+                          <Download size={14} /> {modelActionLabel(selectedDiarizationModel, selectedDiarizationStatus, t('onboarding.downloadSpeakerModel'))}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 {transcriptionError && <p className="onboarding-inline-error" role="alert">{transcriptionError}</p>}
@@ -448,17 +685,18 @@ export function Onboarding({
               <section aria-labelledby="onboarding-audio-heading">
                 <h2 id="onboarding-audio-heading">{t('onboarding.checkAudio')}</h2>
                 <p className="onboarding-lede">{t('onboarding.audioHelp')}</p>
-                <div className="onboarding-mode-switch" role="radiogroup" aria-label={t('settings.meetingType')}>
-                  {([['both', t('settings.scenario.hybrid.title')], ['system', t('settings.scenario.online.title')], ['mic', t('settings.scenario.room.title')]] as const).map(([mode, label]) => (
-                    <label key={mode} className={audioMode === mode ? 'onboarding-mode-selected' : ''}><input type="radio" name="audio-mode" aria-label={label.replace(' meeting', '')} checked={audioMode === mode} onChange={() => { setAudioMode(mode); setAudioState('idle'); setAudioResult(null) }} /><span>{label}</span></label>
-                  ))}
-                </div>
                 <div className="onboarding-audio-sources">
-                  <div><Headphones size={18} /><span><strong>{t('settings.systemAudio')}</strong><small>{audioResult?.system.required === false ? t('onboarding.systemNotNeeded') : audioResult?.system.ready ? t('onboarding.systemReady') : t('onboarding.playSomething')}</small></span><i style={{ '--level': audioResult?.system.level ?? 0 } as CSSProperties} /></div>
-                  <div><Mic size={18} /><span><strong>{t('settings.roomMicrophone')}</strong><small>{audioResult?.microphone.required === false ? t('onboarding.micNotNeeded') : audioResult?.microphone.ready ? t('onboarding.micReady') : t('onboarding.saySomething')}</small></span><i style={{ '--level': audioResult?.microphone.level ?? 0 } as CSSProperties} /></div>
+                  {renderAudioSource('system', <Headphones size={18} />, t('settings.systemAudio'))}
+                  {renderAudioSource('microphone', <Mic size={18} />, t('onboarding.microphone'))}
                 </div>
-                <button type="button" className="onboarding-audio-test" onClick={runAudioCheck} disabled={audioState === 'working'}><AudioWaveform size={16} /> {audioState === 'working' ? t('onboarding.listeningNow') : audioMode === 'mic' ? t('onboarding.checkMicrophone') : t('onboarding.checkAudioAction')}</button>
-                {audioError && <p className="onboarding-inline-error" role="alert">{audioError}</p>}
+                {audioReady && <p className="onboarding-audio-summary onboarding-audio-summary-ready" role="status"><Check size={15} /> {t('onboarding.audioReadySummary')}</p>}
+                {audioChecks.system.restartRequired ? (
+                  <div className="onboarding-restart-callout" role="alert">
+                    <strong>{t('onboarding.restartRequiredTitle')}</strong>
+                    <p>{t('onboarding.restartRequiredHelp')}</p>
+                    <button type="button" onClick={relaunch}><RefreshCw size={14} /> {t('onboarding.reopenAndContinue')}</button>
+                  </div>
+                ) : null}
               </section>
             )}
 
@@ -477,7 +715,7 @@ export function Onboarding({
                 <span className="provider-complete-check" aria-hidden="true"><Check size={24} /></span>
                 <h2 id="onboarding-complete-heading">{t('onboarding.startFirstMeeting')}</h2>
                 <p>{t('onboarding.firstMeetingHelp')}</p>
-                <dl><div><dt>{t('onboarding.step.agent')}</dt><dd>{progressSummary.agent}</dd></div><div><dt>{t('onboarding.step.transcription')}</dt><dd>{progressSummary.transcription}</dd></div><div><dt>{t('settings.meetingType')}</dt><dd>{progressSummary.audio}</dd></div><div><dt>{t('onboarding.step.shortcut')}</dt><dd>{formatListeningShortcut(shortcut)}</dd></div></dl>
+                <dl><div><dt>{t('onboarding.step.agent')}</dt><dd>{progressSummary.agent}</dd></div><div><dt>{t('onboarding.step.transcription')}</dt><dd>{progressSummary.transcription}</dd></div><div><dt>{t('onboarding.step.shortcut')}</dt><dd>{formatListeningShortcut(shortcut)}</dd></div></dl>
                 <div className="onboarding-complete-actions"><button type="button" className="onboarding-start" onClick={() => complete(true)} disabled={finishing}>{t('onboarding.startListening')}</button><button type="button" className="onboarding-open" onClick={() => complete(false)} disabled={finishing}>{t('onboarding.openArco')}</button></div>
               </section>
             )}

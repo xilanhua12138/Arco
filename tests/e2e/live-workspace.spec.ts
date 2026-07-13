@@ -133,6 +133,7 @@ test('first launch reaches a real Deepgram audio check and starts the first meet
   const landing = page.getByRole('main', { name: 'Stay in the conversation' })
   const setupBrandArtwork = page.locator('.onboarding-brand img')
   await expect(landing).toBeVisible()
+  await expect(landing.locator('.onboarding-landing-bar')).toHaveAttribute('data-tauri-drag-region', 'true')
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toHaveCount(0)
   await expect(landing.getByRole('heading', { name: 'Stay in the conversation' })).toHaveCSS('font-family', /Avenir Next/)
   await expect(setupBrandArtwork).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
@@ -143,8 +144,22 @@ test('first launch reaches a real Deepgram audio check and starts the first meet
   await landing.getByRole('button', { name: 'Continue' }).click()
   const setup = page.locator('.onboarding-wizard')
   await expect(setup.getByRole('heading', { name: 'Your meeting Agent' })).toBeVisible()
-  await setup.getByRole('button', { name: 'Test Codex' }).click()
-  await expect(setup.getByText('Codex is ready.')).toBeVisible()
+  await expect(setup.locator('.onboarding-header')).toHaveAttribute('data-tauri-drag-region', 'true')
+  const testCodexButton = setup.getByRole('button', { name: 'Test Codex' })
+  const codexReadyStatus = setup.getByText('Codex is ready.')
+  await testCodexButton.click()
+  await expect(codexReadyStatus).toBeVisible()
+  const [testButtonBox, readyStatusBox] = await Promise.all([
+    testCodexButton.boundingBox(),
+    codexReadyStatus.boundingBox(),
+  ])
+  expect(testButtonBox).not.toBeNull()
+  expect(readyStatusBox).not.toBeNull()
+  const centerDelta = Math.abs(
+    testButtonBox!.y + testButtonBox!.height / 2
+      - (readyStatusBox!.y + readyStatusBox!.height / 2),
+  )
+  expect(centerDelta).toBeLessThanOrEqual(1)
   await setup.getByRole('button', { name: 'Continue' }).click()
 
   await expect(setup.getByRole('heading', { name: 'Choose transcription' })).toBeVisible()
@@ -155,9 +170,13 @@ test('first launch reaches a real Deepgram audio check and starts the first meet
   await setup.getByRole('button', { name: 'Continue' }).click()
 
   await expect(setup.getByRole('heading', { name: 'Check your audio' })).toBeVisible()
-  await setup.getByRole('button', { name: 'Check audio' }).click()
+  await expect(setup.getByRole('radiogroup', { name: 'Meeting type' })).toHaveCount(0)
+  await setup.getByRole('button', { name: 'Check system audio' }).click()
   await expect(setup.getByText('System audio is ready')).toBeVisible()
+  await expect(setup.getByRole('button', { name: 'Continue' })).toBeDisabled()
+  await setup.getByRole('button', { name: 'Check microphone' }).click()
   await expect(setup.getByText('Microphone is ready')).toBeVisible()
+  await expect(setup.getByRole('status')).toHaveText('Audio is ready. You can continue.')
   await setup.getByRole('button', { name: 'Continue' }).click()
 
   await expect(setup.getByRole('heading', { name: 'Start from anywhere' })).toBeVisible()
@@ -186,13 +205,15 @@ test('first launch can choose transcript-only on-device setup without a cloud ke
   await setup.getByRole('radio', { name: 'Continue without an Agent' }).click()
   await setup.getByRole('button', { name: 'Continue' }).click()
   await setup.getByRole('radio', { name: 'On this Mac' }).click()
-  await setup.getByRole('button', { name: 'Download & use' }).click()
-  await expect(setup.getByText('Ready on this Mac')).toBeVisible()
+  await setup.getByRole('button', { name: 'Download speech model' }).click()
+  await expect(setup.getByRole('button', { name: 'Download speaker model' })).toBeEnabled()
+  await setup.getByRole('button', { name: 'Download speaker model' }).click()
+  await expect(setup.getByText('Ready on this Mac')).toHaveCount(2)
   await setup.getByRole('button', { name: 'Continue' }).click()
-  await setup.getByText('In-person meeting').click()
+  await setup.getByRole('button', { name: 'Check system audio' }).click()
+  await expect(setup.getByText('System audio is ready')).toBeVisible()
   await setup.getByRole('button', { name: 'Check microphone' }).click()
   await expect(setup.getByText('Microphone is ready')).toBeVisible()
-  await expect(setup.getByText('System audio is not needed')).toBeVisible()
   await setup.getByRole('button', { name: 'Continue' }).click()
   await setup.getByRole('button', { name: 'Continue' }).click()
   await setup.getByRole('button', { name: 'Open Arco' }).click()
@@ -206,9 +227,43 @@ test('first launch can choose transcript-only on-device setup without a cloud ke
   }))
   expect(persisted.provider).toContain('"setupComplete":false')
   expect(persisted.transcription).toContain('"provider":"local"')
-  expect(persisted.audioMode).toBe('mic')
+  expect(persisted.audioMode).toBe('both')
   const widths = await page.evaluate(() => ({ viewport: window.innerWidth, page: document.documentElement.scrollWidth }))
   expect(widths.page).toBeLessThanOrEqual(widths.viewport)
+})
+
+test('onboarding resumes at audio check after an app reload and keeps downloaded model choices', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 720 })
+  await page.addInitScript(() => window.localStorage.setItem('arco.locale', 'en'))
+  await page.goto('/?demo=empty')
+
+  await page.getByRole('main', { name: 'Stay in the conversation' }).getByRole('button', { name: 'Continue' }).click()
+  const setup = page.locator('.onboarding-wizard')
+  await setup.getByRole('radio', { name: 'Continue without an Agent' }).click()
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await setup.getByRole('radio', { name: 'On this Mac' }).click()
+  await setup.getByRole('combobox', { name: 'Speech recognition model' }).selectOption('whisper-base')
+  await setup.getByRole('button', { name: 'Download speech model' }).click()
+  await setup.getByRole('button', { name: 'Download speaker model' }).click()
+  await expect(setup.getByText('Ready on this Mac')).toHaveCount(2)
+  await setup.getByRole('button', { name: 'Continue' }).click()
+  await expect(setup.getByRole('heading', { name: 'Check your audio' })).toBeVisible()
+
+  const draftBeforeReload = await page.evaluate(() => window.localStorage.getItem('arco.onboarding.draft.v1'))
+  expect(draftBeforeReload).toContain('"step":3')
+  expect(draftBeforeReload).toContain('"model":"whisper-base"')
+  await page.reload()
+
+  await expect(page.getByRole('main', { name: 'Stay in the conversation' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Check your audio' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Audio check' })).toHaveAttribute('aria-current', 'step')
+  await expect(page.getByRole('button', { name: 'Agent' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Transcription' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Shortcut' })).toBeDisabled()
+
+  await page.getByRole('button', { name: 'Transcription' }).click()
+  await expect(page.getByRole('combobox', { name: 'Speech recognition model' })).toHaveValue('whisper-base')
+  await expect(page.getByText('Ready on this Mac')).toHaveCount(2)
 })
 
 test('an idle Current restores the centered first-version launch surface without explanatory copy', async ({ page }) => {

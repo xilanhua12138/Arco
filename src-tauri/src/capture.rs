@@ -313,6 +313,11 @@ impl CaptureManager {
         Ok(inner.state.clone())
     }
 
+    pub fn shutdown(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+        interrupt_active_capture(&mut inner);
+    }
+
     fn spawn_pipeline(
         &self,
         mode: &str,
@@ -493,13 +498,19 @@ impl Drop for CaptureManager {
             .inner
             .get_mut()
             .unwrap_or_else(|lock| lock.into_inner());
-        if let Some(mut children) = inner.children.take() {
-            terminate_recorder_then_transcriber(&mut children);
-            if let Some(path) = inner.transcript.take() {
-                let _ = finalize_transcript(&path, "interrupted");
-            }
+        interrupt_active_capture(inner);
+    }
+}
+
+fn interrupt_active_capture(inner: &mut CaptureInner) {
+    if let Some(mut children) = inner.children.take() {
+        terminate_recorder_then_transcriber(&mut children);
+        if let Some(path) = inner.transcript.take() {
+            let _ = finalize_transcript(&path, "interrupted");
         }
     }
+    inner.transcript = None;
+    inner.state = CaptureState::idle(Some("Capture interrupted because Arco closed".into()));
 }
 
 fn wait_for_pipeline_ready(

@@ -17,5 +17,7 @@ cp "$PACKAGE_DIR/.build/checkouts/SwiftWhisper/LICENSE" "$LICENSE_DIR/SwiftWhisp
 chmod 644 "$LICENSE_DIR/FluidAudio-LICENSE.txt" "$LICENSE_DIR/SwiftWhisper-LICENSE.txt"
 chmod 755 "$RUNTIME_DIR/arco-local-transcriber"
 chmod 644 "$LICENSE_DIR/FluidAudio-LICENSE.txt" "$LICENSE_DIR/SwiftWhisper-LICENSE.txt"
-codesign --force --sign - "$RUNTIME_DIR/arco-local-transcriber"
+"$NATIVE_DIR/codesign-local.sh" \
+  "$RUNTIME_DIR/arco-local-transcriber" \
+  app.arco.desktop.local-transcriber
 echo "Built and signed $RUNTIME_DIR/arco-local-transcriber"

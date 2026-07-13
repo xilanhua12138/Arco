@@ -2417,3 +2417,18 @@ fn dropping_active_capture_finalizes_transcript_as_interrupted() {
     assert!(transcript.contains("(interrupted)"));
     assert!(transcript.contains("> Ended:"));
 }
+
+#[cfg(unix)]
+#[test]
+fn explicit_shutdown_cleans_up_active_capture_without_dropping_manager() {
+    let root = TempDir::new().unwrap();
+    let manager = CaptureManager::new(fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n"));
+    let transcript_path = PathBuf::from(manager.start("both").unwrap().transcript_path.unwrap());
+
+    manager.shutdown();
+
+    assert_eq!(manager.status().phase, "idle");
+    let transcript = fs::read_to_string(transcript_path).unwrap();
+    assert!(transcript.contains("(interrupted)"));
+    assert!(transcript.contains("> Ended:"));
+}

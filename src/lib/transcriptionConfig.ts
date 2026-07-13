@@ -105,7 +105,7 @@ export const defaultTranscriptionConfig = (): TranscriptionConfig => ({
   diarization: 'provider',
 })
 
-const isValidConfig = (value: unknown): value is TranscriptionConfig => {
+export const isValidTranscriptionConfig = (value: unknown): value is TranscriptionConfig => {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<TranscriptionConfig>
   if (!providers.has(candidate.provider as TranscriptionProviderId)) return false
@@ -126,14 +126,14 @@ export const loadTranscriptionConfig = (): TranscriptionConfig => {
       && (parsed as { diarization?: unknown }).diarization === 'local-streaming'
       ? { ...parsed, diarization: 'sortformer-streaming' }
       : parsed
-    return isValidConfig(migrated) ? migrated : defaultTranscriptionConfig()
+    return isValidTranscriptionConfig(migrated) ? migrated : defaultTranscriptionConfig()
   } catch {
     return defaultTranscriptionConfig()
   }
 }
 
 export const saveTranscriptionConfig = (config: TranscriptionConfig) => {
-  if (!isValidConfig(config)) throw new Error('Invalid transcription configuration')
+  if (!isValidTranscriptionConfig(config)) throw new Error('Invalid transcription configuration')
   window.localStorage.setItem(storageKey, JSON.stringify(config))
 }
 

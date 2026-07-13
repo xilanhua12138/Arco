@@ -339,6 +339,14 @@ describe('desktop transcription bridge', () => {
     expect(invokeMock).toHaveBeenCalledWith('test_audio_setup', { mode: 'system' })
   })
 
+  it('requests a native relaunch so onboarding can resume after permission changes', async () => {
+    invokeMock.mockResolvedValue(undefined)
+
+    await expect(arcoBridge.relaunchApp()).resolves.toBeUndefined()
+
+    expect(invokeMock).toHaveBeenCalledWith('relaunch_app')
+  })
+
   it('uses the local sidecar as the source of truth for model readiness', async () => {
     const models = [{
       id: 'whisper-base',

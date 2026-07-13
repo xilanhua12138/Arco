@@ -70,6 +70,41 @@ fn tester_reports_missing_recorder_and_native_errors_precisely() {
 }
 
 #[test]
+fn tester_marks_screen_capture_permission_failures_as_restart_required() {
+    let root = TempDir::new().unwrap();
+    let denied = executable_script(
+        root.path(),
+        "screen-denied-recorder",
+        "#!/bin/sh\necho 'no display is available (check Screen Recording permission)' >&2\nexit 13\n",
+    );
+
+    let error = AudioSetupTester::with_binary(denied, Duration::from_secs(2))
+        .test("system")
+        .unwrap_err();
+
+    assert!(error.starts_with("ARCO_AUDIO_PERMISSION_RESTART_REQUIRED:"));
+    assert!(error.contains("Screen Recording permission"));
+}
+
+#[test]
+fn tester_recognizes_localized_screen_capture_tcc_failures() {
+    let root = TempDir::new().unwrap();
+    let denied = executable_script(
+        root.path(),
+        "localized-screen-denied-recorder",
+        "#!/bin/sh\necho 'Error Domain=com.apple.ScreenCaptureKit.SCStreamErrorDomain Code=-3801 用户拒绝了应用程序、窗口、显示器捕捉的TCC' >&2\nexit 1\n",
+    );
+
+    let error = AudioSetupTester::with_binary(denied, Duration::from_secs(2))
+        .test("system")
+        .unwrap_err();
+
+    assert!(error.starts_with("ARCO_AUDIO_PERMISSION_RESTART_REQUIRED:"));
+    assert!(error.contains("SCStreamErrorDomain"));
+    assert!(error.contains("Code=-3801"));
+}
+
+#[test]
 fn tester_returns_a_strong_no_signal_result_instead_of_false_success() {
     let root = TempDir::new().unwrap();
     let silent = executable_script(

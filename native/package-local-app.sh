@@ -53,8 +53,24 @@ if [ -e "$APP/Contents/MacOS/arco-deepgram-transcriber" ]; then
 fi
 
 COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
-codesign --force --deep --sign - "$STAGING/Arco.app"
+"$ROOT/native/codesign-local.sh" \
+  "$STAGING/Arco.app/Contents/Resources/native/recorder" \
+  app.arco.desktop.recorder
+"$ROOT/native/codesign-local.sh" \
+  "$STAGING/Arco.app/Contents/Resources/native/arco-deepgram-transcriber" \
+  app.arco.desktop.deepgram-transcriber
+"$ROOT/native/codesign-local.sh" \
+  "$STAGING/Arco.app/Contents/Resources/native/arco-local-transcriber" \
+  app.arco.desktop.local-transcriber
+"$ROOT/native/codesign-local.sh" "$STAGING/Arco.app" app.arco.desktop
 codesign --verify --deep --strict --verbose=2 "$STAGING/Arco.app"
+DESIGNATED_REQUIREMENT=$(codesign -d -r- "$STAGING/Arco.app" 2>&1)
+case "$DESIGNATED_REQUIREMENT" in
+  *cdhash*)
+    echo "Arco package still has a build-specific ad-hoc designated requirement" >&2
+    exit 1
+    ;;
+esac
 
 mkdir -p "$ARTIFACT_DIR"
 rm -f "$OUTPUT"

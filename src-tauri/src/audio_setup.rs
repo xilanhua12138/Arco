@@ -9,11 +9,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
+use wait_timeout::ChildExt;
 
 const DEFAULT_TEST_DURATION: Duration = Duration::from_secs(3);
 const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: usize = 16_000 * 4 * 5;
 const READY_LEVEL: f32 = 0.01;
+const RESTART_REQUIRED_PREFIX: &str = "ARCO_AUDIO_PERMISSION_RESTART_REQUIRED:";
 
 #[derive(Clone, Debug)]
 pub struct AudioSetupTester {
@@ -105,6 +107,14 @@ impl AudioSetupTester {
                 .map_err(|error| format!("could not finish audio check: {error}"))?;
         }
         if early_status.is_none() {
+            // A short-lived permission failure can race the final poll. Give
+            // it one last chance to return its real exit code before Arco's
+            // intentional TERM would replace that status with a signal.
+            early_status = child
+                .wait_timeout(Duration::from_millis(100))
+                .map_err(|error| format!("could not finish audio check: {error}"))?;
+        }
+        if early_status.is_none() {
             let status = terminate_process_tree(&mut child, TERMINATION_GRACE)
                 .map_err(|error| format!("could not stop audio check: {error}"))?;
             // A real recorder failure can race the final poll. Preserve an
@@ -129,18 +139,32 @@ impl AudioSetupTester {
                     .code()
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "signal".into());
-                return Err(if detail.trim().is_empty() {
-                    format!("audio recorder exited with status {code}")
-                } else {
-                    format!(
-                        "audio recorder exited with status {code}: {}",
-                        detail.trim()
-                    )
-                });
+                return Err(format_recorder_error(&code, detail.trim()));
             }
         }
 
         analyze_interleaved_pcm(mode, &bytes)
+    }
+}
+
+fn format_recorder_error(code: &str, detail: &str) -> String {
+    let message = if detail.is_empty() {
+        format!("audio recorder exited with status {code}")
+    } else {
+        format!("audio recorder exited with status {code}: {detail}")
+    };
+    let normalized = detail.to_ascii_lowercase();
+    let screen_capture_permission = normalized.contains("screen recording permission")
+        || normalized.contains("no display is available")
+        || (normalized.contains("screencapturekit.scstreamerrordomain")
+            && normalized.contains("code=-3801"))
+        || (normalized.contains("screencapturekit") && normalized.contains("tcc"))
+        || (normalized.contains("shareable content")
+            && (normalized.contains("permission") || normalized.contains("not authorized")));
+    if screen_capture_permission {
+        format!("{RESTART_REQUIRED_PREFIX} {message}")
+    } else {
+        message
     }
 }
 

@@ -44,6 +44,18 @@ fn physical_size(logical: (f64, f64), scale_factor: f64) -> (i64, i64) {
     )
 }
 
+fn logical_size_from_physical(physical: (u32, u32), scale_factor: f64) -> (f64, f64) {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    (
+        f64::from(physical.0) / scale_factor,
+        f64::from(physical.1) / scale_factor,
+    )
+}
+
 pub fn hud_position(monitor: MonitorGeometry) -> SurfacePosition {
     let (window_width, window_height) = physical_size(HUD_SIZE, monitor.scale_factor);
     let area_width = i64::from(monitor.width);
@@ -109,13 +121,18 @@ fn geometry(monitor: &Monitor) -> MonitorGeometry {
     }
 }
 
+fn monitor_fallback_labels(surface_label: &str) -> [&str; 2] {
+    ["main", surface_label]
+}
+
 fn preferred_monitor(app: &AppHandle, surface_label: &str) -> Result<Monitor, String> {
-    let labels = if surface_label == AGENT_LABEL {
-        [surface_label, "main"]
-    } else {
-        ["main", surface_label]
-    };
-    for label in labels {
+    if let Ok(cursor) = app.cursor_position() {
+        if let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) {
+            return Ok(monitor);
+        }
+    }
+
+    for label in monitor_fallback_labels(surface_label) {
         if let Some(window) = app.get_webview_window(label) {
             if let Some(monitor) = window
                 .current_monitor()
@@ -163,16 +180,37 @@ pub fn hide_hud(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn capture_surface_labels() -> [&'static str; 2] {
+    [HUD_LABEL, AGENT_LABEL]
+}
+
+pub fn hide_capture_surfaces(app: &AppHandle) -> Result<(), String> {
+    let mut errors = Vec::new();
+    let results = [hide_hud(app), hide_agent(app)];
+    for (label, result) in capture_surface_labels().into_iter().zip(results) {
+        if let Err(error) = result {
+            errors.push(format!("{label}: {error}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 pub fn show_or_focus_agent(app: &AppHandle) -> Result<bool, String> {
     let agent = app
         .get_webview_window(AGENT_LABEL)
         .ok_or_else(|| "Arco could not find its Agent window".to_string())?;
-    let monitor = preferred_monitor(app, AGENT_LABEL)?;
     let physical_size = agent.inner_size().map_err(|error| error.to_string())?;
-    let requested = (
-        f64::from(physical_size.width) / monitor.scale_factor(),
-        f64::from(physical_size.height) / monitor.scale_factor(),
+    let source_scale_factor = agent.scale_factor().map_err(|error| error.to_string())?;
+    let requested = logical_size_from_physical(
+        (physical_size.width, physical_size.height),
+        source_scale_factor,
     );
+    let monitor = preferred_monitor(app, AGENT_LABEL)?;
     apply_agent_size_and_position(&agent, geometry(&monitor), requested)?;
     if !agent.is_visible().map_err(|error| error.to_string())? {
         agent.show().map_err(|error| error.to_string())?;
@@ -325,8 +363,25 @@ pub fn create_overlay_windows(app: &App) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_frame, hud_position, MonitorGeometry, AGENT_COLLAPSED_SIZE, AGENT_SIZE, HUD_SIZE,
+        agent_frame, capture_surface_labels, hud_position, logical_size_from_physical,
+        monitor_fallback_labels, MonitorGeometry, AGENT_COLLAPSED_SIZE, AGENT_LABEL, AGENT_SIZE,
+        HUD_LABEL, HUD_SIZE,
     };
+
+    #[test]
+    fn active_display_fallback_uses_the_main_window_before_a_stale_agent_window() {
+        assert_eq!(monitor_fallback_labels(AGENT_LABEL), ["main", AGENT_LABEL]);
+    }
+
+    #[test]
+    fn stopping_capture_owns_and_hides_every_global_capture_surface() {
+        assert_eq!(capture_surface_labels(), [HUD_LABEL, AGENT_LABEL]);
+    }
+
+    #[test]
+    fn moving_from_retina_to_standard_dpi_keeps_the_agent_logical_size() {
+        assert_eq!(logical_size_from_physical((1440, 1120), 2.0), AGENT_SIZE);
+    }
 
     #[test]
     fn hud_is_bottom_centered_inside_the_current_monitor_work_area() {

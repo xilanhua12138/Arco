@@ -472,6 +472,11 @@ async fn test_audio_setup(
 }
 
 #[tauri::command]
+fn relaunch_app(app: tauri::AppHandle) {
+    app.request_restart();
+}
+
+#[tauri::command]
 async fn transcription_model_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TranscriptionModelStatus>, String> {
@@ -550,8 +555,8 @@ fn stop_capture(
     state: tauri::State<'_, AppState>,
 ) -> Result<CaptureState, String> {
     let result = state.capture.stop();
-    if let Err(error) = overlay::hide_hud(&app) {
-        log::warn!("Arco stopped capture but could not hide the recording HUD: {error}");
+    if let Err(error) = overlay::hide_capture_surfaces(&app) {
+        log::warn!("Arco stopped capture but could not hide its capture surfaces: {error}");
     }
     let _ = app.emit("arco:capture-changed", state.capture.status());
     result
@@ -681,7 +686,7 @@ fn generate_meeting_output(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -739,6 +744,7 @@ pub fn run() {
             open_deepgram_console,
             capture_status,
             test_audio_setup,
+            relaunch_app,
             transcription_model_status,
             prepare_transcription_model,
             remove_transcription_model,
@@ -751,6 +757,16 @@ pub fn run() {
             run_agent,
             generate_meeting_output
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Arco");
+        .build(tauri::generate_context!())
+        .expect("error while building Arco");
+    app.run(|app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                state.capture.shutdown();
+            }
+        }
+    });
 }

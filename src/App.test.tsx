@@ -107,7 +107,10 @@ describe('Arco consumer conversation workspace', () => {
     expect(await within(setup).findByText('Deepgram is ready.')).toBeVisible()
     await user.click(within(setup).getByRole('button', { name: 'Continue' }))
 
-    await user.click(within(setup).getByRole('button', { name: 'Check audio' }))
+    await user.click(within(setup).getByRole('button', { name: 'Check system audio' }))
+    expect(await within(setup).findByText('System audio is ready')).toBeVisible()
+    expect(within(setup).getByRole('button', { name: 'Continue' })).toBeDisabled()
+    await user.click(within(setup).getByRole('button', { name: 'Check microphone' }))
     expect(await within(setup).findByText('Microphone is ready')).toBeVisible()
     await user.click(within(setup).getByRole('button', { name: 'Continue' }))
 

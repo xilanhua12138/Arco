@@ -37,18 +37,48 @@ pub fn normalize_api_key(value: &str) -> Result<String, String> {
 }
 
 pub fn status() -> DeepgramCredentialStatus {
-    match load_api_key() {
-        Ok(Some(_)) => DeepgramCredentialStatus {
+    status_from_presence(has_api_key())
+}
+
+fn status_from_presence(presence: Result<bool, String>) -> DeepgramCredentialStatus {
+    match presence {
+        Ok(true) => DeepgramCredentialStatus {
             configured: true,
             verified: true,
             message: None,
         },
-        Ok(None) => DeepgramCredentialStatus::missing(),
+        Ok(false) => DeepgramCredentialStatus::missing(),
         Err(error) => DeepgramCredentialStatus {
             configured: false,
             verified: false,
             message: Some(error),
         },
+    }
+}
+
+fn has_api_key() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::item::{ItemClass, ItemSearchOptions};
+
+        let result = ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .account(KEYCHAIN_ACCOUNT)
+            .load_attributes(true)
+            .skip_authenticated_items(true)
+            .search();
+        match result {
+            Ok(items) => Ok(!items.is_empty()),
+            Err(error) if error.code() == -25300 => Ok(false),
+            Err(error) => Err(format!(
+                "could not inspect the Deepgram credential in Keychain: {error}"
+            )),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(false)
     }
 }
 
@@ -161,6 +191,28 @@ mod tests {
         assert_eq!(
             json,
             r#"{"configured":false,"verified":false,"message":null}"#
+        );
+    }
+
+    #[test]
+    fn configured_status_is_derived_from_item_presence_without_a_secret_read() {
+        let status = status_from_presence(Ok(true));
+        assert_eq!(
+            status,
+            DeepgramCredentialStatus {
+                configured: true,
+                verified: true,
+                message: None,
+            }
+        );
+
+        assert_eq!(
+            status_from_presence(Ok(false)),
+            DeepgramCredentialStatus::missing()
+        );
+        assert_eq!(
+            status_from_presence(Err("metadata lookup failed".into())).message,
+            Some("metadata lookup failed".into()),
         );
     }
 }

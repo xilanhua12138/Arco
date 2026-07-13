@@ -400,6 +400,14 @@ export const arcoBridge = {
     }
   },
 
+  async relaunchApp(): Promise<void> {
+    if (hasTauriRuntime()) {
+      await invoke('relaunch_app')
+      return
+    }
+    window.location.reload()
+  },
+
   async deepgramCredentialStatus(): Promise<DeepgramCredentialStatus> {
     if (hasTauriRuntime()) return invoke<DeepgramCredentialStatus>('deepgram_credential_status')
     const configured = window.sessionStorage.getItem(demoDeepgramConfiguredKey) === 'true'

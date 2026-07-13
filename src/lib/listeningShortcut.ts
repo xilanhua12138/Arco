@@ -7,7 +7,7 @@ const disabledValue = '__disabled__'
 const modifierOrder = ['Fn', 'CommandOrControl', 'Control', 'Alt', 'Shift'] as const
 const allowedKey = /^(?:Space|Enter|Tab|Backspace|Escape|Arrow(?:Up|Down|Left|Right)|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2]))$/
 
-const isValidListeningShortcut = (value: string) => {
+export const isValidListeningShortcut = (value: string) => {
   const parts = value.split('+')
   if (parts.length < 2) return false
   const key = parts.at(-1) ?? ''

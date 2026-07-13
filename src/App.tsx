@@ -437,6 +437,7 @@ function App() {
           return next
         }}
         onTestAudio={arcoBridge.testAudioSetup}
+        onRelaunch={arcoBridge.relaunchApp}
         onChangeListeningShortcut={changeListeningShortcut}
         onComplete={async (result) => {
           saveProviderConfig(result.providerConfig)
