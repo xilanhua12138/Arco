@@ -278,6 +278,16 @@ test('an idle Current keeps one focused launch surface until listening begins', 
   await expect(page.getByRole('button', { name: 'Start listening' })).toHaveCount(1)
   await expect(page.getByRole('heading', { name: 'Transcript' })).toHaveCount(0)
   await expect(page.getByRole('main', { name: 'Ask Arco' })).toHaveCount(0)
+
+  const listeningTime = idle.locator('.current-idle-stat').filter({ hasText: 'Listening time' }).locator('dd')
+  await listeningTime.evaluate((element) => { element.textContent = '7 小时 13 分钟' })
+  await expect(listeningTime).toHaveCSS('text-overflow', 'clip')
+  await expect(listeningTime).toHaveCSS('white-space', 'normal')
+  const listeningTimeBox = await listeningTime.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }))
+  expect(listeningTimeBox.scrollWidth).toBeLessThanOrEqual(listeningTimeBox.clientWidth)
   await page.screenshot({ path: 'test-results/arco-first-meeting-empty.png', fullPage: true, animations: 'disabled' })
 
   await page.setViewportSize({ width: 1024, height: 700 })

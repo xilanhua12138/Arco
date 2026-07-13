@@ -400,10 +400,10 @@
 .current-idle-keycaps kbd { min-width: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0 9px; border: 1px solid rgb(17 17 17 / 10%); border-radius: 8px; color: var(--ink-strong); background: rgb(255 255 255 / 82%); box-shadow: 0 1px 1px rgb(17 17 17 / 8%), inset 0 1px 0 var(--surface-inner-highlight); font: 600 14px var(--font-sans); white-space: nowrap; }
 .current-idle-overview { width: min(820px, 100%); flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 72px; align-items: start; margin: 0 auto; text-align: left; }
 .current-idle-overview h2 { margin: 0 0 16px; color: var(--ink-muted); font-size: 12px; font-weight: 500; line-height: 17px; }
-.current-idle-stats dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; margin: 0; }
+.current-idle-stats dl { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.45fr) minmax(0, 1fr); gap: 20px; margin: 0; }
 .current-idle-stat { min-width: 0; }
 .current-idle-stat dt { display: flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: 10px; line-height: 15px; }
-.current-idle-stat dd { margin: 7px 0 0; overflow: hidden; color: var(--ink-strong); font-size: 22px; font-weight: 500; line-height: 28px; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.current-idle-stat dd { margin: 7px 0 0; overflow: visible; color: var(--ink-strong); font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 28px; letter-spacing: -0.02em; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 .current-idle-shortcuts { min-width: 0; }
 .current-idle-shortcuts dl { display: grid; gap: 11px; margin: 0; }
 .current-idle-shortcuts dl > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
