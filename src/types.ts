@@ -177,7 +177,12 @@ export type TranscriptionModelId = 'nova-3' | LocalTranscriptionModelId
 
 export type TranscriptionLanguage = 'auto' | 'zh-CN' | 'en-US'
 
-export type DiarizationMode = 'provider' | 'local-streaming' | 'none'
+export type LocalDiarizationModelId =
+  | 'sortformer-streaming'
+  | 'lseend-ami-streaming'
+  | 'lseend-dihard3-streaming'
+
+export type DiarizationMode = 'provider' | LocalDiarizationModelId | 'none'
 
 export interface TranscriptionConfig {
   provider: TranscriptionProviderId
@@ -195,7 +200,7 @@ export type TranscriptionModelPhase =
   | 'failed'
 
 export interface TranscriptionModelStatus {
-  id: LocalTranscriptionModelId | 'sortformer-streaming'
+  id: LocalTranscriptionModelId | LocalDiarizationModelId
   installed: boolean
   phase: TranscriptionModelPhase
   progress: number | null

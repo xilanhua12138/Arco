@@ -86,6 +86,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use storage::{TranscriptStorage, TranscriptStorageSettings};
 use tauri::{Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 use transcription::LocalTranscriptionRuntime;
 
 pub struct AppState {
@@ -448,6 +449,13 @@ fn remove_deepgram_api_key() -> Result<DeepgramCredentialStatus, String> {
 }
 
 #[tauri::command(async)]
+fn open_deepgram_console(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://console.deepgram.com/", None::<&str>)
+        .map_err(|error| format!("Could not open the Deepgram console: {error}"))
+}
+
+#[tauri::command(async)]
 fn capture_status(state: tauri::State<'_, AppState>) -> CaptureState {
     state.capture.status()
 }
@@ -478,11 +486,11 @@ async fn prepare_transcription_model(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     model: String,
-    include_diarization: bool,
+    diarization_model: Option<String>,
 ) -> Result<Vec<TranscriptionModelStatus>, String> {
     let runtime = state.transcription.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        runtime.prepare_with_progress(&model, include_diarization, |status| {
+        runtime.prepare_with_progress(&model, diarization_model.as_deref(), |status| {
             let _ = app.emit("arco:transcription-model-progress", status);
         })
     })
@@ -676,6 +684,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             fn_shortcut::start(app.handle().clone());
@@ -727,6 +736,7 @@ pub fn run() {
             deepgram_credential_status,
             save_deepgram_api_key,
             remove_deepgram_api_key,
+            open_deepgram_console,
             capture_status,
             test_audio_setup,
             transcription_model_status,

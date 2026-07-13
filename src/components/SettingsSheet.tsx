@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Check,
   ChevronRight,
   Command,
@@ -21,6 +22,7 @@ import { useState } from 'react'
 import type {
   AudioMode,
   DeepgramCredentialStatus,
+  LocalDiarizationModelId,
   LocalTranscriptionModelId,
   ProviderId,
   RuntimeStatus,
@@ -33,6 +35,7 @@ import { defaultGenerationSettings, type GenerationSettings } from '../lib/gener
 import type { ProviderConfig } from '../lib/providerConfig'
 import {
   defaultTranscriptionConfig,
+  diarizationModels,
   localModelDescriptor,
   transcriptionModels as modelDescriptors,
 } from '../lib/transcriptionConfig'
@@ -53,12 +56,13 @@ interface SettingsSheetProps {
   transcriptionConfig?: TranscriptionConfig
   transcriptionModels?: TranscriptionModelStatus[]
   onChangeTranscriptionConfig?: (config: TranscriptionConfig) => void
-  onPrepareTranscriptionModel?: (model: LocalTranscriptionModelId) => void
-  onRemoveTranscriptionModel?: (model: LocalTranscriptionModelId | 'sortformer-streaming') => void
+  onPrepareTranscriptionModel?: (model: LocalTranscriptionModelId, diarizationModel?: LocalDiarizationModelId) => void
+  onRemoveTranscriptionModel?: (model: LocalTranscriptionModelId | LocalDiarizationModelId) => void
   deepgramCredential?: DeepgramCredentialStatus
   deepgramCredentialBusy?: boolean
   onSaveDeepgramApiKey?: (apiKey: string) => void | Promise<void>
   onRemoveDeepgramApiKey?: () => void | Promise<void>
+  onOpenDeepgramConsole?: () => void | Promise<void>
   providerConfig?: Readonly<ProviderConfig>
   onEditProviders?: () => void
   generationSettings?: GenerationSettings
@@ -106,6 +110,7 @@ export function SettingsSheet({
   deepgramCredentialBusy = false,
   onSaveDeepgramApiKey = () => undefined,
   onRemoveDeepgramApiKey = () => undefined,
+  onOpenDeepgramConsole = () => undefined,
   providerConfig = { setupComplete: false, primary: null, secondary: null },
   onEditProviders = () => undefined,
   generationSettings = defaultGenerationSettings(),
@@ -134,8 +139,6 @@ export function SettingsSheet({
 }: SettingsSheetProps) {
   const { locale, setLocale, t } = useI18n()
   const [page, setPage] = useState<SettingsPage>(initialPage)
-  const [storageOpen, setStorageOpen] = useState(false)
-  const [notesStorageOpen, setNotesStorageOpen] = useState(false)
   const [deepgramApiKey, setDeepgramApiKey] = useState('')
   const [deepgramError, setDeepgramError] = useState<string | null>(null)
   if (!open) return null
@@ -147,7 +150,8 @@ export function SettingsSheet({
   const selectedAudioScenario = audioScenarios.find((scenario) => scenario.mode === audioMode) ?? audioScenarios[0]
   const selectedModel = localModelDescriptor(transcriptionConfig.model)
   const selectedModelStatus = transcriptionModels.find((status) => status.id === transcriptionConfig.model)
-  const sortformerStatus = transcriptionModels.find((status) => status.id === 'sortformer-streaming')
+  const selectedDiarizationModel = diarizationModels.find((model) => model.id === transcriptionConfig.diarization)
+  const selectedDiarizationStatus = transcriptionModels.find((status) => status.id === selectedDiarizationModel?.id)
   const selectedModelBusy = selectedModelStatus
     ? ['downloading', 'optimizing', 'loading'].includes(selectedModelStatus.phase)
     : false
@@ -166,9 +170,23 @@ export function SettingsSheet({
     'whisper-medium': 'model.whisperMedium',
     'whisper-large': 'model.whisperLarge',
   }
+  const localDiarizationEnabled = selectedDiarizationModel !== undefined
+  const selectedModelReady = selectedModelStatus?.installed === true
+  const selectedDiarizationReady = selectedDiarizationStatus?.installed === true
+  const localSetupIncomplete = transcriptionConfig.provider === 'local'
+    && (!selectedModelReady || (localDiarizationEnabled && !selectedDiarizationReady))
+  const selectedModelLabel = selectedModel?.label ?? t('settings.onDevice')
+  const localAsrSummary = selectedModelReady
+    ? selectedModelLabel
+    : t('settings.modelNotDownloaded', { model: selectedModelLabel })
+  const localDiarizationSummary = localDiarizationEnabled
+    ? selectedDiarizationReady
+      ? selectedDiarizationModel.label
+      : t('settings.modelNotDownloaded', { model: selectedDiarizationModel.label })
+    : t('settings.speakerSeparationOff')
   const recognitionLabel = transcriptionConfig.provider === 'deepgram'
     ? transcriptionConfig.language === 'en-US' ? t('common.english') : t('common.chinese')
-    : selectedModel?.label ?? t('settings.onDevice')
+    : `${localAsrSummary} · ${localDiarizationSummary}`
 
   const changeEngine = (provider: TranscriptionConfig['provider']) => {
     if (provider === 'deepgram') {
@@ -184,7 +202,7 @@ export function SettingsSheet({
       provider: 'local',
       model: selectedModel?.id ?? 'nemotron-speech-3.5-streaming',
       language: transcriptionConfig.language,
-      diarization: 'local-streaming',
+      diarization: 'sortformer-streaming',
     })
   }
 
@@ -195,6 +213,15 @@ export function SettingsSheet({
     try {
       await onSaveDeepgramApiKey(key)
       setDeepgramApiKey('')
+    } catch (cause) {
+      setDeepgramError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const openDeepgramConsole = async () => {
+    setDeepgramError(null)
+    try {
+      await onOpenDeepgramConsole()
     } catch (cause) {
       setDeepgramError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -341,8 +368,19 @@ export function SettingsSheet({
                   <details className="settings-disclosure">
                     <summary>
                       <span className="settings-disclosure-title">{t('settings.recognition')}</span>
-                      <span className="settings-disclosure-value">{recognitionLabel}</span>
-                      <ChevronRight size={15} aria-hidden="true" />
+                      <span className="settings-disclosure-value" title={recognitionLabel}>
+                        {localSetupIncomplete && (
+                          <AlertTriangle
+                            className="settings-disclosure-warning"
+                            size={15}
+                            strokeWidth={2.2}
+                            role="img"
+                            aria-label={t('settings.localModelsMissing')}
+                          />
+                        )}
+                        <span>{recognitionLabel}</span>
+                      </span>
+                      <ChevronRight className="settings-disclosure-chevron" size={15} aria-hidden="true" />
                     </summary>
                     <div className="settings-disclosure-content">
                       {audioModeLocked ? (
@@ -364,7 +402,7 @@ export function SettingsSheet({
                               onChange={() => changeEngine('deepgram')}
                             />
                             <Cloud size={16} aria-hidden="true" />
-                            <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
+                            <span><strong>{t('settings.cloud')}</strong><small>{t('settings.deepgramDescription')}</small></span>
                           </label>
                           <label className={transcriptionConfig.provider === 'local' ? 'recognition-engine-selected' : ''}>
                             <input
@@ -446,36 +484,69 @@ export function SettingsSheet({
                             </select>
                           </label>
 
-                          <label className="diarization-choice">
-                            <input
-                              type="checkbox"
-                              checked={transcriptionConfig.diarization === 'local-streaming'}
-                              disabled={audioModeLocked}
-                              onChange={(event) => onChangeTranscriptionConfig({
-                                ...transcriptionConfig,
-                                diarization: event.target.checked ? 'local-streaming' : 'none',
-                              })}
-                            />
-                            <span>
-                              <strong>Streaming Sortformer</strong>
-                              <small>{t('settings.sortformerDescription')}</small>
-                            </span>
-                            <em>
-                              {sortformerStatus?.installed
-                                ? t('common.ready')
-                                : sortformerStatus?.phase === 'downloading'
-                                  ? `${Math.round((sortformerStatus.progress ?? 0) * 100)}%`
-                                  : sortformerStatus?.phase === 'optimizing'
-                                    ? t('common.optimizing')
-                                    : '~330 MB'}
-                            </em>
-                          </label>
+                          <fieldset className="diarization-models" aria-label={t('settings.speakerSeparation')}>
+                            {diarizationModels.map((model) => {
+                              const status = transcriptionModels.find((candidate) => candidate.id === model.id)
+                              const busy = ['downloading', 'optimizing', 'loading'].includes(status?.phase ?? '')
+                              const action = status?.phase === 'optimizing'
+                                ? t('common.optimizing')
+                                : status?.phase === 'loading'
+                                  ? t('common.loading')
+                                  : status?.phase === 'downloading'
+                                    ? `${Math.round((status.progress ?? 0) * 100)}%`
+                                    : t('common.download')
+                              return (
+                                <div className="diarization-choice" key={model.id}>
+                                  <input
+                                    id={model.id}
+                                    type="radio"
+                                    name="local-diarization-model"
+                                    checked={transcriptionConfig.diarization === model.id}
+                                    disabled={audioModeLocked}
+                                    onChange={() => onChangeTranscriptionConfig({ ...transcriptionConfig, diarization: model.id })}
+                                  />
+                                  <label htmlFor={model.id}>
+                                    <strong>{model.label}</strong>
+                                    <small>{t(model.detailKey)}{status?.error ? ` · ${status.error}` : ''}</small>
+                                  </label>
+                                  {status?.installed ? (
+                                    <em>{t('common.ready')}</em>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="model-action"
+                                      disabled={audioModeLocked || busy || !selectedModel}
+                                      aria-label={t('settings.downloadModel', { model: model.label })}
+                                      onClick={() => selectedModel && onPrepareTranscriptionModel(selectedModel.id, model.id)}
+                                    >
+                                      <Download size={14} /> {busy ? action : t('common.download')}
+                                    </button>
+                                  )}
+                                </div>
+                              )
+                            })}
+                            <label className="diarization-choice diarization-choice-off">
+                              <input
+                                type="radio"
+                                name="local-diarization-model"
+                                checked={transcriptionConfig.diarization === 'none'}
+                                disabled={audioModeLocked}
+                                onChange={() => onChangeTranscriptionConfig({ ...transcriptionConfig, diarization: 'none' })}
+                              />
+                              <span><strong>{t('common.off')}</strong><small>{t('settings.speakerOff')}</small></span>
+                            </label>
+                          </fieldset>
                           <p className="local-privacy-note"><ShieldCheck size={14} /> {t('settings.localPrivacy')}</p>
                         </div>
                       )}
 
                       {transcriptionConfig.provider === 'deepgram' && (
-                        <div className="deepgram-key-panel" role="group" aria-label={t('settings.deepgramSetupAria')}>
+                        <div className="deepgram-provider-panel">
+                          <div className="provider-diarization-receipt">
+                            <Check size={15} aria-hidden="true" />
+                            <span><strong>{t('settings.deepgramBuiltIn')}</strong><small>{t('settings.deepgramNoLocalModel')}</small></span>
+                          </div>
+                          <div className="deepgram-key-panel" role="group" aria-label={t('settings.deepgramSetupAria')}>
                           {deepgramCredential.configured ? (
                             <div className="deepgram-key-ready" aria-live="polite">
                               <span className="deepgram-key-status"><Check size={15} aria-hidden="true" /><span><strong>{t('settings.deepgramReady')}</strong><small>{t('settings.deepgramKeychain')}</small></span></span>
@@ -487,7 +558,17 @@ export function SettingsSheet({
                             <form onSubmit={(event) => { event.preventDefault(); void saveDeepgramKey() }}>
                               <div className="deepgram-key-heading">
                                 <span><strong>{t('settings.deepgramPasteKey')}</strong><small>{t('settings.deepgramPasteKeyHelp')}</small></span>
-                                <a href="https://console.deepgram.com/" target="_blank" rel="noreferrer">{t('settings.deepgramGetKey')}</a>
+                                <a
+                                  href="https://console.deepgram.com/"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(event) => {
+                                    event.preventDefault()
+                                    void openDeepgramConsole()
+                                  }}
+                                >
+                                  {t('settings.deepgramGetKey')}
+                                </a>
                               </div>
                               <div className="deepgram-key-entry">
                                 <input
@@ -508,6 +589,7 @@ export function SettingsSheet({
                               <p className="deepgram-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.deepgramPrivacy')}</p>
                             </form>
                           )}
+                          </div>
                         </div>
                       )}
 
@@ -515,8 +597,8 @@ export function SettingsSheet({
                       <p className="settings-disclosure-note">
                         {transcriptionConfig.provider === 'deepgram'
                           ? t('settings.speakerDeepgram')
-                          : transcriptionConfig.diarization === 'local-streaming'
-                            ? t('settings.speakerLocal')
+                          : localDiarizationEnabled
+                            ? t('settings.speakerLocal', { model: selectedDiarizationModel.label })
                             : t('settings.speakerOff')}
                       </p>
                       <div
@@ -541,7 +623,7 @@ export function SettingsSheet({
                       <p className="speaker-policy">{t('settings.locationPolicy')}</p>
                       <dl className="settings-facts settings-disclosure-facts">
                         <div><dt>{t('settings.engine')}</dt><dd>{transcriptionConfig.provider === 'deepgram' ? t('settings.deepgramDiarization') : selectedModel?.label}</dd></div>
-                        <div><dt>{t('settings.speakerSeparation')}</dt><dd>{transcriptionConfig.diarization === 'local-streaming' ? t('settings.sortformerOnDevice') : transcriptionConfig.diarization === 'provider' ? t('settings.providerDiarization') : t('common.off')}</dd></div>
+                        <div><dt>{t('settings.speakerSeparation')}</dt><dd>{selectedDiarizationModel?.label ?? (transcriptionConfig.diarization === 'provider' ? t('settings.deepgramBuiltIn') : t('common.off'))}</dd></div>
                       </dl>
                     </div>
                   </details>
@@ -614,13 +696,13 @@ export function SettingsSheet({
                   <ShieldCheck size={18} />
                   <p>{t('settings.storageIntro')}</p>
                 </div>
-                <div className={`transcript-storage-setting ${storageOpen ? 'transcript-storage-setting-open' : ''}`}>
+                <div className={`transcript-storage-setting ${!storageSettings.usingDefault ? 'transcript-storage-setting-custom' : ''}`}>
                   <button
                     type="button"
                     className="transcript-storage-summary"
                     aria-label={t('settings.transcriptStorage')}
-                    aria-expanded={storageOpen}
-                    onClick={() => setStorageOpen((current) => !current)}
+                    disabled={storageChanging || audioModeLocked}
+                    onClick={() => void onChooseTranscriptDirectory()}
                   >
                     <span className="transcript-storage-name"><HardDrive size={14} /> {t('settings.meetingTranscripts')}</span>
                     <span className="transcript-storage-value">
@@ -629,40 +711,25 @@ export function SettingsSheet({
                     </span>
                     <ChevronRight size={15} aria-hidden="true" />
                   </button>
-                  {storageOpen && (
-                    <div className="transcript-storage-controls">
-                      <p>{t('settings.storageLocationHelp')}</p>
-                      <div>
-                        <button
-                          type="button"
-                          className="storage-action storage-action-primary"
-                          disabled={storageChanging || audioModeLocked}
-                          onClick={() => void onChooseTranscriptDirectory()}
-                        >
-                          <FolderOpen size={14} /> {t('settings.chooseFolder')}
-                        </button>
-                        {!storageSettings.usingDefault && (
-                          <button
-                            type="button"
-                            className="storage-action"
-                            disabled={storageChanging || audioModeLocked}
-                            onClick={() => void onResetTranscriptDirectory()}
-                          >
-                            {t('settings.restoreDefault')}
-                          </button>
-                        )}
-                      </div>
-                      {audioModeLocked && <small>{t('settings.storageLocked')}</small>}
-                    </div>
+                  {!storageSettings.usingDefault && (
+                    <button
+                      type="button"
+                      className="storage-restore-action"
+                      disabled={storageChanging || audioModeLocked}
+                      onClick={() => void onResetTranscriptDirectory()}
+                    >
+                      {t('settings.restoreDefault')}
+                    </button>
                   )}
+                  {audioModeLocked && <small className="storage-lock-hint">{t('settings.storageLocked')}</small>}
                 </div>
-                <div className={`transcript-storage-setting ${notesStorageOpen ? 'transcript-storage-setting-open' : ''}`}>
+                <div className={`transcript-storage-setting ${!notesStorageSettings.usingDefault ? 'transcript-storage-setting-custom' : ''}`}>
                   <button
                     type="button"
                     className="transcript-storage-summary"
                     aria-label={t('settings.notesStorage')}
-                    aria-expanded={notesStorageOpen}
-                    onClick={() => setNotesStorageOpen((current) => !current)}
+                    disabled={notesStorageChanging}
+                    onClick={() => void onChooseNotesDirectory()}
                   >
                     <span className="transcript-storage-name"><FileText size={14} /> {t('settings.notes')}</span>
                     <span className="transcript-storage-value">
@@ -671,30 +738,15 @@ export function SettingsSheet({
                     </span>
                     <ChevronRight size={15} aria-hidden="true" />
                   </button>
-                  {notesStorageOpen && (
-                    <div className="transcript-storage-controls">
-                      <p>{t('settings.notesStorageLocationHelp')}</p>
-                      <div>
-                        <button
-                          type="button"
-                          className="storage-action storage-action-primary"
-                          disabled={notesStorageChanging}
-                          onClick={() => void onChooseNotesDirectory()}
-                        >
-                          <FolderOpen size={14} /> {t('settings.chooseFolder')}
-                        </button>
-                        {!notesStorageSettings.usingDefault && (
-                          <button
-                            type="button"
-                            className="storage-action"
-                            disabled={notesStorageChanging}
-                            onClick={() => void onResetNotesDirectory()}
-                          >
-                            {t('settings.restoreDefault')}
-                          </button>
-                        )}
-                      </div>
-                    </div>
+                  {!notesStorageSettings.usingDefault && (
+                    <button
+                      type="button"
+                      className="storage-restore-action"
+                      disabled={notesStorageChanging}
+                      onClick={() => void onResetNotesDirectory()}
+                    >
+                      {t('settings.restoreDefault')}
+                    </button>
                   )}
                 </div>
                 <dl className="settings-facts settings-facts-large">

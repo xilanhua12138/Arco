@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { SettingsSheet } from './SettingsSheet'
@@ -16,7 +16,7 @@ const defaultNotesStorage = {
 }
 
 describe('SettingsSheet transcript storage', () => {
-  it('shows the real default location quietly and reveals controls only on demand', async () => {
+  it('opens the transcript folder picker directly from the storage row', async () => {
     const user = userEvent.setup()
     const onChooseTranscriptDirectory = vi.fn(async () => true)
     render(
@@ -32,16 +32,14 @@ describe('SettingsSheet transcript storage', () => {
       />,
     )
 
-    const disclosure = screen.getByRole('button', { name: 'Meeting transcript storage' })
-    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
-    expect(disclosure).toHaveTextContent('Default')
-    expect(disclosure).toHaveTextContent(defaultStorage.selectedDirectory)
+    const storageRow = screen.getByRole('button', { name: 'Meeting transcript storage' })
+    expect(storageRow).not.toHaveAttribute('aria-expanded')
+    expect(storageRow).toHaveTextContent('Default')
+    expect(storageRow).toHaveTextContent(defaultStorage.selectedDirectory)
     expect(screen.queryByRole('button', { name: 'Choose folder' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Notes storage' })).toHaveTextContent(defaultNotesStorage.selectedDirectory)
 
-    await user.click(disclosure)
-    expect(disclosure).toHaveAttribute('aria-expanded', 'true')
-    await user.click(screen.getByRole('button', { name: 'Choose folder' }))
+    await user.click(storageRow)
     expect(onChooseTranscriptDirectory).toHaveBeenCalledTimes(1)
   })
 
@@ -67,13 +65,14 @@ describe('SettingsSheet transcript storage', () => {
       />,
     )
 
-    const disclosure = screen.getByRole('button', { name: 'Notes storage' })
-    expect(disclosure).toHaveTextContent('Custom')
-    await user.click(disclosure)
-    expect(screen.getByText('Existing notes stay where they are and remain available in Notes.')).toBeVisible()
-    await user.click(within(disclosure.parentElement!).getByRole('button', { name: 'Restore default' }))
+    const storageRow = screen.getByRole('button', { name: 'Notes storage' })
+    expect(storageRow).toHaveTextContent('Custom')
+    const restoreDefault = screen.getByRole('button', { name: 'Restore default' })
+    await user.click(restoreDefault)
     expect(onResetNotesDirectory).toHaveBeenCalledTimes(1)
-    await user.click(within(disclosure.parentElement!).getByRole('button', { name: 'Choose folder' }))
+    expect(onChooseNotesDirectory).not.toHaveBeenCalled()
+
+    await user.click(storageRow)
     expect(onChooseNotesDirectory).toHaveBeenCalledTimes(1)
   })
 
@@ -96,11 +95,44 @@ describe('SettingsSheet transcript storage', () => {
       />,
     )
 
-    const disclosure = screen.getByRole('button', { name: 'Meeting transcript storage' })
-    expect(disclosure).toHaveTextContent('Custom')
-    await user.click(disclosure)
-    expect(screen.getByText('Existing meetings stay where they are and remain available in History.')).toBeVisible()
+    const storageRow = screen.getByRole('button', { name: 'Meeting transcript storage' })
+    expect(storageRow).toHaveTextContent('Custom')
     await user.click(screen.getByRole('button', { name: 'Restore default' }))
     expect(onResetTranscriptDirectory).toHaveBeenCalledTimes(1)
+  })
+
+  it('locks both transcript folder actions while a meeting is active', async () => {
+    const user = userEvent.setup()
+    const onChooseTranscriptDirectory = vi.fn(async () => true)
+    const onResetTranscriptDirectory = vi.fn(async () => true)
+    render(
+      <SettingsSheet
+        open
+        initialPage="privacy"
+        runtimes={[]}
+        isDesktop
+        audioModeLocked
+        storageSettings={{
+          ...defaultStorage,
+          selectedDirectory: '/Volumes/Meetings/Arco',
+          usingDefault: false,
+        }}
+        notesStorageSettings={defaultNotesStorage}
+        onChooseTranscriptDirectory={onChooseTranscriptDirectory}
+        onResetTranscriptDirectory={onResetTranscriptDirectory}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const storageRow = screen.getByRole('button', { name: 'Meeting transcript storage' })
+    const restoreDefault = screen.getByRole('button', { name: 'Restore default' })
+    expect(storageRow).toBeDisabled()
+    expect(restoreDefault).toBeDisabled()
+    expect(screen.getByText('Stop the current meeting before changing this folder.')).toBeVisible()
+
+    await user.click(storageRow)
+    await user.click(restoreDefault)
+    expect(onChooseTranscriptDirectory).not.toHaveBeenCalled()
+    expect(onResetTranscriptDirectory).not.toHaveBeenCalled()
   })
 })

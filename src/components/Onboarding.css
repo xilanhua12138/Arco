@@ -57,14 +57,14 @@
 .onboarding-landing-bar {
   position: relative;
   z-index: 2;
-  min-height: 76px;
+  min-height: 104px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 0 42px;
+  padding: 64px 42px 0;
 }
 
-.onboarding-landing-tools { display: flex; align-items: center; gap: 14px; }
+.onboarding-landing-tools { position: absolute; top: 20px; right: 42px; display: flex; align-items: center; gap: 14px; }
 .onboarding-text-button,
 .onboarding-skip-rail,
 .onboarding-back-top {

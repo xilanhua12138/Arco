@@ -1,5 +1,6 @@
 import type {
   DiarizationMode,
+  LocalDiarizationModelId,
   LocalTranscriptionModelId,
   TranscriptionConfig,
   TranscriptionLanguage,
@@ -76,10 +77,26 @@ export const transcriptionModels: TranscriptionModelDescriptor[] = [
   },
 ]
 
+export interface DiarizationModelDescriptor {
+  id: LocalDiarizationModelId
+  label: string
+  detailKey:
+    | 'settings.sortformerDescription'
+    | 'settings.lseendMeetingDescription'
+    | 'settings.lseendGeneralDescription'
+}
+
+export const diarizationModels: DiarizationModelDescriptor[] = [
+  { id: 'sortformer-streaming', label: 'Streaming Sortformer', detailKey: 'settings.sortformerDescription' },
+  { id: 'lseend-ami-streaming', label: 'LS-EEND Meeting', detailKey: 'settings.lseendMeetingDescription' },
+  { id: 'lseend-dihard3-streaming', label: 'LS-EEND General', detailKey: 'settings.lseendGeneralDescription' },
+]
+
 const providers = new Set<TranscriptionProviderId>(['deepgram', 'local'])
 const localModels = new Set<LocalTranscriptionModelId>(transcriptionModels.map((model) => model.id))
 const languages = new Set<TranscriptionLanguage>(['auto', 'zh-CN', 'en-US'])
-const diarizationModes = new Set<DiarizationMode>(['provider', 'local-streaming', 'none'])
+const localDiarizationModels = new Set<LocalDiarizationModelId>(diarizationModels.map((model) => model.id))
+const diarizationModes = new Set<DiarizationMode>(['provider', ...localDiarizationModels, 'none'])
 
 export const defaultTranscriptionConfig = (): TranscriptionConfig => ({
   provider: 'deepgram',
@@ -98,13 +115,18 @@ const isValidConfig = (value: unknown): value is TranscriptionConfig => {
     return candidate.model === 'nova-3' && candidate.diarization === 'provider'
   }
   return localModels.has(candidate.model as LocalTranscriptionModelId)
-    && (candidate.diarization === 'local-streaming' || candidate.diarization === 'none')
+    && (localDiarizationModels.has(candidate.diarization as LocalDiarizationModelId) || candidate.diarization === 'none')
 }
 
 export const loadTranscriptionConfig = (): TranscriptionConfig => {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? 'null')
-    return isValidConfig(parsed) ? parsed : defaultTranscriptionConfig()
+    const migrated = parsed && typeof parsed === 'object'
+      && (parsed as { provider?: unknown }).provider === 'local'
+      && (parsed as { diarization?: unknown }).diarization === 'local-streaming'
+      ? { ...parsed, diarization: 'sortformer-streaming' }
+      : parsed
+    return isValidConfig(migrated) ? migrated : defaultTranscriptionConfig()
   } catch {
     return defaultTranscriptionConfig()
   }

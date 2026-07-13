@@ -34,17 +34,37 @@ describe('transcription configuration', () => {
     })
   })
 
-  it('persists a local provider with streaming on-device diarization', () => {
+  it.each([
+    'sortformer-streaming',
+    'lseend-ami-streaming',
+    'lseend-dihard3-streaming',
+  ] as const)('persists the %s local diarization backend', (diarization) => {
     const config = {
       provider: 'local' as const,
       model: 'whisper-small' as const,
       language: 'auto' as const,
-      diarization: 'local-streaming' as const,
+      diarization,
     }
 
     saveTranscriptionConfig(config)
 
     expect(loadTranscriptionConfig()).toEqual(config)
+  })
+
+  it('migrates the legacy local-streaming mode to Sortformer', () => {
+    window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
+      provider: 'local',
+      model: 'whisper-small',
+      language: 'auto',
+      diarization: 'local-streaming',
+    }))
+
+    expect(loadTranscriptionConfig()).toEqual({
+      provider: 'local',
+      model: 'whisper-small',
+      language: 'auto',
+      diarization: 'sortformer-streaming',
+    })
   })
 
   it('rejects stale or impossible persisted combinations', () => {

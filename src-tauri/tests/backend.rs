@@ -2289,7 +2289,7 @@ fn capture_times_out_if_transcriber_never_becomes_ready() {
 
 #[cfg(unix)]
 #[test]
-fn capture_routes_local_models_without_requiring_a_deepgram_key() {
+fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
     let root = TempDir::new().unwrap();
     let args_path = root.path().join("local-args.txt");
     let local = executable_script(
@@ -2314,7 +2314,7 @@ fn capture_routes_local_models_without_requiring_a_deepgram_key() {
         provider: "local".into(),
         model: "nemotron-speech-3.5-streaming".into(),
         language: "zh-CN".into(),
-        diarization: "local-streaming".into(),
+        diarization: "lseend-ami-streaming".into(),
     };
 
     let capture = manager
@@ -2325,7 +2325,7 @@ fn capture_routes_local_models_without_requiring_a_deepgram_key() {
     let args = fs::read_to_string(args_path).unwrap();
     assert!(args.contains("stream\n--model\nnemotron-speech-3.5-streaming"));
     assert!(args.contains("--language\nzh-CN"));
-    assert!(args.contains("--diarization\nlocal-streaming"));
+    assert!(args.contains("--diarization\nlseend-ami-streaming"));
     assert!(args.contains("transcript-"));
     assert_eq!(manager.stop().unwrap().phase, "idle");
 }
@@ -2383,7 +2383,7 @@ fn capture_rejects_invalid_or_unavailable_local_provider_contracts() {
         provider: "local".into(),
         model: "whisper-imaginary".into(),
         language: "auto".into(),
-        diarization: "local-streaming".into(),
+        diarization: "sortformer-streaming".into(),
     };
     assert!(manager
         .start_with_transcription("mic", invalid)

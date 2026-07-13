@@ -26,15 +26,15 @@ impl LocalTranscriptionRuntime {
     pub fn prepare(
         &self,
         model: &str,
-        include_diarization: bool,
+        diarization_model: Option<&str>,
     ) -> Result<Vec<TranscriptionModelStatus>, String> {
-        self.prepare_with_progress(model, include_diarization, |_| {})
+        self.prepare_with_progress(model, diarization_model, |_| {})
     }
 
     pub fn prepare_with_progress<F>(
         &self,
         model: &str,
-        include_diarization: bool,
+        diarization_model: Option<&str>,
         mut on_progress: F,
     ) -> Result<Vec<TranscriptionModelStatus>, String>
     where
@@ -42,8 +42,9 @@ impl LocalTranscriptionRuntime {
     {
         validate_model(model, false)?;
         let mut args = vec!["prepare", "--model", model];
-        if include_diarization {
-            args.extend(["--diarization", "local-streaming"]);
+        if let Some(diarization_model) = diarization_model {
+            validate_model(diarization_model, true)?;
+            args.extend(["--diarization", diarization_model]);
         }
         let binary = self.binary.as_ref().ok_or_else(|| {
             "The on-device transcription runtime is not installed in this Arco build.".to_string()
@@ -124,7 +125,12 @@ fn validate_model(model: &str, allow_diarizer: bool) -> Result<(), String> {
         "whisper-medium",
         "whisper-large",
     ];
-    if MODELS.contains(&model) || (allow_diarizer && model == "sortformer-streaming") {
+    const DIARIZERS: &[&str] = &[
+        "sortformer-streaming",
+        "lseend-ami-streaming",
+        "lseend-dihard3-streaming",
+    ];
+    if MODELS.contains(&model) || (allow_diarizer && DIARIZERS.contains(&model)) {
         Ok(())
     } else {
         Err(format!("unsupported local transcription model: {model}"))
@@ -142,6 +148,19 @@ mod tests {
         assert!(validate_model("sortformer-streaming", false).is_err());
         assert!(validate_model("sortformer-streaming", true).is_ok());
         assert!(validate_model("whisper-large", false).is_ok());
+    }
+
+    #[test]
+    fn model_management_accepts_only_known_local_diarizers() {
+        for model in [
+            "sortformer-streaming",
+            "lseend-ami-streaming",
+            "lseend-dihard3-streaming",
+        ] {
+            assert!(validate_model(model, true).is_ok(), "{model}");
+            assert!(validate_model(model, false).is_err(), "{model}");
+        }
+        assert!(validate_model("deepgram-diarization", true).is_err());
     }
 
     #[test]

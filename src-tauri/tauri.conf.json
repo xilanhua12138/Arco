@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Arco",
-  "mainBinaryName": "arco",
+  "mainBinaryName": "Arco",
   "version": "0.1.1",
   "identifier": "app.arco.desktop",
   "build": {
@@ -26,8 +26,8 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
-          "x": 18,
-          "y": 18
+          "x": 27,
+          "y": 26
         },
         "fullscreen": false,
         "center": true

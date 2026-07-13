@@ -1,5 +1,5 @@
 [package]
-name = "arco"
+name = "Arco"
 version = "0.1.1"
 description = "AI-native meeting copilot powered by the user's local agent CLI"
 authors = ["Arco contributors"]
@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/xilanhua12138/Arco"
 edition = "2021"
 rust-version = "1.77.2"
-default-run = "arco"
+default-run = "Arco"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -41,6 +41,7 @@ tauri = { version = "2.11.3", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 tempfile = "3.15"
 wait-timeout = "0.2"
 uuid = { version = "1.23", features = ["v4"] }

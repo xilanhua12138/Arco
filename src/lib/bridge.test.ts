@@ -72,6 +72,19 @@ describe('browser Agent bridge', () => {
     })
   })
 
+  it('opens the Deepgram console in a browser preview without navigating Arco away', async () => {
+    const browserOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    await arcoBridge.openDeepgramConsole()
+
+    expect(browserOpen).toHaveBeenCalledWith(
+      'https://console.deepgram.com/',
+      '_blank',
+      'noopener,noreferrer',
+    )
+    browserOpen.mockRestore()
+  })
+
   it('provides deterministic provider connection success only in explicit demo mode', async () => {
     window.history.replaceState({}, '', '/?demo=1')
 
@@ -85,11 +98,11 @@ describe('browser Agent bridge', () => {
   it('models an explicit demo model download without touching the network', async () => {
     window.history.replaceState({}, '', '/?demo=1')
 
-    const prepared = await arcoBridge.prepareTranscriptionModel('whisper-base', true)
+    const prepared = await arcoBridge.prepareTranscriptionModel('whisper-base', 'lseend-dihard3-streaming')
 
     expect(prepared).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'whisper-base', installed: true, phase: 'ready' }),
-      expect.objectContaining({ id: 'sortformer-streaming', installed: true, phase: 'ready' }),
+      expect.objectContaining({ id: 'lseend-dihard3-streaming', installed: true, phase: 'ready' }),
     ]))
 
     const removed = await arcoBridge.removeTranscriptionModel('whisper-base')
@@ -194,6 +207,14 @@ describe('desktop meeting output bridge', () => {
     })
   })
 
+  it('delegates the Deepgram console link to the native opener command', async () => {
+    invokeMock.mockResolvedValue(undefined)
+
+    await arcoBridge.openDeepgramConsole()
+
+    expect(invokeMock).toHaveBeenCalledWith('open_deepgram_console')
+  })
+
   it('passes the typed request through to the native command and returns its artifact', async () => {
     const artifact = {
       kind: 'title' as const,
@@ -289,7 +310,7 @@ describe('desktop transcription bridge', () => {
       provider: 'local',
       model: 'nemotron-speech-3.5-streaming',
       language: 'zh-CN',
-      diarization: 'local-streaming',
+      diarization: 'sortformer-streaming',
     }
     invokeMock.mockResolvedValue({
       phase: 'recording',

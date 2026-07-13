@@ -83,6 +83,46 @@ describe('NotesPage', () => {
     expect(onOpenMeeting).toHaveBeenCalledWith(demoMeetings[0].id)
   })
 
+  it('formats selected text as Markdown and saves the exact source', async () => {
+    const user = userEvent.setup()
+    const onSaveNote = vi.fn().mockImplementation(async (input) => ({
+      ...notes[0],
+      ...input,
+    }))
+    render(<NotesPage {...baseProps} notes={notes} onSaveNote={onSaveNote} />)
+
+    const editor = screen.getByRole('textbox', { name: 'Markdown note' }) as HTMLTextAreaElement
+    editor.focus()
+    editor.setSelectionRange(2, 9)
+    await user.click(screen.getByRole('button', { name: 'Bold' }))
+
+    expect(editor).toHaveValue('- **Confirm** the launch owner')
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(onSaveNote).toHaveBeenCalledWith({
+      id: notes[0].id,
+      meetingId: notes[0].meetingId,
+      title: notes[0].title,
+      body: '- **Confirm** the launch owner',
+    })
+  })
+
+  it('previews rendered Markdown and returns to the unchanged source', async () => {
+    const user = userEvent.setup()
+    const markdownNote = {
+      ...notes[0],
+      body: '## Decisions\n\n- Ship the native app.',
+    }
+    render(<NotesPage {...baseProps} notes={[markdownNote]} />)
+
+    await user.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(screen.queryByRole('textbox', { name: 'Markdown note' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Decisions' })).toBeVisible()
+    expect(screen.getByText('Ship the native app.')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Write' }))
+    expect(screen.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(markdownNote.body)
+  })
+
   it('distinguishes loading, first-use empty, and filtered empty states', () => {
     const { rerender } = render(<NotesPage {...baseProps} notes={[]} loading />)
     expect(screen.getByRole('status', { name: 'Loading notes' })).toBeVisible()

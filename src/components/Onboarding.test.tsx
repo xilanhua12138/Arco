@@ -145,7 +145,7 @@ describe('Onboarding', () => {
     await user.click(screen.getByRole('radio', { name: 'On this Mac' }))
     await user.click(screen.getByRole('button', { name: 'Download & use' }))
 
-    expect(onPrepareTranscriptionModel).toHaveBeenCalledWith('nemotron-speech-3.5-streaming', true)
+    expect(onPrepareTranscriptionModel).toHaveBeenCalledWith('nemotron-speech-3.5-streaming', 'sortformer-streaming')
     expect(await screen.findByText('Ready on this Mac')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })

@@ -263,7 +263,9 @@ test('Current keeps transcript primary with Agent visible at its right', async (
   expect(sidebarBrand).not.toBeNull()
   expect(Math.round(dragSpace!.height)).toBe(32)
   expect(Math.round(pageHeader!.y)).toBe(41)
-  expect(Math.round(sidebarBrand!.y)).toBe(41)
+  // The sidebar clears the native macOS traffic lights; the page header only
+  // needs the standard draggable titlebar clearance.
+  expect(Math.round(sidebarBrand!.y)).toBe(53)
   await expect(page.locator('body')).toHaveCSS('font-family', /Avenir Next/)
   await expect(page.getByRole('heading', { level: 1, name: 'Product direction · weekly working session' })).toHaveCSS('font-family', /Avenir Next/)
   await expect(page.locator('.utterance time').first()).toHaveCSS('font-family', /SFMono/)
@@ -657,6 +659,13 @@ test('saved Agent answers are browsable from Notes and retain their meeting sour
   await expect(page.getByRole('button', { name: 'Open saved notes' })).toHaveAttribute('aria-current', 'page')
   await page.screenshot({ path: 'test-results/arco-notes-1240x820.png', fullPage: true })
 
+  await page.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.locator('.note-markdown-preview')).toContainText('Arco becomes more than a recorder')
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: 'test-results/arco-notes-preview-1240x820.png', fullPage: true })
+  await page.getByRole('button', { name: 'Write' }).click()
+  await expect(page.getByRole('textbox', { name: 'Markdown note' })).toBeVisible()
+
   await page.setViewportSize({ width: 1080, height: 750 })
   await expect(page.getByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1080)
@@ -673,6 +682,11 @@ test('a user can write multiple Markdown notes for the same meeting and reopen t
   await page.getByRole('button', { name: 'Open saved notes' }).click()
 
   await page.getByRole('button', { name: 'New note' }).click()
+  const titleBox = await page.getByRole('textbox', { name: 'Note title' }).boundingBox()
+  const meetingBox = await page.locator('.note-meeting-field').boundingBox()
+  expect(titleBox).not.toBeNull()
+  expect(meetingBox).not.toBeNull()
+  expect(meetingBox!.y - (titleBox!.y + titleBox!.height)).toBeGreaterThanOrEqual(8)
   await expect(page.getByRole('combobox', { name: 'Meeting for this note' })).toHaveValue('demo-live')
   await page.getByRole('textbox', { name: 'Note title' }).fill('Interview follow-ups')
   await page.getByRole('textbox', { name: 'Markdown note' }).fill('- Ask about the rollout\n- Confirm the owner')
@@ -756,8 +770,7 @@ test('Settings uses navigable sections in one centered sheet', async ({ page }) 
   const transcriptStorage = page.getByRole('button', { name: 'Meeting transcript storage' })
   await expect(transcriptStorage).toContainText('Default')
   await expect(transcriptStorage).toContainText('/Users/demo/Library/Application Support/Arco/transcripts')
-  await transcriptStorage.click()
-  await expect(page.getByRole('button', { name: 'Choose folder' })).toBeDisabled()
+  await expect(transcriptStorage).toBeDisabled()
   await expect(page.getByText('Stop the current meeting before changing this folder.')).toBeVisible()
   await expect(page.getByText('Stored in Arco on this Mac')).toBeVisible()
 
@@ -773,7 +786,6 @@ test('transcript storage has a default, supports a custom folder, and restores t
   const transcriptStorage = page.getByRole('button', { name: 'Meeting transcript storage' })
   await expect(transcriptStorage).toContainText('Default')
   await transcriptStorage.click()
-  await page.getByRole('button', { name: 'Choose folder' }).click()
   await expect(transcriptStorage).toContainText('Custom')
   await expect(transcriptStorage).toContainText('/Users/demo/Documents/Arco Meetings')
   await page.screenshot({ path: 'test-results/arco-transcript-storage-custom.png', fullPage: true })
@@ -783,12 +795,11 @@ test('transcript storage has a default, supports a custom folder, and restores t
   await page.getByRole('button', { name: 'Open settings' }).click()
   await page.getByRole('button', { name: 'Data & privacy' }).click()
   await expect(page.getByRole('button', { name: 'Meeting transcript storage' })).toContainText('Custom')
-  await page.getByRole('button', { name: 'Meeting transcript storage' }).click()
   await page.getByRole('button', { name: 'Restore default' }).click()
   await expect(page.getByRole('button', { name: 'Meeting transcript storage' })).toContainText('Default')
 })
 
-test('Recognition exposes one durable on-device model and diarization contract', async ({ page }) => {
+test('Recognition keeps Deepgram built-in and exposes independent local diarization models', async ({ page }) => {
   await page.setViewportSize({ width: 1080, height: 750 })
   await gotoConfigured(page, '/?demo=1')
   await page.getByRole('button', { name: 'Stop listening' }).click()
@@ -798,16 +809,29 @@ test('Recognition exposes one durable on-device model and diarization contract',
   const settings = page.getByRole('dialog', { name: 'Audio & speakers' })
   await settings.locator('summary').filter({ hasText: /^Recognition/ }).click()
   const deepgramSetup = settings.getByRole('group', { name: 'Deepgram setup' })
-  await expect(deepgramSetup.getByRole('link', { name: 'Get a Deepgram key' })).toHaveAttribute(
+  const getDeepgramKey = deepgramSetup.getByRole('link', { name: 'Get a Deepgram key' })
+  await expect(getDeepgramKey).toHaveAttribute(
     'href',
     'https://console.deepgram.com/',
   )
+  const deepgramConsole = page.waitForEvent('popup')
+  await getDeepgramKey.click()
+  const deepgramConsolePage = await deepgramConsole
+  await expect(deepgramConsolePage).toHaveURL(/console\.deepgram\.com/)
+  await deepgramConsolePage.close()
   await deepgramSetup.getByLabel('Deepgram API key').fill('0123456789abcdef0123456789abcdef')
   await deepgramSetup.getByRole('button', { name: 'Verify & save' }).click()
   await expect(deepgramSetup.getByText('Deepgram is ready')).toBeVisible()
+  await expect(settings.getByText('Deepgram built-in', { exact: true }).first()).toBeVisible()
+  await expect(settings.getByRole('radio', { name: /LS-EEND/i })).toHaveCount(0)
   await expect(deepgramSetup).not.toContainText(/uv|python|\.env|DEEPGRAM_API_KEY=/i)
   await page.screenshot({ path: 'test-results/arco-deepgram-setup.png', fullPage: true })
-  await settings.locator('label').filter({ hasText: /^On-device/ }).click()
+  await settings.getByText('This Mac', { exact: true }).click()
+  const recognitionSummary = settings.locator('summary').filter({ hasText: /^Recognition/ })
+  await expect(recognitionSummary).toContainText('Nemotron Speech 3.5 not downloaded')
+  await expect(recognitionSummary).toContainText('Streaming Sortformer not downloaded')
+  await expect(recognitionSummary.getByLabel('Required local models are not downloaded')).toBeVisible()
+  await page.screenshot({ path: 'test-results/arco-local-models-missing.png', fullPage: true })
 
   const model = settings.getByRole('combobox', { name: 'On-device model' })
   await expect(model).toHaveValue('nemotron-speech-3.5-streaming')
@@ -819,15 +843,29 @@ test('Recognition exposes one durable on-device model and diarization contract',
     'Whisper Medium · ~1.5 GB',
     'Whisper Large · ~2.9 GB',
   ])
-  await expect(settings.getByRole('checkbox', { name: /Streaming Sortformer/i })).toBeChecked()
+  await expect(settings.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
+  await expect(settings.getByRole('radio', { name: /LS-EEND Meeting/i })).not.toBeChecked()
+  await expect(settings.getByRole('radio', { name: /LS-EEND General/i })).not.toBeChecked()
+  const downloadSortformer = settings.getByRole('button', { name: 'Download Streaming Sortformer' })
+  await expect(downloadSortformer).toBeVisible()
+  await downloadSortformer.click()
+  await expect(downloadSortformer).toBeHidden()
+  await expect(settings.getByText('Ready', { exact: true })).toBeVisible()
   await expect(settings.getByText('Audio and transcript stay on this Mac.')).toBeVisible()
-  await expect(settings.getByText(/up to 4 speakers per audio source/i)).toBeVisible()
+  await expect(settings.getByRole('radio', { name: /Streaming Sortformer.*up to 4 speakers per audio source/i })).toBeChecked()
+
+  await settings.getByRole('radio', { name: /LS-EEND General/i }).click()
+  const downloadGeneral = settings.getByRole('button', { name: 'Download LS-EEND General' })
+  await downloadGeneral.click()
+  await expect(downloadGeneral).toBeHidden()
+  await expect(settings.getByRole('radio', { name: /LS-EEND General.*up to 10 speakers per audio source/i })).toBeChecked()
 
   await model.selectOption('whisper-small')
   await settings.getByRole('button', { name: 'Download and use Whisper Small' }).click()
   await expect(settings.getByText('Ready on this Mac')).toBeVisible()
   await settings.getByRole('combobox', { name: 'Recognition language' }).selectOption('en-US')
-  await expect(settings.locator('summary').filter({ hasText: /^Recognition/ })).toContainText('Whisper Small')
+  await expect(recognitionSummary).toContainText('Whisper Small · LS-EEND General')
+  await expect(recognitionSummary.getByLabel('Required local models are not downloaded')).toBeHidden()
   await page.screenshot({ path: 'test-results/arco-local-recognition-settings.png', fullPage: true })
   await settings.getByRole('button', { name: 'Close settings' }).click()
 

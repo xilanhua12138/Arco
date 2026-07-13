@@ -168,9 +168,16 @@ impl TranscriptionConfig {
                         self.model
                     ));
                 }
-                if !matches!(self.diarization.as_str(), "local-streaming" | "none") {
+                if !matches!(
+                    self.diarization.as_str(),
+                    "sortformer-streaming"
+                        | "lseend-ami-streaming"
+                        | "lseend-dihard3-streaming"
+                        | "none"
+                ) {
                     return Err(
-                        "local transcription requires local-streaming or no diarization".into(),
+                        "local transcription requires a local diarization model or no diarization"
+                            .into(),
                     );
                 }
                 if self.model == "nemotron-speech-3.5-streaming" && !cfg!(target_arch = "aarch64") {
@@ -186,6 +193,41 @@ impl TranscriptionConfig {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod transcription_config_tests {
+    use super::TranscriptionConfig;
+
+    fn local(diarization: &str) -> TranscriptionConfig {
+        TranscriptionConfig {
+            provider: "local".into(),
+            model: "whisper-base".into(),
+            language: "auto".into(),
+            diarization: diarization.into(),
+        }
+    }
+
+    #[test]
+    fn local_transcription_accepts_each_native_diarizer() {
+        for diarization in [
+            "sortformer-streaming",
+            "lseend-ami-streaming",
+            "lseend-dihard3-streaming",
+            "none",
+        ] {
+            assert!(local(diarization).validate().is_ok(), "{diarization}");
+        }
+    }
+
+    #[test]
+    fn cloud_and_local_diarization_backends_cannot_be_mixed() {
+        let mut deepgram = TranscriptionConfig::default();
+        deepgram.diarization = "lseend-ami-streaming".into();
+        assert!(deepgram.validate().is_err());
+
+        assert!(local("provider").validate().is_err());
     }
 }
 

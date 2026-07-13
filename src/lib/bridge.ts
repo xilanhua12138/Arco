@@ -18,6 +18,7 @@ import type {
   MeetingGenerationStatus,
   MeetingOutputArtifact,
   MeetingSummary,
+  LocalDiarizationModelId,
   NoteDocument,
   NotesStorageSettings,
   PersistedAgentTurn,
@@ -73,12 +74,32 @@ const demoTranscriptionModels: TranscriptionModelStatus[] = [
     error: null,
     path: null,
   },
+  {
+    id: 'lseend-ami-streaming',
+    installed: false,
+    phase: 'not-installed',
+    progress: null,
+    error: null,
+    path: null,
+  },
+  {
+    id: 'lseend-dihard3-streaming',
+    installed: false,
+    phase: 'not-installed',
+    progress: null,
+    error: null,
+    path: null,
+  },
 ]
 
 const readDemoTranscriptionModels = (): TranscriptionModelStatus[] => {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(demoTranscriptionModelsKey) ?? 'null')
-    return Array.isArray(parsed) ? parsed as TranscriptionModelStatus[] : demoTranscriptionModels.map((status) => ({ ...status }))
+    if (!Array.isArray(parsed)) return demoTranscriptionModels.map((status) => ({ ...status }))
+    const stored = parsed as TranscriptionModelStatus[]
+    return demoTranscriptionModels.map((fallback) => (
+      stored.find((status) => status.id === fallback.id) ?? { ...fallback }
+    ))
   } catch {
     return demoTranscriptionModels.map((status) => ({ ...status }))
   }
@@ -189,6 +210,14 @@ const writeDemoCapture = (capture: CaptureState) => {
 export const arcoBridge = {
   isDesktop: hasTauriRuntime,
   isDemo: hasExplicitDemoMode,
+
+  async openDeepgramConsole(): Promise<void> {
+    if (hasTauriRuntime()) {
+      await invoke('open_deepgram_console')
+      return
+    }
+    window.open('https://console.deepgram.com/', '_blank', 'noopener,noreferrer')
+  },
 
   async listMeetings(query = ''): Promise<MeetingSummary[]> {
     if (hasTauriRuntime()) {
@@ -414,15 +443,15 @@ export const arcoBridge = {
     return hasExplicitDemoMode() ? readDemoTranscriptionModels() : demoTranscriptionModels
   },
 
-  async prepareTranscriptionModel(model: TranscriptionConfig['model'], includeDiarization: boolean): Promise<TranscriptionModelStatus[]> {
+  async prepareTranscriptionModel(model: TranscriptionConfig['model'], diarizationModel?: LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
-      return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model, includeDiarization })
+      return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model, diarizationModel })
     }
     if (hasExplicitDemoMode() && model !== 'nova-3') {
       await wait(120)
       let statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, true)
-      if (includeDiarization) {
-        statuses = updateDemoTranscriptionModel(statuses, 'sortformer-streaming', true)
+      if (diarizationModel) {
+        statuses = updateDemoTranscriptionModel(statuses, diarizationModel, true)
       }
       writeDemoTranscriptionModels(statuses)
       return statuses
@@ -430,7 +459,7 @@ export const arcoBridge = {
     throw new Error('Open the Arco desktop app to download on-device speech models.')
   },
 
-  async removeTranscriptionModel(model: TranscriptionConfig['model'] | 'sortformer-streaming'): Promise<TranscriptionModelStatus[]> {
+  async removeTranscriptionModel(model: TranscriptionConfig['model'] | LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
       return invoke<TranscriptionModelStatus[]>('remove_transcription_model', { model })
     }

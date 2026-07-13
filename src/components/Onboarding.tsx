@@ -19,6 +19,7 @@ import type {
   AudioMode,
   AudioSetupCheck,
   DeepgramCredentialStatus,
+  LocalDiarizationModelId,
   LocalTranscriptionModelId,
   ProviderId,
   RuntimeStatus,
@@ -50,7 +51,7 @@ interface OnboardingProps {
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
   onPrepareTranscriptionModel: (
     model: LocalTranscriptionModelId,
-    includeDiarization: boolean,
+    diarizationModel: LocalDiarizationModelId,
   ) => Promise<TranscriptionModelStatus[]>
   onTestAudio: (mode: AudioMode) => Promise<AudioSetupCheck>
   onChangeListeningShortcut: (shortcut: ListeningShortcut) => boolean | Promise<boolean>
@@ -197,7 +198,7 @@ export function Onboarding({
     setTranscriptionState('idle')
     setTranscription(provider === 'deepgram'
       ? { provider: 'deepgram', model: 'nova-3', language: transcription.language, diarization: 'provider' }
-      : { provider: 'local', model: localModel, language: transcription.language, diarization: 'local-streaming' })
+      : { provider: 'local', model: localModel, language: transcription.language, diarization: 'sortformer-streaming' })
   }
 
   const changeLanguage = (language: TranscriptionLanguage) => {
@@ -224,7 +225,7 @@ export function Onboarding({
     setTranscriptionState('working')
     setTranscriptionError(null)
     try {
-      const next = await onPrepareTranscriptionModel(localModel, true)
+      const next = await onPrepareTranscriptionModel(localModel, 'sortformer-streaming')
       setModelsOverride(next)
       setTranscriptionState(
         modelReady(next, localModel) && modelReady(next, 'sortformer-streaming') ? 'passed' : 'failed',

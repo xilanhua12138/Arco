@@ -15,13 +15,18 @@ type TranscriptionConfig = {
     | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
     | 'whisper-medium' | 'whisper-large'
   language: 'auto' | 'zh-CN' | 'en-US'
-  diarization: 'provider' | 'local-streaming' | 'none'
+  diarization:
+    | 'provider'
+    | 'sortformer-streaming'
+    | 'lseend-ami-streaming'
+    | 'lseend-dihard3-streaming'
+    | 'none'
 }
 ```
 
 Rust validates the combination and resolves it through a `TranscriberCatalog`. Each definition owns its executable, fixed arguments, credential requirement, and readiness timeout. The capture manager does not know inference APIs: it starts the chosen definition in an owned process group, supplies the shared PCM stream, and waits for the one-use ready-file.
 
-The local sidecar has a second, deliberately smaller abstraction: `LocalTranscriptionProvider`. Nemotron and Whisper implement that protocol; Streaming Sortformer is composed alongside either engine. Model status, download, removal, and inference are separate commands, so capture never silently downloads gigabytes or mutates its model set.
+The local sidecar has a second, deliberately smaller abstraction: `LocalTranscriptionProvider`. Nemotron and Whisper implement that protocol; the selected FluidAudio diarizer is composed alongside either engine. Model status, download, removal, and inference are separate commands, so capture never silently downloads models or mutates its model set.
 
 ## Capture layout
 
@@ -55,17 +60,25 @@ The bundled Swift sidecar provides:
 
 Each stereo channel has independent 200 ms pre-roll, 500 ms minimum speech, and 600 ms trailing-silence endpointing. The sidecar incrementally consumes the live stream, finalizes an utterance at the endpoint, transcribes it, and writes the shared Markdown adapter with audio-relative start/end metadata. Nemotron uses its token timing envelope; Whisper preserves its returned segment timings. Arco currently persists finalized local segments rather than exposing unstable interim text.
 
-Models live under `~/Library/Application Support/Arco/models/`. Whisper downloads are staged, checked against their exact expected byte size, and atomically moved into place. Nemotron and Sortformer use FluidAudio's model manifests/caches plus Arco installation markers. A local ready signal is emitted only after the selected ASR and optional diarizer are loaded.
+Models live under `~/Library/Application Support/Arco/models/`. Whisper downloads are staged, checked against their exact expected byte size, and atomically moved into place. Nemotron, Sortformer, and LS-EEND use FluidAudio's model manifests/caches plus separate Arco installation markers. A local ready signal is emitted only after the selected ASR and optional diarizer are loaded.
 
 The implementation depends directly on Apache-2.0 FluidAudio and MIT SwiftWhisper. FluidVoice informed the product/model matrix, but its GPL-3.0 source is not copied into Arco.
 
 ## On-device streaming speaker separation
 
-Optional `local-streaming` diarization loads FluidAudio's palettized `fastV2_1` Streaming Sortformer on CPU + Neural Engine. Arco creates one diarizer timeline per active source channel while sharing the loaded model weights.
+Local speaker separation offers three explicit FluidAudio backends:
 
-Sortformer returns finalized history plus a revisable tentative edge. Arco appends only new finalized intervals and replaces the tentative edge on every update, avoiding stale-hypothesis double counting. Each finalized ASR segment is assigned to the speaker slot with the greatest temporal overlap.
+| Model | Intended use | Speaker slots per source |
+|---|---|---:|
+| Streaming Sortformer | Stable identities for typical meetings | 4 |
+| LS-EEND Meeting (AMI) | Meetings with overlap or quiet speech | 4 |
+| LS-EEND General (DIHARD3) | Complex rooms and larger groups | 10 |
 
-Nemotron inference is faster than real time on the current Apple Silicon path, but Streaming Sortformer has a materially heavier Core ML cold load. The local provider therefore has a five-minute readiness ceiling and remains visibly `Starting` until both models are loaded. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service should keep the diarizer warm across meetings and amortize that per-process load.
+Sortformer uses the palettized `fastV2_1` model on CPU + Neural Engine. LS-EEND uses the 100 ms streaming variants on CPU. Arco creates one diarizer timeline per active source channel while sharing the loaded model weights.
+
+Each backend returns finalized history plus a revisable tentative edge. Arco appends only new finalized intervals and replaces the tentative edge on every update, avoiding stale-hypothesis double counting. It finalizes each channel's diarizer before flushing the last utterance. Each finalized ASR segment is assigned to the speaker slot with the greatest temporal overlap.
+
+The local provider has a five-minute readiness ceiling and remains visibly `Starting` until the selected ASR and diarizer are loaded. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service should keep the diarizer warm across meetings and amortize that per-process load.
 
 The identity key remains `(channel, speaker)`:
 
@@ -76,7 +89,7 @@ The identity key remains `(channel, speaker)`:
 (channel 1, speaker 1) → In room 2
 ```
 
-The model exposes up to four anonymous slots per channel. A slot is not a durable human identity, and the same human heard through both sources can receive two labels. A segment containing a rapid speaker switch is currently assigned to its dominant speaker; word-level local speaker splitting is a later refinement.
+A slot is not a durable human identity, and the same human heard through both sources can receive two labels. A segment containing a rapid speaker switch is currently assigned to its dominant speaker; word-level local speaker splitting is a later refinement.
 
 ## Deepgram streaming request
 
@@ -95,6 +108,8 @@ wss://api.deepgram.com/v1/listen
   &smart_format=true
   &endpointing=300
 ```
+
+The Deepgram branch never prepares or loads a local diarization model. Conversely, local ASR never sends audio to Deepgram.
 
 Use `diarize_model=latest`; do not combine it with the deprecated `diarize=true` parameter.
 

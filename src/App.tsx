@@ -431,8 +431,8 @@ function App() {
             setDeepgramCredentialBusy(false)
           }
         }}
-        onPrepareTranscriptionModel={async (model, includeDiarization) => {
-          const next = await arcoBridge.prepareTranscriptionModel(model, includeDiarization)
+        onPrepareTranscriptionModel={async (model, diarizationModel) => {
+          const next = await arcoBridge.prepareTranscriptionModel(model, diarizationModel)
           setTranscriptionModels(next)
           return next
         }}
@@ -642,20 +642,23 @@ function App() {
         deepgramCredentialBusy={deepgramCredentialBusy}
         onSaveDeepgramApiKey={saveDeepgramApiKey}
         onRemoveDeepgramApiKey={removeDeepgramApiKey}
+        onOpenDeepgramConsole={arcoBridge.openDeepgramConsole}
         onChangeTranscriptionConfig={changeTranscriptionConfig}
-        onPrepareTranscriptionModel={(model) => {
-          const includeDiarization = transcriptionConfig.diarization === 'local-streaming'
-          mergeTranscriptionModelStatus({
-            id: model,
-            installed: false,
-            phase: 'downloading',
-            progress: 0,
-            error: null,
-            path: null,
-          })
-          if (includeDiarization) {
+        onPrepareTranscriptionModel={(model, diarizationModel) => {
+          const selectedStatus = transcriptionModels.find((status) => status.id === model)
+          if (!selectedStatus?.installed) {
             mergeTranscriptionModelStatus({
-              id: 'sortformer-streaming',
+              id: model,
+              installed: false,
+              phase: 'downloading',
+              progress: 0,
+              error: null,
+              path: null,
+            })
+          }
+          if (diarizationModel) {
+            mergeTranscriptionModelStatus({
+              id: diarizationModel,
               installed: false,
               phase: 'downloading',
               progress: 0,
@@ -665,7 +668,7 @@ function App() {
           }
           void arcoBridge.prepareTranscriptionModel(
             model,
-            includeDiarization,
+            diarizationModel,
           ).then(setTranscriptionModels).catch((cause) => {
             const error = cause instanceof Error ? cause.message : String(cause)
             mergeTranscriptionModelStatus({
@@ -676,9 +679,9 @@ function App() {
               error,
               path: null,
             })
-            if (includeDiarization) {
+            if (diarizationModel) {
               mergeTranscriptionModelStatus({
-                id: 'sortformer-streaming',
+                id: diarizationModel,
                 installed: false,
                 phase: 'failed',
                 progress: null,

@@ -34,7 +34,7 @@ if [ "${ARCO_PACKAGE_SKIP_BUILD:-0}" != "1" ]; then
   pnpm tauri build --bundles app
 fi
 
-if [ ! -x "$APP/Contents/MacOS/arco" ]; then
+if [ ! -x "$APP/Contents/MacOS/Arco" ]; then
   echo "Arco.app is missing its main desktop executable" >&2
   exit 1
 fi
@@ -43,7 +43,7 @@ if [ ! -x "$APP/Contents/Resources/native/arco-deepgram-transcriber" ]; then
   exit 1
 fi
 MAIN_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
-if [ "$MAIN_EXECUTABLE" != "arco" ]; then
+if [ "$MAIN_EXECUTABLE" != "Arco" ]; then
   echo "Arco.app selected the wrong main executable: $MAIN_EXECUTABLE" >&2
   exit 1
 fi

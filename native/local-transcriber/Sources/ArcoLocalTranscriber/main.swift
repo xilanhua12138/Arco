@@ -40,11 +40,23 @@ struct ArcoLocalTranscriberMain {
             throw RuntimeError("prepare requires a supported --model.")
         }
         let manager = LocalModelManager()
-        let modelProgress = ProgressEmitter()
-        try await manager.prepare(model) { status in modelProgress.emit(status) }
-        if option("--diarization", in: arguments) == "local-streaming" && model != .sortformer {
-            let diarizationProgress = ProgressEmitter()
-            try await manager.prepare(.sortformer) { status in diarizationProgress.emit(status) }
+        if !(await manager.status(model).installed) {
+            let modelProgress = ProgressEmitter()
+            try await manager.prepare(model) { status in modelProgress.emit(status) }
+        }
+        if let rawDiarizer = option("--diarization", in: arguments) {
+            let normalized = rawDiarizer == "local-streaming" ? LocalModelID.sortformer.rawValue : rawDiarizer
+            guard let diarizer = LocalModelID(rawValue: normalized), diarizer.isDiarizer else {
+                throw RuntimeError("Unsupported local diarization model: \(rawDiarizer)")
+            }
+            guard diarizer != model else {
+                try await printStatuses()
+                return
+            }
+            if !(await manager.status(diarizer).installed) {
+                let diarizationProgress = ProgressEmitter()
+                try await manager.prepare(diarizer) { status in diarizationProgress.emit(status) }
+            }
         }
         try await printStatuses()
     }
@@ -61,14 +73,17 @@ struct ArcoLocalTranscriberMain {
         guard
             let rawModel = option("--model", in: arguments),
             let model = LocalModelID(rawValue: rawModel),
-            model != .sortformer,
+            !model.isDiarizer,
             let transcriptPath = arguments.last,
             !transcriptPath.hasPrefix("--")
         else {
             throw RuntimeError("stream requires --model, --language, --diarization, and a transcript path.")
         }
         let language = option("--language", in: arguments) ?? "auto"
-        let diarization = option("--diarization", in: arguments) ?? "none"
+        let rawDiarization = option("--diarization", in: arguments) ?? "none"
+        let diarization = rawDiarization == "local-streaming"
+            ? StreamingDiarizationBackend.sortformer.rawValue
+            : rawDiarization
         let manager = LocalModelManager()
         let directories = await manager.directories
         let provider: any LocalTranscriptionProvider
@@ -82,11 +97,20 @@ struct ArcoLocalTranscriberMain {
         }
 
         let localDiarizer: StreamingSpeakerDiarizer?
-        if diarization == "local-streaming" {
-            guard await manager.status(.sortformer).installed else {
-                throw RuntimeError("Streaming Sortformer is not installed.")
+        if diarization != "none" {
+            guard
+                let backend = StreamingDiarizationBackend(rawValue: diarization),
+                let diarizationModel = LocalModelID(rawValue: diarization)
+            else {
+                throw RuntimeError("Unsupported local diarization model: \(rawDiarization)")
             }
-            localDiarizer = try await StreamingSpeakerDiarizer(cacheDirectory: directories.sortformer)
+            guard await manager.status(diarizationModel).installed else {
+                throw RuntimeError("\(diarizationModel.rawValue) is not installed.")
+            }
+            localDiarizer = try await StreamingSpeakerDiarizer(
+                cacheDirectory: directories.cacheDirectory(for: diarizationModel),
+                backend: backend
+            )
         } else {
             localDiarizer = nil
         }

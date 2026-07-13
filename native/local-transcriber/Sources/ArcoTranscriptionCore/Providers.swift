@@ -79,23 +79,47 @@ public struct SpeakerTimelineUpdate: Sendable, Equatable {
     }
 }
 
-public final class StreamingSpeakerDiarizer: @unchecked Sendable {
-    private var diarizers: [SortformerDiarizer]
+public enum StreamingDiarizationBackend: String, Sendable {
+    case sortformer = "sortformer-streaming"
+    case lseendAmi = "lseend-ami-streaming"
+    case lseendDihard3 = "lseend-dihard3-streaming"
+}
 
-    public init(cacheDirectory: URL, channelCount: Int = 2) async throws {
-        var config = SortformerConfig.fastV2_1
-        config.precision = .palettized
-        let models = try await SortformerModels.loadFromHuggingFace(
-            config: config,
-            cacheDirectory: cacheDirectory,
-            computeUnits: .cpuAndNeuralEngine
-        )
-        diarizers = (0..<channelCount).map { _ in
-            var timeline = DiarizerTimelineConfig.sortformerDefault
-            timeline.storeSegments = false
-            let diarizer = SortformerDiarizer(config: config, timelineConfig: timeline)
-            diarizer.initialize(models: models)
-            return diarizer
+public final class StreamingSpeakerDiarizer: @unchecked Sendable {
+    private var diarizers: [any Diarizer]
+
+    public init(
+        cacheDirectory: URL,
+        backend: StreamingDiarizationBackend = .sortformer,
+        channelCount: Int = 2
+    ) async throws {
+        switch backend {
+        case .sortformer:
+            var config = SortformerConfig.fastV2_1
+            config.precision = .palettized
+            let models = try await SortformerModels.loadFromHuggingFace(
+                config: config,
+                cacheDirectory: cacheDirectory,
+                computeUnits: .cpuAndNeuralEngine
+            )
+            diarizers = (0..<channelCount).map { _ in
+                var timeline = DiarizerTimelineConfig.sortformerDefault
+                timeline.storeSegments = false
+                let diarizer = SortformerDiarizer(config: config, timelineConfig: timeline)
+                diarizer.initialize(models: models)
+                return diarizer as any Diarizer
+            }
+        case .lseendAmi, .lseendDihard3:
+            let variant: LSEENDVariant = backend == .lseendAmi ? .ami : .dihard3
+            let model = try await LSEENDModel.loadFromHuggingFace(
+                variant: variant,
+                stepSize: .step100ms,
+                cacheDirectory: cacheDirectory,
+                computeUnits: .cpuOnly
+            )
+            diarizers = try (0..<channelCount).map { _ in
+                try LSEENDDiarizer(model: model) as any Diarizer
+            }
         }
     }
 
@@ -104,6 +128,27 @@ public final class StreamingSpeakerDiarizer: @unchecked Sendable {
         guard let update = try diarizers[channel].process(samples: samples, sourceSampleRate: 16_000) else {
             return nil
         }
+        let convert: (DiarizerSegment) -> SpeakerInterval = { segment in
+            SpeakerInterval(
+                speaker: segment.speakerIndex,
+                start: Double(segment.startTime),
+                end: Double(segment.endTime)
+            )
+        }
+        return SpeakerTimelineUpdate(
+            finalized: update.finalizedSegments.map(convert),
+            tentative: update.tentativeSegments.map(convert)
+        )
+    }
+
+    public func finalize(channel: Int) throws -> SpeakerTimelineUpdate? {
+        guard diarizers.indices.contains(channel), let update = try diarizers[channel].finalizeSession() else {
+            return nil
+        }
+        return Self.convert(update)
+    }
+
+    private static func convert(_ update: DiarizerTimelineUpdate) -> SpeakerTimelineUpdate {
         let convert: (DiarizerSegment) -> SpeakerInterval = { segment in
             SpeakerInterval(
                 speaker: segment.speakerIndex,
@@ -147,6 +192,10 @@ public actor LocalStreamRunner {
 
     public func finish() async throws {
         for channel in detectors.indices {
+            if let diarizer, let update = try diarizer.finalize(channel: channel) {
+                finalizedSpeakerIntervals[channel].append(contentsOf: update.finalized)
+                tentativeSpeakerIntervals[channel] = update.tentative
+            }
             if let utterance = detectors[channel].finish() {
                 try await transcribe(utterance, channel: channel)
             }

@@ -76,5 +76,12 @@ struct ArcoTranscriptionSelfTest {
         try require(LocalModelID.whisperMedium.expectedBytes == 1_533_763_059, "Whisper Medium byte contract")
         try require(LocalModelID.whisperLarge.expectedBytes == 3_095_033_483, "Whisper Large byte contract")
         try require(LocalModelID.nemotron.expectedBytes == nil, "Core ML models use manifest validation")
+        try require(LocalModelID.sortformer.isDiarizer, "Sortformer diarizer catalog")
+        try require(LocalModelID.lseendAmi.isDiarizer, "LS-EEND meeting diarizer catalog")
+        try require(LocalModelID.lseendDihard3.isDiarizer, "LS-EEND general diarizer catalog")
+        try require(
+            StreamingDiarizationBackend(rawValue: LocalModelID.lseendAmi.rawValue) == .lseendAmi,
+            "LS-EEND runtime routing"
+        )
     }
 }
