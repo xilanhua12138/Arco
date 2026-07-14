@@ -67,4 +67,38 @@ describe('RecordingHud', () => {
     resolveStop({ phase: 'idle', activeMeetingId: null, startedAt: null, message: null })
     await waitFor(() => expect(screen.getByText('Saved')).toBeVisible())
   })
+
+  it('resets the saved HUD when the reused window observes a new recording', async () => {
+    const user = userEvent.setup()
+    const idle: CaptureState = {
+      phase: 'idle',
+      activeMeetingId: null,
+      startedAt: null,
+      message: 'Saved',
+    }
+    const nextRecording: CaptureState = {
+      phase: 'recording',
+      activeMeetingId: 'demo-next',
+      startedAt: new Date().toISOString(),
+      message: null,
+    }
+    let currentCapture = recording
+    vi.mocked(arcoBridge.captureStatus).mockImplementation(async () => currentCapture)
+    vi.spyOn(arcoBridge, 'stopCapture').mockImplementation(async () => {
+      currentCapture = idle
+      return idle
+    })
+    render(<RecordingHud />)
+
+    await screen.findByText('Recording')
+    await user.click(screen.getByRole('button', { name: 'Stop recording' }))
+    expect(await screen.findByText('Saved')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Stop recording' })).toBeDisabled()
+
+    currentCapture = nextRecording
+
+    await waitFor(() => expect(screen.getByText('Recording')).toBeVisible(), { timeout: 2_000 })
+    expect(screen.getByRole('button', { name: 'Stop recording' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Ask Arco' })).toBeEnabled()
+  })
 })

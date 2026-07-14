@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Arco",
   "mainBinaryName": "Arco",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "identifier": "app.arco.desktop",
   "build": {
     "frontendDist": "../dist",

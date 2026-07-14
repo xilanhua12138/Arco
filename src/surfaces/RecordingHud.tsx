@@ -35,7 +35,11 @@ export function RecordingHud() {
     const refresh = async () => {
       try {
         const next = await arcoBridge.captureStatus()
-        if (!cancelled && !saving && !saved) setCapture(next)
+        const reusedForNewRecording = saved && next.phase === 'recording'
+        if (!cancelled && !saving && (!saved || reusedForNewRecording)) {
+          setCapture(next)
+          if (reusedForNewRecording) setSaved(false)
+        }
       } catch {
         if (!cancelled) setCapture((current) => ({ ...current, phase: 'error' }))
       }
