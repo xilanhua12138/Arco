@@ -232,9 +232,9 @@ function App() {
     setPage(nextPage)
   }
 
-  const toggleListening = useCallback(async () => {
+  const toggleListening = useCallback(async (resumeMeetingId?: string) => {
     if (['starting', 'stopping'].includes(arco.capture.phase)) return
-    const nextCapture = await arco.toggleCapture(audioMode, transcriptionConfig)
+    const nextCapture = await arco.toggleCapture(audioMode, transcriptionConfig, resumeMeetingId)
     if (nextCapture?.phase === 'recording') setPage('current')
   }, [arco, audioMode, transcriptionConfig])
 
@@ -569,16 +569,18 @@ function App() {
       <Sidebar
         page={page}
         meeting={
-          arco.capture.phase === 'recording'
-            ? activeMeeting ?? (arco.meeting?.summary.id === arco.capture.activeMeetingId ? arco.meeting.summary : null)
-            : null
+          page === 'review'
+            ? arco.meeting?.summary ?? null
+            : arco.capture.phase === 'recording'
+              ? activeMeeting ?? (arco.meeting?.summary.id === arco.capture.activeMeetingId ? arco.meeting.summary : null)
+              : null
         }
         capture={arco.capture}
         audioMode={displayedAudioMode}
         audioModeLocked={audioModeLocked}
         onChangePage={showPage}
-        onToggleCapture={async () => {
-          await toggleListening()
+        onToggleCapture={async (resumeMeetingId) => {
+          await toggleListening(resumeMeetingId)
         }}
           onOpenSettings={() => {
           returnFocusRef.current = 'settings-trigger'

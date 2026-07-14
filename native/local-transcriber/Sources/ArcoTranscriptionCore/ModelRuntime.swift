@@ -77,6 +77,13 @@ public struct ModelDirectories: Sendable {
     public var nemotron: URL { root.appendingPathComponent("nemotron", isDirectory: true) }
     public var whisper: URL { root.appendingPathComponent("whisper", isDirectory: true) }
     public var sortformer: URL { root.appendingPathComponent("sortformer", isDirectory: true) }
+    public var vad: URL { root.appendingPathComponent("vad", isDirectory: true) }
+    public var vadModelDirectory: URL {
+        vad
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent(Repo.vad.folderName, isDirectory: true)
+            .appendingPathComponent(ModelNames.VAD.sileroVadFile, isDirectory: true)
+    }
     public var pyannoteWeSpeaker: URL {
         root.appendingPathComponent("speaker-diarization", isDirectory: true)
     }
@@ -129,48 +136,26 @@ public actor LocalModelManager {
     }
 
     public func status(_ model: LocalModelID) -> LocalModelStatus {
-        let path: URL?
-        switch model {
-        case .nemotron:
-            path = readMarker(model).map(URL.init(fileURLWithPath:))
-        case .sortformer, .pyannoteWeSpeaker, .lseendAmi, .lseendDihard3:
-            let installedDirectory = directories.installedDirectory(for: model)
-            let hasModels = installedDirectory.map { directory in
-                model == .pyannoteWeSpeaker
-                    ? DiarizerModels.requiredModelNames.allSatisfy {
-                        FileManager.default.fileExists(
-                            atPath: directory.appendingPathComponent($0, isDirectory: true).path
-                        )
-                    }
-                    : directoryHasContents(directory)
-            } == true
-            path = FileManager.default.fileExists(atPath: directories.marker(for: model).path)
-                && hasModels
-                ? installedDirectory : nil
-        default:
-            path = model.whisperFilename.map { directories.whisper.appendingPathComponent($0) }
-        }
-        let installed: Bool
-        if model == .nemotron {
-            installed = path.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("metadata.json").path) } ?? false
-        } else if model.isDiarizer {
-            installed = path != nil
-        } else {
-            let fileBytes = path.flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }
-                .map(Int64.init)
-            installed = fileBytes == model.expectedBytes
-        }
+        let artifact = artifactState(for: model)
+        let installed = artifact.installed && (model.isDiarizer || vadModelsInstalled())
         return LocalModelStatus(
             id: model.rawValue,
             installed: installed,
             phase: installed ? "ready" : "not-installed",
             progress: installed ? 1 : nil,
-            path: installed ? path?.path : nil
+            path: installed ? artifact.path?.path : nil
         )
     }
 
     public func prepare(_ model: LocalModelID, progress: @escaping @Sendable (LocalModelStatus) -> Void) async throws {
         try FileManager.default.createDirectory(at: directories.root, withIntermediateDirectories: true)
+        if !model.isDiarizer, !vadModelsInstalled() {
+            try await prepareVad(reportingAs: model, progress: progress)
+        }
+        if artifactState(for: model).installed {
+            progress(status(model))
+            return
+        }
         switch model {
         case .nemotron:
             try FileManager.default.createDirectory(at: directories.nemotron, withIntermediateDirectories: true)
@@ -256,6 +241,31 @@ public actor LocalModelManager {
         progress(status(model))
     }
 
+    public func loadVoiceActivityManager() async throws -> VadManager {
+        guard vadModelsInstalled() else {
+            throw RuntimeError("Silero VAD is not installed. Download the selected on-device transcription model in Arco Settings.")
+        }
+        ModelHub.offlineMode = true
+        do {
+            return try await VadManager(modelDirectory: directories.vad)
+        } catch {
+            throw RuntimeError("Silero VAD could not be loaded from the Arco model directory: \(error.localizedDescription)")
+        }
+    }
+
+    public func vadModelsInstalled() -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: directories.vadModelDirectory.path,
+            isDirectory: &isDirectory
+        ), isDirectory.boolValue else {
+            return false
+        }
+        let coreMLData = directories.vadModelDirectory.appendingPathComponent("coremldata.bin")
+        let size = (try? coreMLData.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return size > 0
+    }
+
     public func remove(_ model: LocalModelID) throws {
         switch model {
         case .nemotron:
@@ -295,6 +305,55 @@ public actor LocalModelManager {
             options: [.skipsHiddenFiles]
         ) else { return false }
         return !contents.isEmpty
+    }
+
+    private func artifactState(for model: LocalModelID) -> (path: URL?, installed: Bool) {
+        switch model {
+        case .nemotron:
+            let path = readMarker(model).map(URL.init(fileURLWithPath:))
+            let installed = path.map {
+                FileManager.default.fileExists(atPath: $0.appendingPathComponent("metadata.json").path)
+            } ?? false
+            return (path, installed)
+        case .sortformer, .pyannoteWeSpeaker, .lseendAmi, .lseendDihard3:
+            let installedDirectory = directories.installedDirectory(for: model)
+            let hasModels = installedDirectory.map { directory in
+                model == .pyannoteWeSpeaker
+                    ? DiarizerModels.requiredModelNames.allSatisfy {
+                        FileManager.default.fileExists(
+                            atPath: directory.appendingPathComponent($0, isDirectory: true).path
+                        )
+                    }
+                    : directoryHasContents(directory)
+            } == true
+            let installed = FileManager.default.fileExists(atPath: directories.marker(for: model).path)
+                && hasModels
+            return (installedDirectory, installed)
+        default:
+            let path = model.whisperFilename.map { directories.whisper.appendingPathComponent($0) }
+            let fileBytes = path.flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }
+                .map(Int64.init)
+            return (path, fileBytes == model.expectedBytes)
+        }
+    }
+
+    private func prepareVad(
+        reportingAs model: LocalModelID,
+        progress: @escaping @Sendable (LocalModelStatus) -> Void
+    ) async throws {
+        try FileManager.default.createDirectory(at: directories.vad, withIntermediateDirectories: true)
+        ModelHub.offlineMode = false
+        _ = try await VadManager(modelDirectory: directories.vad) { snapshot in
+            progress(LocalModelStatus(
+                id: model.rawValue,
+                installed: false,
+                phase: Self.phase(snapshot.phase),
+                progress: snapshot.fractionCompleted
+            ))
+        }
+        guard vadModelsInstalled() else {
+            throw RuntimeError("Silero VAD download completed without a usable Core ML model.")
+        }
     }
 
     private static func phase(_ phase: DownloadPhase) -> String {

@@ -5,14 +5,18 @@ import Foundation
 struct ArcoTranscriptionSelfTest {
     static func main() async throws {
         try testStereoSplit()
-        try testEndpointing()
+        try await testModelEndpointEmitsExactBoundaries()
+        try await testModelEndpointRejectsNoiseAndShortSpeech()
+        try await testModelEndpointSplitsMaximumAndFlushesTail()
+        try await testModelEndpointPropagatesInferenceFailure()
+        try await testVadDependencyStatus()
         try testAttribution()
         try testTranscriptWriter()
         try testSlidingWindowDiarizer()
         try testModelCatalog()
         try await testPyannoteInstallationStatus()
         try await testStreamingTimelineExchange()
-        print("8 local transcription contract tests passed")
+        print("12 local transcription contract tests passed")
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -28,18 +32,147 @@ struct ArcoTranscriptionSelfTest {
         try require(split.system[1] > 0.99 && split.microphone[1] == 0, "channel isolation")
     }
 
-    private static func testEndpointing() throws {
-        var detector = StreamingEndpointDetector(
-            threshold: 0.01,
+    private static func testModelEndpointEmitsExactBoundaries() async throws {
+        let session = ScriptedVoiceActivitySession([
+            VoiceActivityDecision(event: VoiceActivityEvent(kind: .speechStart, sampleIndex: 1)),
+            VoiceActivityDecision(),
+            VoiceActivityDecision(event: VoiceActivityEvent(kind: .speechEnd, sampleIndex: 10)),
+        ])
+        let detector = StreamingEndpointDetector(
+            session: session,
+            modelChunkSize: 4,
             minimumSpeechSamples: 4,
-            trailingSilenceSamples: 3,
-            preRollSamples: 2
+            maximumSpeechSamples: 40,
+            idleRetentionSamples: 4
         )
-        try require(detector.push([0.001, -0.001, 0]).isEmpty, "noise rejection")
-        let emitted = detector.push([0, 0.4, 0.3, 0.2, 0.1, 0, 0, 0])
-        try require(emitted.count == 1, "speech finalization")
-        try require(emitted[0].samples.contains(0.4), "speech preservation")
-        try require(emitted[0].endSample > emitted[0].startSample, "utterance timing")
+        let samples = (0..<12).map(Float.init)
+        let emitted = try await detector.push(samples)
+        try require(
+            emitted == [SpeechUtterance(samples: Array(samples[1..<10]), startSample: 1, endSample: 10)],
+            "model VAD must preserve exact speech event boundaries"
+        )
+        let receivedChunkSizes = await session.receivedChunkSizes
+        try require(receivedChunkSizes == [4, 4, 4], "model VAD chunk contract")
+    }
+
+    private static func testModelEndpointRejectsNoiseAndShortSpeech() async throws {
+        let noiseSession = ScriptedVoiceActivitySession([
+            VoiceActivityDecision(probability: 0.01),
+            VoiceActivityDecision(probability: 0.02),
+        ])
+        let noiseDetector = StreamingEndpointDetector(
+            session: noiseSession,
+            modelChunkSize: 4,
+            minimumSpeechSamples: 4,
+            maximumSpeechSamples: 40,
+            idleRetentionSamples: 4
+        )
+        let noiseUtterances = try await noiseDetector.push(Array(repeating: 0, count: 8))
+        try require(noiseUtterances.isEmpty, "model VAD must not invent speech without model events")
+        let noiseTail = try await noiseDetector.finish()
+        let noiseBufferedSamples = await noiseDetector.bufferedSampleCount
+        try require(noiseTail.isEmpty, "noise-only stream must not flush an utterance")
+        try require(noiseBufferedSamples <= 8, "idle VAD buffer must stay bounded")
+
+        let shortSession = ScriptedVoiceActivitySession([
+            VoiceActivityDecision(event: VoiceActivityEvent(kind: .speechStart, sampleIndex: 2)),
+            VoiceActivityDecision(event: VoiceActivityEvent(kind: .speechEnd, sampleIndex: 5)),
+        ])
+        let shortDetector = StreamingEndpointDetector(
+            session: shortSession,
+            modelChunkSize: 4,
+            minimumSpeechSamples: 4,
+            maximumSpeechSamples: 40,
+            idleRetentionSamples: 4
+        )
+        let shortUtterances = try await shortDetector.push((0..<8).map(Float.init))
+        try require(shortUtterances.isEmpty, "sub-minimum speech must be discarded")
+        let shortTail = try await shortDetector.finish()
+        try require(shortTail.isEmpty, "discarded short speech must not reappear on finish")
+    }
+
+    private static func testModelEndpointSplitsMaximumAndFlushesTail() async throws {
+        let session = ScriptedVoiceActivitySession([
+            VoiceActivityDecision(event: VoiceActivityEvent(kind: .speechStart, sampleIndex: 0)),
+            VoiceActivityDecision(probability: 0.99),
+            VoiceActivityDecision(probability: 0.99),
+        ])
+        let detector = StreamingEndpointDetector(
+            session: session,
+            modelChunkSize: 4,
+            minimumSpeechSamples: 4,
+            maximumSpeechSamples: 8,
+            idleRetentionSamples: 4
+        )
+        let samples = (0..<12).map(Float.init)
+        let emitted = try await detector.push(samples)
+        let tail = try await detector.finish()
+        try require(
+            emitted == [SpeechUtterance(samples: Array(samples[0..<8]), startSample: 0, endSample: 8)],
+            "continuous speech must split at the maximum duration"
+        )
+        try require(
+            tail == [SpeechUtterance(samples: Array(samples[8..<12]), startSample: 8, endSample: 12)],
+            "maximum split and final flush must cover the stream without gaps"
+        )
+    }
+
+    private static func testModelEndpointPropagatesInferenceFailure() async throws {
+        let detector = StreamingEndpointDetector(
+            session: FailingVoiceActivitySession(),
+            modelChunkSize: 4,
+            minimumSpeechSamples: 4,
+            maximumSpeechSamples: 40,
+            idleRetentionSamples: 4
+        )
+        do {
+            _ = try await detector.push([0.9, 0.9, 0.9, 0.9])
+            throw RuntimeError("model VAD inference failure was silently ignored")
+        } catch FailingVoiceActivitySession.Failure.inference {
+            // Expected: never fall back silently to the old energy detector.
+        }
+    }
+
+    private static func testVadDependencyStatus() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories = ModelDirectories(root: root)
+        try FileManager.default.createDirectory(at: directories.whisper, withIntermediateDirectories: true)
+        let whisper = directories.whisper.appendingPathComponent("ggml-tiny.bin")
+        FileManager.default.createFile(atPath: whisper.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: whisper)
+        try handle.truncate(atOffset: UInt64(LocalModelID.whisperTiny.expectedBytes!))
+        try handle.close()
+        let manager = LocalModelManager(directories: directories)
+
+        let missingVad = await manager.status(.whisperTiny)
+        try require(!missingVad.installed, "local ASR must not be ready without Silero VAD")
+        try require(missingVad.phase == "not-installed", "missing VAD status phase")
+        try require(missingVad.path == nil, "missing VAD must not expose a ready model path")
+        do {
+            _ = try await manager.loadVoiceActivityManager()
+            throw RuntimeError("missing Silero VAD unexpectedly loaded")
+        } catch let error as RuntimeError {
+            try require(
+                error.message == "Silero VAD is not installed. Download the selected on-device transcription model in Arco Settings.",
+                "missing Silero VAD must fail with an actionable error"
+            )
+        }
+
+        let vadModel = directories.vadModelDirectory
+        try FileManager.default.createDirectory(at: vadModel, withIntermediateDirectories: true)
+        try Data("compiled-model".utf8).write(to: vadModel.appendingPathComponent("model.espresso.net"))
+
+        let corruptVad = await manager.status(.whisperTiny)
+        try require(!corruptVad.installed, "partial Silero VAD bundles must be rejected")
+
+        try Data("coreml-data".utf8).write(to: vadModel.appendingPathComponent("coremldata.bin"))
+
+        let ready = await manager.status(.whisperTiny)
+        try require(ready.installed, "local ASR must become ready when its ASR and VAD artifacts exist")
+        try require(ready.phase == "ready", "ready VAD dependency status phase")
+        try require(ready.path == whisper.path, "ready status must keep the ASR model path")
     }
 
     private static func testAttribution() throws {
@@ -236,5 +369,28 @@ struct ArcoTranscriptionSelfTest {
         )
         let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         try require(files == ["speaker-timeline.json"], "atomic timeline snapshot cleanup")
+    }
+}
+
+private actor ScriptedVoiceActivitySession: VoiceActivitySession {
+    private var decisions: [VoiceActivityDecision]
+    private(set) var receivedChunkSizes: [Int] = []
+
+    init(_ decisions: [VoiceActivityDecision]) {
+        self.decisions = decisions
+    }
+
+    func process(_ samples: [Float]) async throws -> VoiceActivityDecision {
+        receivedChunkSizes.append(samples.count)
+        guard !decisions.isEmpty else { return VoiceActivityDecision() }
+        return decisions.removeFirst()
+    }
+}
+
+private actor FailingVoiceActivitySession: VoiceActivitySession {
+    enum Failure: Error { case inference }
+
+    func process(_: [Float]) async throws -> VoiceActivityDecision {
+        throw Failure.inference
     }
 }

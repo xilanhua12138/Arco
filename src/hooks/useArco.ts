@@ -356,13 +356,21 @@ export function useArco() {
   }, [refreshAgentTurns, refreshMeetingOutput, refreshSavedNotes, selectMeeting, syncCapture])
 
   const toggleCapture = useCallback(
-    async (mode: AudioMode = 'both', transcription?: TranscriptionConfig) => {
+    async (
+      mode: AudioMode = 'both',
+      transcription?: TranscriptionConfig,
+      resumeMeetingId?: string,
+    ) => {
       setError(null)
       const stopping = capture.phase === 'recording'
       const stoppedMeetingId = stopping ? capture.activeMeetingId : null
       setCapture((current) => ({ ...current, phase: stopping ? 'stopping' : 'starting' }))
       try {
-        const next = stopping ? await arcoBridge.stopCapture() : await arcoBridge.startCapture(mode, transcription)
+        const next = stopping
+          ? await arcoBridge.stopCapture()
+          : resumeMeetingId
+            ? await arcoBridge.startCapture(mode, transcription, resumeMeetingId)
+            : await arcoBridge.startCapture(mode, transcription)
         activeCaptureRef.current = next.activeMeetingId
         setCapture(next)
         await refreshMeetings('', stopping ? null : next.activeMeetingId)

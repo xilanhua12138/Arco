@@ -88,6 +88,7 @@ struct ArcoLocalTranscriberMain {
             : rawDiarization
         let manager = LocalModelManager()
         let directories = await manager.directories
+        let voiceActivityManager = try await manager.loadVoiceActivityManager()
         let provider: any LocalTranscriptionProvider
         if model == .nemotron {
             provider = try await NemotronTranscriptionProvider(modelDirectory: manager.nemotronPath())
@@ -116,6 +117,10 @@ struct ArcoLocalTranscriberMain {
         } else {
             localDiarizer = nil
         }
+        let voiceActivitySessions: [any VoiceActivitySession] = [
+            FluidAudioVoiceActivitySession(manager: voiceActivityManager),
+            FluidAudioVoiceActivitySession(manager: voiceActivityManager),
+        ]
 
         let startedAt = ProcessInfo.processInfo.environment["ARCO_SESSION_STARTED_AT_UNIX"]
             .flatMap(TimeInterval.init)
@@ -126,12 +131,13 @@ struct ArcoLocalTranscriberMain {
         )
         let timelineReader = ProcessInfo.processInfo.environment["ARCO_SPEAKER_TIMELINE_FILE"]
             .map { SpeakerTimelineReader(path: URL(fileURLWithPath: $0)) }
-        let runner = LocalStreamRunner(
+        let runner = try LocalStreamRunner(
             provider: provider,
             diarizer: localDiarizer,
             timelineReader: timelineReader,
             writer: writer,
-            language: language
+            language: language,
+            voiceActivitySessions: voiceActivitySessions
         )
         try signalReady()
 

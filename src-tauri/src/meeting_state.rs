@@ -133,6 +133,16 @@ impl MeetingStateStore {
         Ok(self.read_state(meeting_id, &path)?.artifacts)
     }
 
+    pub fn invalidate_generated_summary(&self, meeting_id: &str) -> Result<(), String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let _guard = self.acquire_lock()?;
+        let mut state = self.read_state(meeting_id, &path)?;
+        if state.artifacts.summary.take().is_some() {
+            self.write_state(&path, &state)?;
+        }
+        Ok(())
+    }
+
     pub fn hydrate_meeting_summary(&self, summary: &mut MeetingSummary) -> Result<(), String> {
         let path = self.sidecar_path(&summary.id)?;
         let _guard = self.acquire_lock()?;

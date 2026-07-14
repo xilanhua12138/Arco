@@ -81,6 +81,13 @@ pub struct CaptureSecrets {
 }
 
 #[derive(Clone, Debug)]
+pub struct CaptureResume {
+    pub meeting_id: String,
+    pub transcript_path: PathBuf,
+    pub started_at: String,
+}
+
+#[derive(Clone, Debug)]
 struct ResolvedTranscriber {
     label: &'static str,
     definition: TranscriberDefinition,
@@ -358,6 +365,26 @@ impl CaptureManager {
         transcription: TranscriptionConfig,
         secrets: CaptureSecrets,
     ) -> Result<CaptureState, String> {
+        self.start_internal(mode, transcription, secrets, None)
+    }
+
+    pub fn resume_with_transcription_and_secrets(
+        &self,
+        mode: &str,
+        transcription: TranscriptionConfig,
+        secrets: CaptureSecrets,
+        resume: CaptureResume,
+    ) -> Result<CaptureState, String> {
+        self.start_internal(mode, transcription, secrets, Some(resume))
+    }
+
+    fn start_internal(
+        &self,
+        mode: &str,
+        transcription: TranscriptionConfig,
+        secrets: CaptureSecrets,
+        resume: Option<CaptureResume>,
+    ) -> Result<CaptureState, String> {
         validate_mode(mode)?;
         transcription.validate()?;
         let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
@@ -382,9 +409,8 @@ impl CaptureManager {
             transcription: Some(transcription.clone()),
         };
 
-        match self.spawn_pipeline(mode, &transcription, &secrets) {
-            Ok((children, transcript, started_at, source)) => {
-                let id = meeting_id(&source, &transcript)?;
+        match self.spawn_pipeline(mode, &transcription, &secrets, resume.as_ref()) {
+            Ok((children, transcript, started_at, id)) => {
                 inner.transcript = Some(transcript.clone());
                 inner.children = Some(children);
                 inner.state = CaptureState {
@@ -450,6 +476,7 @@ impl CaptureManager {
         mode: &str,
         transcription: &TranscriptionConfig,
         secrets: &CaptureSecrets,
+        resume: Option<&CaptureResume>,
     ) -> Result<(CaptureChildren, PathBuf, String, String), String> {
         let destination = self
             .destination
@@ -479,7 +506,7 @@ impl CaptureManager {
         }
 
         let now = Local::now();
-        let started_at = now.to_rfc3339();
+        let session_started_at = now.to_rfc3339();
         let session_started_at_unix = format!("{:.3}", now.timestamp_millis() as f64 / 1_000.0);
         let suffix = format!("{}-{}", std::process::id(), now.timestamp_micros());
         let layout = pipeline_layout(transcription);
@@ -502,11 +529,22 @@ impl CaptureManager {
             }
             self.validate_credentials(&transcriber.definition, secrets)?;
         }
-        let transcript = create_transcript(
-            &transcript_dir,
-            &now.format("%Y%m%d-%H%M%S").to_string(),
-            &now.format("%Y-%m-%d %H:%M:%S").to_string(),
-        )?;
+        let (transcript, active_meeting_id, capture_started_at) = if let Some(resume) = resume {
+            prepare_transcript_for_resume(resume, &now)?;
+            (
+                resume.transcript_path.clone(),
+                resume.meeting_id.clone(),
+                resume.started_at.clone(),
+            )
+        } else {
+            let transcript = create_transcript(
+                &transcript_dir,
+                &now.format("%Y%m%d-%H%M%S").to_string(),
+                &now.format("%Y-%m-%d %H:%M:%S").to_string(),
+            )?;
+            let id = meeting_id(&destination.source, &transcript)?;
+            (transcript, id, session_started_at)
+        };
 
         let recorder_log = open_log(&self.config.log_dir.join("recorder.log"))?;
         let transcriber_log = open_log(&self.config.log_dir.join("transcriber.log"))?;
@@ -525,13 +563,18 @@ impl CaptureManager {
             .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;
-        let mut recorder = recorder_command
-            .spawn()
-            .map_err(|error| format!("could not start native recorder: {error}"))?;
+        let mut recorder = match recorder_command.spawn() {
+            Ok(recorder) => recorder,
+            Err(error) => {
+                let _ = finalize_transcript(&transcript, "error");
+                return Err(format!("could not start native recorder: {error}"));
+            }
+        };
         let recorder_stdout = match recorder.stdout.take() {
             Some(stdout) => stdout,
             None => {
                 let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
+                let _ = finalize_transcript(&transcript, "error");
                 return Err("native recorder did not expose its audio stream".into());
             }
         };
@@ -620,7 +663,7 @@ impl CaptureManager {
             }
         }
 
-        Ok((children, transcript, started_at, destination.source))
+        Ok((children, transcript, capture_started_at, active_meeting_id))
     }
 
     fn resolve_transcribers(
@@ -1142,10 +1185,78 @@ fn create_transcript(
     Err("could not allocate a unique transcript filename".into())
 }
 
+fn prepare_transcript_for_resume(
+    resume: &CaptureResume,
+    resumed_at: &chrono::DateTime<Local>,
+) -> Result<(), String> {
+    let (_, file_name) = resume
+        .meeting_id
+        .split_once(':')
+        .ok_or_else(|| "invalid meeting id for capture resume".to_string())?;
+    if file_name.is_empty()
+        || resume
+            .transcript_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(file_name)
+    {
+        return Err("capture resume meeting ID does not match its transcript".into());
+    }
+    chrono::DateTime::parse_from_rfc3339(&resume.started_at)
+        .map_err(|_| "capture resume has an invalid original start time".to_string())?;
+    let metadata = fs::symlink_metadata(&resume.transcript_path).map_err(|error| {
+        format!(
+            "could not open historical transcript {}: {error}",
+            resume.transcript_path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err("historical transcript must be a regular non-symlink file".into());
+    }
+    if resume
+        .transcript_path
+        .extension()
+        .and_then(|value| value.to_str())
+        != Some("md")
+    {
+        return Err("historical transcript must be a Markdown file".into());
+    }
+
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(&resume.transcript_path)
+        .map_err(|error| {
+            format!(
+                "could not continue historical transcript {}: {error}",
+                resume.transcript_path.display()
+            )
+        })?;
+    writeln!(
+        file,
+        "\n> Resumed: {} (live)\n",
+        resumed_at.format("%Y-%m-%d %H:%M:%S")
+    )
+    .and_then(|_| file.flush())
+    .map_err(|error| format!("could not mark historical transcript as resumed: {error}"))
+}
+
+fn finalize_live_marker(raw: String, outcome: &str) -> String {
+    for (index, _) in raw.rmatch_indices(" (live)") {
+        let line_start = raw[..index].rfind('\n').map_or(0, |position| position + 1);
+        let line = &raw[line_start..index];
+        if line.starts_with("> Started:") || line.starts_with("> Resumed:") {
+            let mut finalized = raw;
+            finalized.replace_range(index..index + " (live)".len(), &format!(" ({outcome})"));
+            return finalized;
+        }
+    }
+    raw
+}
+
 fn finalize_transcript(path: &Path, outcome: &str) -> Result<(), String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("could not read transcript while finalizing: {error}"))?;
-    let raw = raw.replacen(" (live)", &format!(" ({outcome})"), 1);
+    let raw = finalize_live_marker(raw, outcome);
     let mut file =
         File::create(path).map_err(|error| format!("could not finalize transcript: {error}"))?;
     file.write_all(raw.as_bytes())

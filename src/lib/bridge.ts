@@ -484,12 +484,23 @@ export const arcoBridge = {
     return { configured: false, verified: false, message: null }
   },
 
-  async startCapture(mode: AudioMode, transcription?: TranscriptionConfig): Promise<CaptureState> {
-    if (hasTauriRuntime()) return invoke<CaptureState>('start_capture', { mode, transcription })
+  async startCapture(
+    mode: AudioMode,
+    transcription?: TranscriptionConfig,
+    meetingId?: string,
+  ): Promise<CaptureState> {
+    if (hasTauriRuntime()) {
+      return invoke<CaptureState>('start_capture', {
+        mode,
+        transcription,
+        ...(meetingId ? { meetingId } : {}),
+      })
+    }
     await wait(250)
     const capture = {
       ...demoCapture,
       phase: 'recording' as const,
+      activeMeetingId: meetingId ?? demoCapture.activeMeetingId,
       mode,
       transcription: transcription ?? null,
       startedAt: new Date().toISOString(),
