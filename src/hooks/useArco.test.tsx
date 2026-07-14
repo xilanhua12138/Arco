@@ -359,6 +359,7 @@ describe('useArco cross-window capture synchronization', () => {
     expect(readMeeting).toHaveBeenCalledTimes(2)
     expect(result.current.meeting?.lines).toHaveLength(2)
     expect(result.current.capture.phase).toBe('idle')
+    expect(result.current.completedMeetingId).toBe(finalized.summary.id)
   })
 })
 

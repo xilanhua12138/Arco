@@ -265,8 +265,12 @@ private struct AudioQualityAccumulator {
 private enum EchoCancellationPolicy {
     static func shouldEnable(mode: String, setting: String?) -> Bool {
         guard mode == "both" else { return false }
+        // AVAudioEngine voice processing makes this process a system audio
+        // "ducker" on macOS, which can reduce meeting playback from other
+        // apps to near silence. Keep AEC available for explicit experiments,
+        // but never enable that system-wide side effect by default.
         return setting?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() != "off"
+            .lowercased() == "on"
     }
 }
 
@@ -1415,11 +1419,13 @@ private func runRecorderSelfTests() throws {
     try selfTestRequire(abs(snapshot.peak - 1.0) < 0.000_001, "quality peak was \(snapshot.peak)")
     try selfTestRequire(abs(snapshot.rms - 0.749_989_827) < 0.000_001, "quality RMS was \(snapshot.rms)")
 
-    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "both mode did not enable AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "both mode enabled ducking AEC without explicit opt-in")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: nil), "mic-only mode enabled AEC")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "off"), "explicit AEC off was ignored")
     try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "on"), "explicit AEC on was ignored")
-    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting disabled safe automatic behavior")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: " ON "), "normalized AEC opt-in was ignored")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: ""), "empty AEC setting enabled ducking AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting enabled ducking AEC")
 
     FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_OK\n".utf8))
 }

@@ -374,7 +374,7 @@ describe('Arco consumer conversation workspace', () => {
     expect(startCapture).toHaveBeenCalledWith('both', expect.any(Object))
   })
 
-  it('returns Current to the start-listening state after stopping an active meeting', async () => {
+  it('opens the just-finished meeting as the latest History review after stopping', async () => {
     vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([liveB, pastA])
     vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(liveCapture)
     vi.spyOn(arcoBridge, 'readMeeting').mockImplementation(async (id) => (
@@ -390,9 +390,34 @@ describe('Arco consumer conversation workspace', () => {
 
     await user.click(screen.getByRole('button', { name: 'Stop listening' }))
 
-    expect(await screen.findByRole('region', { name: 'Start listening' })).toBeVisible()
-    expect(screen.queryByRole('heading', { level: 1, name: liveB.title })).not.toBeInTheDocument()
-    expect(screen.queryByRole('complementary', { name: 'Meeting transcript' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: liveB.title })).toBeVisible()
+    expect(screen.getByText('Live evidence from B')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Open current meeting' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('button', { name: 'Back to History' })).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Start listening' })).not.toBeInTheDocument()
+  })
+
+  it('keeps Current selected when stopping fails instead of opening a stale History review', async () => {
+    vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([liveB, pastA])
+    vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(liveCapture)
+    vi.spyOn(arcoBridge, 'readMeeting').mockImplementation(async (id) => (
+      id === liveB.id
+        ? detail(liveB, 'Live evidence from B')
+        : detail(pastA, 'Historical evidence from A')
+    ))
+    vi.spyOn(arcoBridge, 'stopCapture').mockRejectedValue(new Error('Recorder could not stop'))
+
+    const user = userEvent.setup()
+    render(<App />)
+    expect(await screen.findByRole('heading', { level: 1, name: liveB.title })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Stop listening' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Recorder could not stop')
+    expect(screen.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Open meeting history' })).not.toHaveAttribute('aria-current')
+    expect(screen.queryByRole('button', { name: 'Back to History' })).not.toBeInTheDocument()
   })
 
   it('opens History search with Command K and hides the Current workspace', async () => {
@@ -890,14 +915,13 @@ describe('capture session and viewed meeting invariants', () => {
 
     await user.click(screen.getByRole('button', { name: 'Stop listening' }))
 
-    expect(await screen.findByRole('region', { name: 'Start listening' })).toBeVisible()
+    expect(await screen.findByText('Final line flushed on stop')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Back to History' })).toBeVisible()
     await waitFor(() => expect(readMeeting.mock.calls.length).toBeGreaterThanOrEqual(3))
     expect(generateMeetingOutput).toHaveBeenCalledWith(expect.objectContaining({
       meetingId: liveB.id,
       kind: 'summary',
     }))
-    await openHistory(user)
-    await user.click(screen.getByRole('button', { name: new RegExp(liveB.title) }))
-    expect(await screen.findByText('Final line flushed on stop')).toBeVisible()
   })
 })

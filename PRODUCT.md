@@ -29,7 +29,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 - Capture status and polling always follow the active meeting ID.
 - Opening History may show another meeting without changing capture.
 - `Current` always returns to the active meeting while capture is running.
-- When capture is idle, `Current` always shows the start-listening surface; a selected or recent History meeting never fills it implicitly.
+- When capture is idle, `Current` always shows the start-listening surface; a selected or recent History meeting never fills it implicitly. A successful stop is an explicit transition into the just-completed meeting's History review, not implicit History content inside `Current`.
 - A meeting opened from History remains a History review, including its navigation state, until the user explicitly returns to `Current`.
 - The Start action appears exactly once: in the main Current surface while Current is idle, or in the sidebar while the user is elsewhere. Stop remains a global sidebar safety control during capture.
 - A History selection becomes visible only after that meeting has loaded successfully; old evidence is never shown under a new title.
@@ -60,7 +60,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 - Once recording is ready, expose only `Recording`, elapsed time, `Stop`, and `Ask Arco` in the global HUD. Audio engineering and provider metadata stay in Settings.
 - Stop remains available above other apps and finalizes only Arco-owned recorder/transcriber processes.
 - Stopping returns as soon as transcript finalization is complete. If the meeting contains evidence, the configured CLI creates the end-of-meeting summary in the background; generation latency or failure never turns a saved recording into a capture error.
-- After stopping, Current returns to its idle start surface. The completed transcript remains available as a History review rather than lingering as if it were still current.
+- After stopping and successfully re-reading the finalized transcript, Arco opens the just-completed meeting as the latest History review. `Current` remains the explicit idle start surface when the user returns to it.
 - Automatic title and summary prompts have safe Arco defaults and can be independently disabled or overridden in Settings. Arco always adds the transcript and fixed read-only safety envelope itself.
 
 ### Ask during a meeting

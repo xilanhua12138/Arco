@@ -979,6 +979,7 @@ test('Settings uses navigable sections in one centered sheet', async ({ page }) 
 test('transcript storage has a default, supports a custom folder, and restores the default', async ({ page }) => {
   await gotoConfigured(page, '/?demo=1')
   await page.getByRole('button', { name: 'Stop listening' }).click()
+  await expect(page.getByRole('button', { name: 'Back to History' })).toBeVisible()
   await page.getByRole('button', { name: 'Open settings' }).click()
   await page.getByRole('button', { name: 'Data & privacy' }).click()
 
@@ -1002,6 +1003,7 @@ test('Recognition configures ASR and streaming diarization providers independent
   await page.setViewportSize({ width: 1080, height: 750 })
   await gotoConfigured(page, '/?demo=1')
   await page.getByRole('button', { name: 'Stop listening' }).click()
+  await expect(page.getByRole('button', { name: 'Back to History' })).toBeVisible()
   await page.getByRole('button', { name: 'Open settings' }).click()
   await page.getByRole('button', { name: 'Audio & speakers' }).click()
 
@@ -1208,11 +1210,18 @@ test('1080 light layout preserves the Transcript-first split without horizontal 
   await page.screenshot({ path: 'test-results/arco-transcript-first-light-1080.png', fullPage: true })
 })
 
-test('capture can stop and start again without leaving Current', async ({ page }) => {
+test('capture opens the latest History review after stopping and can start again from Current', async ({ page }) => {
   await page.setViewportSize({ width: 1240, height: 820 })
   await gotoConfigured(page)
 
   await page.getByRole('button', { name: 'Stop listening' }).click()
+  await expect(page.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('button', { name: 'Open current meeting' })).not.toHaveAttribute('aria-current')
+  await expect(page.getByRole('button', { name: 'Back to History' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Start listening' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Open current meeting' }).click()
   const idle = page.getByRole('region', { name: 'Start listening' })
   const start = idle.getByRole('button', { name: 'Start listening' })
   await expect(start).toBeEnabled()
@@ -1237,6 +1246,7 @@ test('capture can stop and start again without leaving Current', async ({ page }
 test('the next meeting can be explicitly set to online-only audio', async ({ page }) => {
   await gotoConfigured(page)
   await page.getByRole('button', { name: 'Stop listening' }).click()
+  await expect(page.getByRole('button', { name: 'Back to History' })).toBeVisible()
   await page.getByRole('button', { name: 'Open settings' }).click()
   await page.getByRole('button', { name: 'Audio & speakers' }).click()
   const settings = page.getByRole('dialog', { name: 'Audio & speakers' })

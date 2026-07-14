@@ -91,6 +91,7 @@ function App() {
   const loadedNotesQueryRef = useRef<string | null>(null)
   const registeredShortcutRef = useRef<ListeningShortcut>(null)
   const toggleListeningRef = useRef<() => void>(() => undefined)
+  const openedCompletedMeetingRef = useRef<string | null>(null)
   const providerRoute = resolveProviderRoute(providerConfig, arco.runtimes)
   const audioModeLocked = ['starting', 'recording', 'stopping'].includes(arco.capture.phase)
   const displayedAudioMode = audioModeLocked && arco.capture.mode ? arco.capture.mode : audioMode
@@ -237,6 +238,25 @@ function App() {
     const nextCapture = await arco.toggleCapture(audioMode, transcriptionConfig, resumeMeetingId)
     if (nextCapture?.phase === 'recording') setPage('current')
   }, [arco, audioMode, transcriptionConfig])
+
+  useEffect(() => {
+    const completedMeetingId = arco.completedMeetingId
+    if (!completedMeetingId) {
+      openedCompletedMeetingRef.current = null
+      return
+    }
+    if (
+      openedCompletedMeetingRef.current === completedMeetingId
+      || arco.capture.phase !== 'idle'
+      || arco.selectedMeetingId !== completedMeetingId
+      || arco.meeting?.summary.id !== completedMeetingId
+    ) return
+
+    openedCompletedMeetingRef.current = completedMeetingId
+    setSettingsOpen(false)
+    setQuery('')
+    setPage('review')
+  }, [arco.capture.phase, arco.completedMeetingId, arco.meeting?.summary.id, arco.selectedMeetingId])
 
   useEffect(() => {
     toggleListeningRef.current = () => {

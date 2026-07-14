@@ -41,6 +41,7 @@ export function useArco() {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null)
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [capture, setCapture] = useState<CaptureState>(idleCapture)
+  const [completedMeetingId, setCompletedMeetingId] = useState<string | null>(null)
   const [agentTurnsByMeeting, setAgentTurnsByMeeting] = useState<Record<string, PersistedAgentTurn[]>>({})
   const [savedNotes, setSavedNotes] = useState<NoteDocument[]>([])
   const [notesLoading, setNotesLoading] = useState(false)
@@ -259,9 +260,11 @@ export function useArco() {
       activeCaptureRef.current = nextCapture.activeMeetingId
       setCapture(nextCapture)
       await refreshMeetings('', nextCapture.activeMeetingId)
+      if (nextCapture.activeMeetingId) setCompletedMeetingId(null)
       if (previousActiveId && !nextCapture.activeMeetingId) {
         const opened = await selectMeeting(previousActiveId)
         if (opened && meetingRef.current?.summary.id === previousActiveId) {
+          setCompletedMeetingId(previousActiveId)
           void generateStoppedMeetingOutputs(meetingRef.current)
         }
       }
@@ -364,6 +367,7 @@ export function useArco() {
       setError(null)
       const stopping = capture.phase === 'recording'
       const stoppedMeetingId = stopping ? capture.activeMeetingId : null
+      if (!stopping) setCompletedMeetingId(null)
       setCapture((current) => ({ ...current, phase: stopping ? 'stopping' : 'starting' }))
       try {
         const next = stopping
@@ -377,6 +381,7 @@ export function useArco() {
         if (stoppedMeetingId) {
           const opened = await selectMeeting(stoppedMeetingId)
           if (opened && meetingRef.current?.summary.id === stoppedMeetingId) {
+            setCompletedMeetingId(stoppedMeetingId)
             void generateStoppedMeetingOutputs(meetingRef.current)
           }
         }
@@ -499,6 +504,7 @@ export function useArco() {
     meeting,
     runtimes,
     capture,
+    completedMeetingId,
     agentReplies: selectedMeetingId ? (agentTurnsByMeeting[selectedMeetingId] ?? []) : [],
     savedNotes,
     notesLoading,
