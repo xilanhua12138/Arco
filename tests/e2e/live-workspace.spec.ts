@@ -45,6 +45,19 @@ test('recording HUD is a native-sized global control island, not another app pag
 
   await page.getByRole('button', { name: 'Stop recording' }).click()
   await expect(page.getByText('Saved')).toBeVisible()
+
+  await page.evaluate(() => {
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-next',
+      startedAt: new Date().toISOString(),
+      message: null,
+    }))
+  })
+
+  await expect(page.getByText('Recording')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop recording' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeEnabled()
 })
 
 test('Agent overlay is a focused always-on-top conversation surface', async ({ page }) => {
