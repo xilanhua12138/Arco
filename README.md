@@ -21,6 +21,14 @@
   </p>
 </div>
 
+## Why Arco
+
+Most meeting tools record first and ask you to review later. Arco is designed for the moment when you need help now: *What did they actually ask for? What is still unresolved? Which assumption should we challenge?*
+
+The Agent is not a separate hosted chatbot. It is the Codex or Claude CLI already on your Mac, grounded in the live transcript and—only when you attach it—the selected project workspace.
+
+When that local CLI is signed in with your Codex or Claude subscription, Arco uses the subscription allowance you already have. Agent features require neither a separate Arco AI subscription nor an OpenAI or Anthropic API key.
+
 ## Download the macOS app
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
@@ -64,12 +72,6 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Automatic meeting output | Generates a title after enough evidence and a summary when the meeting ends; both prompts are configurable. | Meetings become useful records without requiring a title or note-taking ritual up front. |
 | Meeting-bound notes | Create multiple Markdown notes for one meeting, or save an Agent answer as a note; choose a separate notes directory when needed. | Manual thinking and AI output stay portable, editable, and connected to their transcript evidence. |
 | Local history | Stores Markdown transcripts and local sidecars under Arco's Application Support directory or a folder you choose. | Your meeting record remains portable, searchable, and under your control. |
-
-## Why Arco
-
-Most meeting tools record first and ask you to review later. Arco is designed for the moment when you need help now: *What did they actually ask for? What is still unresolved? Which assumption should we challenge?*
-
-The Agent is not a separate hosted chatbot. It is the Codex or Claude CLI already on your Mac, grounded in the live transcript and—only when you attach it—the selected project workspace.
 
 ## Privacy
 
