@@ -2,13 +2,13 @@ use crate::speaker_timeline::{
     wait_for_speaker, SpeakerInterval as TimelineInterval, SpeakerTimelineStore,
 };
 use chrono::{Local, TimeZone};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, Stdin};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -21,6 +21,8 @@ const FRAME_BYTES: usize = 4;
 const READ_CHUNK_BYTES: usize = 6_400;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
+const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
+const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -52,6 +54,14 @@ impl TranscriberRole {
             value => Err(format!("unsupported Deepgram transcriber role: {value}")),
         }
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Combined => "combined",
+            Self::Asr => "asr",
+            Self::Diarization => "diarization",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,10 +72,138 @@ struct TimelineUpdate {
     tentative: Vec<TimelineInterval>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct AudioChunk {
     data: Vec<u8>,
     start_frame: usize,
+}
+
+impl AudioChunk {
+    fn end_frame(&self) -> usize {
+        self.start_frame + self.data.len() / FRAME_BYTES
+    }
+}
+
+#[derive(Default)]
+struct PendingAudio {
+    failed: VecDeque<AudioChunk>,
+}
+
+impl PendingAudio {
+    fn restore(&mut self, chunk: AudioChunk) {
+        self.failed.push_front(chunk);
+    }
+
+    fn take(&mut self) -> Option<AudioChunk> {
+        self.failed.pop_front()
+    }
+
+    fn bytes(&self) -> usize {
+        self.failed.iter().map(|chunk| chunk.data.len()).sum()
+    }
+}
+
+struct ReplayPacer {
+    origin_end_frame: usize,
+}
+
+impl ReplayPacer {
+    fn new(first: &AudioChunk) -> Self {
+        Self {
+            origin_end_frame: first.end_frame(),
+        }
+    }
+
+    fn delay_for(&self, chunk: &AudioChunk, elapsed: Duration) -> Duration {
+        let replay_frames = chunk.end_frame().saturating_sub(self.origin_end_frame) as u128;
+        let target_nanos = replay_frames
+            .saturating_mul(1_000_000_000)
+            .saturating_mul(MAX_REPLAY_RATE_DENOMINATOR)
+            / ((SAMPLE_RATE as u128).saturating_mul(MAX_REPLAY_RATE_NUMERATOR));
+        Duration::from_nanos(target_nanos.min(u64::MAX as u128) as u64).saturating_sub(elapsed)
+    }
+}
+
+async fn send_audio_chunk<S>(
+    sink: &mut S,
+    chunk: &AudioChunk,
+    pacer: &mut Option<ReplayPacer>,
+    connection_started: Instant,
+) -> Result<Duration, S::Error>
+where
+    S: Sink<Message> + Unpin,
+{
+    let pacer = pacer.get_or_insert_with(|| ReplayPacer::new(chunk));
+    let delay = pacer.delay_for(chunk, connection_started.elapsed());
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+    sink.send(Message::Binary(chunk.data.clone().into()))
+        .await?;
+    Ok(delay)
+}
+
+fn buffered_audio_seconds(pending: &PendingAudio, receiver: &mpsc::Receiver<AudioChunk>) -> f64 {
+    let bytes = pending.bytes() + receiver.len() * READ_CHUNK_BYTES;
+    bytes as f64 / (SAMPLE_RATE * FRAME_BYTES) as f64
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfidenceObservation {
+    channel: usize,
+    utterance: Option<f64>,
+    word_count: usize,
+    word_average: Option<f64>,
+    word_minimum: Option<f64>,
+}
+
+impl ConfidenceObservation {
+    fn from_result(payload: &Value) -> Option<Self> {
+        if payload.get("type").and_then(Value::as_str) != Some("Results")
+            || payload.get("is_final").and_then(Value::as_bool) != Some(true)
+        {
+            return None;
+        }
+        let alternative = payload.pointer("/channel/alternatives/0")?;
+        let word_confidences: Vec<f64> = alternative
+            .get("words")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|word| word.get("confidence").and_then(Value::as_f64))
+            .filter(|confidence| confidence.is_finite())
+            .collect();
+        let word_average = (!word_confidences.is_empty())
+            .then(|| word_confidences.iter().sum::<f64>() / word_confidences.len() as f64);
+        let word_minimum = word_confidences.iter().copied().reduce(f64::min);
+        Some(Self {
+            channel: response_channel(payload),
+            utterance: alternative
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .filter(|confidence| confidence.is_finite()),
+            word_count: word_confidences.len(),
+            word_average,
+            word_minimum,
+        })
+    }
+
+    fn log(&self, role: TranscriberRole) {
+        let format_confidence = |value: Option<f64>| {
+            value
+                .map(|confidence| format!("{confidence:.4}"))
+                .unwrap_or_else(|| "unknown".into())
+        };
+        eprintln!(
+            "ARCO_TRANSCRIPTION_QUALITY role={} channel={} utterance={} confidence_words={} word_average={} word_minimum={}",
+            role.label(),
+            self.channel,
+            format_confidence(self.utterance),
+            self.word_count,
+            format_confidence(self.word_average),
+            format_confidence(self.word_minimum),
+        );
+    }
 }
 
 pub fn deepgram_url(model: &str, language: &str) -> String {
@@ -496,6 +634,7 @@ async fn stream_connection(
     api_key: &str,
     url: &str,
     receiver: &mut mpsc::Receiver<AudioChunk>,
+    pending: &mut PendingAudio,
     writer: Option<&TranscriptWriter>,
     timeline_store: &mut Option<SpeakerTimelineStore>,
     external_timeline: Option<&Path>,
@@ -503,6 +642,7 @@ async fn stream_connection(
     speakers: &mut SpeakerRegistry,
     connection_id: u64,
 ) -> Result<bool, String> {
+    let replay_buffered_seconds = buffered_audio_seconds(pending, receiver);
     let mut request = url
         .into_client_request()
         .map_err(|error| format!("invalid Deepgram request: {error}"))?;
@@ -516,12 +656,45 @@ async fn stream_connection(
         .map_err(|error| format!("Deepgram connection failed: {error}"))?;
     signal_ready()?;
     let (mut sink, mut stream) = socket.split();
+    if connection_id > 1 {
+        eprintln!(
+            "ARCO_DEEPGRAM_RECONNECT connection={} buffered_audio={:.3}s pending_bytes={} max_replay_rate=1.25",
+            connection_id,
+            replay_buffered_seconds,
+            pending.bytes(),
+        );
+    }
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     let mut connection_origin: Option<f64> = None;
+    let connection_started = Instant::now();
+    let mut pacer = None;
+    let mut replay_reported = connection_id == 1 || replay_buffered_seconds == 0.0;
     let mut closing = false;
     let close_deadline = tokio::time::sleep(Duration::from_secs(8));
     tokio::pin!(close_deadline);
     loop {
+        // A websocket send error happens after the mpsc receive has completed.
+        // Retry that exact chunk before polling newer buffered audio. Keeping
+        // this outside select avoids cancellation dropping a ready pending item.
+        if !closing {
+            if let Some(chunk) = pending.take() {
+                connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
+                if let Err(error) =
+                    send_audio_chunk(&mut sink, &chunk, &mut pacer, connection_started).await
+                {
+                    pending.restore(chunk);
+                    return Err(format!("Deepgram replay send failed: {error}"));
+                }
+                if !replay_reported && receiver.is_empty() {
+                    eprintln!(
+                        "ARCO_DEEPGRAM_REPLAY_CAUGHT_UP connection={} replayed_audio={:.3}s",
+                        connection_id, replay_buffered_seconds
+                    );
+                    replay_reported = true;
+                }
+                continue;
+            }
+        }
         tokio::select! {
             _ = keepalive.tick(), if !closing => {
                 sink.send(Message::Text(r#"{"type":"KeepAlive"}"#.into())).await.map_err(|error| format!("Deepgram keepalive failed: {error}"))?;
@@ -530,7 +703,22 @@ async fn stream_connection(
                 match chunk {
                     Some(chunk) => {
                         connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
-                        sink.send(Message::Binary(chunk.data.into())).await.map_err(|error| format!("Deepgram audio send failed: {error}"))?;
+                        if let Err(error) = send_audio_chunk(
+                            &mut sink,
+                            &chunk,
+                            &mut pacer,
+                            connection_started,
+                        ).await {
+                            pending.restore(chunk);
+                            return Err(format!("Deepgram audio send failed: {error}"));
+                        }
+                        if !replay_reported && receiver.is_empty() {
+                            eprintln!(
+                                "ARCO_DEEPGRAM_REPLAY_CAUGHT_UP connection={} replayed_audio={:.3}s",
+                                connection_id, replay_buffered_seconds
+                            );
+                            replay_reported = true;
+                        }
                     }
                     None => {
                         closing = true;
@@ -544,6 +732,9 @@ async fn stream_connection(
                         let Ok(payload) = serde_json::from_str::<Value>(&text) else { continue };
                         if let Some(error) = deepgram_payload_error(&payload) {
                             return Err(format!("Deepgram rejected the streaming configuration: {error}"));
+                        }
+                        if let Some(observation) = ConfidenceObservation::from_result(&payload) {
+                            observation.log(role);
                         }
                         let origin = connection_origin.unwrap_or(0.0);
                         if role == TranscriberRole::Diarization {
@@ -648,6 +839,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
     let capacity = buffer_seconds * 10;
     let (sender, mut receiver) = mpsc::channel(capacity);
     tokio::spawn(pump_stdin(tokio::io::stdin(), sender));
+    let mut pending = PendingAudio::default();
     let mut speakers = SpeakerRegistry::default();
     let mut connection_id = 0u64;
     let mut retry = 1u64;
@@ -658,6 +850,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
             api_key.trim(),
             &url,
             &mut receiver,
+            &mut pending,
             writer.as_ref(),
             &mut timeline_store,
             timeline_path
@@ -678,7 +871,11 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
             {
                 return Err(error)
             }
-            Err(error) => eprintln!("[reconnect] {error}; retrying in {retry}s"),
+            Err(error) => eprintln!(
+                "[reconnect] {error}; retrying in {retry}s; buffered_audio={:.3}s pending_bytes={}",
+                buffered_audio_seconds(&pending, &receiver),
+                pending.bytes(),
+            ),
         }
         tokio::time::sleep(Duration::from_secs(retry)).await;
         retry = (retry * 2).min(15);
@@ -819,6 +1016,119 @@ mod tests {
         assert_eq!(
             (first.label.as_str(), second.label.as_str()),
             ("Remote 1", "Remote 2")
+        );
+    }
+
+    #[test]
+    fn replay_pacer_caps_backlog_at_one_point_two_five_times_realtime() {
+        let first = AudioChunk {
+            data: vec![1; READ_CHUNK_BYTES],
+            start_frame: 32_000,
+        };
+        let pacer = ReplayPacer::new(&first);
+        assert_eq!(pacer.delay_for(&first, Duration::ZERO), Duration::ZERO);
+
+        let second = AudioChunk {
+            data: vec![2; READ_CHUNK_BYTES],
+            start_frame: first.start_frame + READ_CHUNK_BYTES / FRAME_BYTES,
+        };
+        assert_eq!(
+            pacer.delay_for(&second, Duration::ZERO),
+            Duration::from_millis(80),
+            "the second 100 ms chunk may not be flushed immediately"
+        );
+        assert_eq!(
+            pacer.delay_for(&second, Duration::from_millis(100)),
+            Duration::ZERO,
+            "live audio that arrives at realtime speed must not be delayed"
+        );
+
+        let ten_seconds_queued = AudioChunk {
+            data: vec![4; READ_CHUNK_BYTES],
+            start_frame: first.end_frame() + SAMPLE_RATE * 10 - READ_CHUNK_BYTES / FRAME_BYTES,
+        };
+        assert_eq!(
+            pacer.delay_for(&ten_seconds_queued, Duration::ZERO),
+            Duration::from_secs(8),
+            "ten seconds of audio must take at least eight seconds at 1.25x"
+        );
+        assert_eq!(
+            pacer.delay_for(&ten_seconds_queued, Duration::from_secs(2)),
+            Duration::from_secs(6),
+        );
+
+        let stale = AudioChunk {
+            data: vec![3; FRAME_BYTES],
+            start_frame: first.start_frame.saturating_sub(1),
+        };
+        assert_eq!(pacer.delay_for(&stale, Duration::ZERO), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn failed_audio_chunk_is_retried_byte_for_byte_before_new_audio() {
+        let failed = AudioChunk {
+            data: vec![7, 8, 9, 10],
+            start_frame: 4_200,
+        };
+        let newer = AudioChunk {
+            data: vec![11, 12, 13, 14],
+            start_frame: 4_201,
+        };
+        let (sender, mut receiver) = mpsc::channel(2);
+        sender.send(newer.clone()).await.unwrap();
+        drop(sender);
+        let mut pending = PendingAudio::default();
+        pending.restore(failed.clone());
+
+        assert_eq!(pending.take(), Some(failed));
+        assert_eq!(receiver.recv().await, Some(newer));
+        assert_eq!(pending.take(), None);
+        assert_eq!(receiver.recv().await, None);
+    }
+
+    #[test]
+    fn finalized_result_confidence_reports_exact_utterance_and_word_stats() {
+        let payload = json!({
+            "type": "Results",
+            "is_final": true,
+            "channel_index": [1, 2],
+            "channel": {"alternatives": [{
+                "transcript": "one two three",
+                "confidence": 0.91,
+                "words": [
+                    {"word": "one", "confidence": 0.8},
+                    {"word": "two", "confidence": 0.9},
+                    {"word": "three", "confidence": 1.0}
+                ]
+            }]}
+        });
+        assert_eq!(
+            ConfidenceObservation::from_result(&payload),
+            Some(ConfidenceObservation {
+                channel: 1,
+                utterance: Some(0.91),
+                word_count: 3,
+                word_average: Some(0.9),
+                word_minimum: Some(0.8),
+            })
+        );
+    }
+
+    #[test]
+    fn confidence_ignores_drafts_and_handles_missing_or_empty_words() {
+        let draft = result(0, json!([]), "draft", false);
+        assert_eq!(ConfidenceObservation::from_result(&draft), None);
+
+        let finalized = result(0, json!([]), "silence", true);
+        assert_eq!(
+            ConfidenceObservation::from_result(&finalized),
+            Some(ConfidenceObservation {
+                channel: 0,
+                utterance: None,
+                word_count: 0,
+                word_average: None,
+                word_minimum: None,
+            })
         );
     }
 }

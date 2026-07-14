@@ -1207,6 +1207,7 @@ fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
         "ARCO_AUDIO_BUFFER_SECONDS",
         "ARCO_MIC_DEVICE_ID",
         "ARCO_MIC_DEVICE_NAME",
+        "ARCO_MIC_ECHO_CANCELLATION",
         "HTTPS_PROXY",
         "HTTP_PROXY",
         "ALL_PROXY",
@@ -1321,6 +1322,46 @@ mod tests {
         assert!(source.contains("AudioDeviceDestroyIOProcID("));
         assert!(source.contains("AudioHardwareDestroyAggregateDevice("));
         assert!(source.contains("AudioHardwareDestroyProcessTap("));
+    }
+
+    #[test]
+    fn capture_environment_allows_platform_aec_but_not_generic_denoise() {
+        let root = tempfile::tempdir().unwrap();
+        let app_data = root.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        std::fs::write(
+            app_data.join(".env"),
+            b"ARCO_MIC_ECHO_CANCELLATION=off\nARCO_NOISE_SUPPRESSION=on\n",
+        )
+        .unwrap();
+        let paths = AppPaths {
+            home: root.path().join("home"),
+            app_data: app_data.clone(),
+            transcripts: app_data.join("transcripts"),
+            notes: app_data.join("notes"),
+            legacy_transcripts: root.path().join("legacy"),
+            native_dir: root.path().join("native"),
+        };
+
+        let environment = load_capture_environment(&paths);
+
+        assert_eq!(
+            environment
+                .get("ARCO_MIC_ECHO_CANCELLATION")
+                .map(String::as_str),
+            Some("off")
+        );
+        assert_eq!(environment.get("ARCO_NOISE_SUPPRESSION"), None);
+    }
+
+    #[test]
+    fn native_aec_contract_degrades_without_stopping_capture() {
+        let source = include_str!("../../native/recorder.swift");
+
+        assert!(source.contains("try input.setVoiceProcessingEnabled(true)"));
+        assert!(source.contains("input.isVoiceProcessingAGCEnabled = false"));
+        assert!(source.contains("echo cancellation unavailable; continuing raw"));
+        assert!(source.contains("EchoCancellationPolicy.shouldEnable(mode: mode"));
     }
 
     #[test]

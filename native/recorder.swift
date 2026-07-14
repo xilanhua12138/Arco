@@ -13,15 +13,261 @@ import Foundation
 import ScreenCaptureKit
 
 private let mode = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "both"
-private let useSystem = mode == "both" || mode == "system"
-private let useMic = mode == "both" || mode == "mic"
+private let isSelfTest = mode == "--self-test"
+private let useSystem = !isSelfTest && (mode == "both" || mode == "system")
+private let useMic = !isSelfTest && (mode == "both" || mode == "mic")
 private let sampleRate = 16_000
 private let frameSize = 1_600 // 100 ms at 16 kHz
 private let maxBufferedFrames = sampleRate * 3 // Hard 3-second FIFO per source.
+private let qualityLogIntervalTicks = 100 // 10 seconds at the 100 ms mix cadence.
 
-guard ["both", "system", "mic"].contains(mode) else {
+guard ["both", "system", "mic", "--self-test"].contains(mode) else {
     FileHandle.standardError.write(Data("invalid capture mode: \(mode)\n".utf8))
     exit(2)
+}
+
+private enum AudioResamplerError: Error, CustomStringConvertible {
+    case invalidSampleRate(Double)
+    case unsupportedFormat
+    case conversionFailed(String)
+    case alreadyFinished
+
+    var description: String {
+        switch self {
+        case let .invalidSampleRate(rate): "invalid sample rate: \(rate)"
+        case .unsupportedFormat: "AVAudioConverter could not create a mono float converter"
+        case let .conversionFailed(message): "sample-rate conversion failed: \(message)"
+        case .alreadyFinished: "sample-rate converter was already finished"
+        }
+    }
+}
+
+/// Stateful, band-limited sample-rate conversion. Keeping one converter per
+/// capture source preserves filter history and fractional phase across hardware
+/// callback boundaries instead of treating every 100 ms buffer as a new clip.
+private final class StreamingAudioResampler {
+    let sourceRate: Double
+    let targetRate: Double
+    private let sourceFormat: AVAudioFormat
+    private let targetFormat: AVAudioFormat
+    private let converter: AVAudioConverter
+    private var pendingInput: [Float] = []
+    private var totalInputFrames = 0
+    private var totalOutputFrames = 0
+    private var finished = false
+
+    init(sourceRate: Double, targetRate: Double) throws {
+        guard sourceRate.isFinite, sourceRate > 0 else {
+            throw AudioResamplerError.invalidSampleRate(sourceRate)
+        }
+        guard targetRate.isFinite, targetRate > 0 else {
+            throw AudioResamplerError.invalidSampleRate(targetRate)
+        }
+        guard
+            let sourceFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sourceRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let targetFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: targetRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        else {
+            throw AudioResamplerError.unsupportedFormat
+        }
+        self.sourceRate = sourceRate
+        self.targetRate = targetRate
+        self.sourceFormat = sourceFormat
+        self.targetFormat = targetFormat
+        self.converter = converter
+        converter.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
+        converter.primeMethod = .none
+    }
+
+    func convert(_ samples: [Float]) throws -> [Float] {
+        guard !finished else { throw AudioResamplerError.alreadyFinished }
+        guard !samples.isEmpty else { return [] }
+        pendingInput.append(contentsOf: samples)
+        totalInputFrames += samples.count
+
+        let expectedFrames = Int(
+            floor(Double(totalInputFrames) * targetRate / sourceRate)
+        )
+        let capacity = max(0, expectedFrames - totalOutputFrames)
+        guard capacity > 0 else { return [] }
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: targetFormat,
+            frameCapacity: AVAudioFrameCount(capacity)
+        ) else {
+            throw AudioResamplerError.unsupportedFormat
+        }
+        var retainedBuffers: [AVAudioPCMBuffer] = []
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) {
+            [self] requestedPackets, inputStatus in
+            guard !pendingInput.isEmpty else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            let count = min(max(1, Int(requestedPackets)), pendingInput.count)
+            guard let input = AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(count)
+            ), let inputData = input.floatChannelData else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            input.frameLength = input.frameCapacity
+            pendingInput.withUnsafeBufferPointer { source in
+                inputData[0].update(from: source.baseAddress!, count: count)
+            }
+            pendingInput.removeFirst(count)
+            retainedBuffers.append(input)
+            inputStatus.pointee = .haveData
+            return input
+        }
+        if status == .error || conversionError != nil {
+            throw AudioResamplerError.conversionFailed(
+                conversionError?.localizedDescription ?? "unknown AVAudioConverter error"
+            )
+        }
+        let result = Self.samples(from: output)
+        totalOutputFrames += result.count
+        return result
+    }
+
+    func finish() throws -> [Float] {
+        guard !finished else { return [] }
+        finished = true
+        let expectedFrames = Int(
+            (Double(totalInputFrames) * targetRate / sourceRate).rounded()
+        )
+        let remaining = max(0, expectedFrames - totalOutputFrames)
+        guard remaining > 0 else { return [] }
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: targetFormat,
+            frameCapacity: AVAudioFrameCount(remaining + 64)
+        ) else {
+            throw AudioResamplerError.unsupportedFormat
+        }
+        var retainedBuffers: [AVAudioPCMBuffer] = []
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) {
+            [self] requestedPackets, inputStatus in
+            if pendingInput.isEmpty {
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            let count = min(max(1, Int(requestedPackets)), pendingInput.count)
+            guard let input = AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(count)
+            ), let inputData = input.floatChannelData else {
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            input.frameLength = input.frameCapacity
+            pendingInput.withUnsafeBufferPointer { source in
+                inputData[0].update(from: source.baseAddress!, count: count)
+            }
+            pendingInput.removeFirst(count)
+            retainedBuffers.append(input)
+            inputStatus.pointee = .haveData
+            return input
+        }
+        if status == .error || conversionError != nil {
+            throw AudioResamplerError.conversionFailed(
+                conversionError?.localizedDescription ?? "unknown AVAudioConverter flush error"
+            )
+        }
+        var result = Self.samples(from: output)
+        if result.count > remaining {
+            result.removeLast(result.count - remaining)
+        }
+        totalOutputFrames += result.count
+        return result
+    }
+
+    private static func samples(from buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let data = buffer.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength)))
+    }
+}
+
+private struct AudioQualitySnapshot {
+    let frames: Int
+    let rms: Double
+    let peak: Double
+    let clippedFrames: Int
+    let paddedFrames: Int
+    let underflowEvents: Int
+    let droppedFrames: Int
+}
+
+private struct AudioQualityAccumulator {
+    private var frames = 0
+    private var sumSquares = 0.0
+    private var peak = 0.0
+    private var clippedFrames = 0
+    private var paddedFrames = 0
+    private var underflowEvents = 0
+    private var droppedFrames = 0
+
+    mutating func observe(
+        samples: [Int16],
+        paddedFrames: Int = 0,
+        droppedFrames: Int = 0
+    ) {
+        frames += samples.count
+        self.paddedFrames += max(0, paddedFrames)
+        self.droppedFrames += max(0, droppedFrames)
+        if paddedFrames > 0 {
+            underflowEvents += 1
+        }
+        for sample in samples {
+            let normalized = abs(Double(sample) / 32_768.0)
+            sumSquares += normalized * normalized
+            peak = max(peak, normalized)
+            if sample == Int16.min || sample == Int16.max {
+                clippedFrames += 1
+            }
+        }
+    }
+
+    mutating func recordDropped(_ count: Int) {
+        droppedFrames += max(0, count)
+    }
+
+    func snapshot() -> AudioQualitySnapshot {
+        AudioQualitySnapshot(
+            frames: frames,
+            rms: frames == 0 ? 0 : sqrt(sumSquares / Double(frames)),
+            peak: peak,
+            clippedFrames: clippedFrames,
+            paddedFrames: paddedFrames,
+            underflowEvents: underflowEvents,
+            droppedFrames: droppedFrames
+        )
+    }
+
+    mutating func takeSnapshot() -> AudioQualitySnapshot {
+        let result = snapshot()
+        self = AudioQualityAccumulator()
+        return result
+    }
+}
+
+private enum EchoCancellationPolicy {
+    static func shouldEnable(mode: String, setting: String?) -> Bool {
+        guard mode == "both" else { return false }
+        return setting?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() != "off"
+    }
 }
 
 final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
@@ -30,6 +276,8 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var systemAggregateID = AudioObjectID(kAudioObjectUnknown)
     private var systemIOProcID: AudioDeviceIOProcID?
     private var systemFormat = AudioStreamBasicDescription()
+    private var systemResampler: StreamingAudioResampler?
+    private var microphoneResampler: StreamingAudioResampler?
     private var micEngine: AVAudioEngine?
     private var mixTimer: DispatchSourceTimer?
     private var parentMonitor: DispatchSourceTimer?
@@ -39,6 +287,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private let lock = NSLock()
     private var systemBuffer: [Int16] = []
     private var micBuffer: [Int16] = []
+    private var systemQuality = AudioQualityAccumulator()
+    private var microphoneQuality = AudioQualityAccumulator()
+    private var qualityTick = 0
+    private var microphoneAECEnabled = false
     private var loggedFormats = Set<String>()
     private var systemCaptureStarted = !useSystem
     private var microphoneCaptureStarted = !useMic
@@ -216,6 +468,14 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 + "bits=\(format.mBitsPerChannel) flags=\(format.mFormatFlags)"
         )
         systemFormat = format
+        do {
+            systemResampler = try StreamingAudioResampler(
+                sourceRate: format.mSampleRate,
+                targetRate: Double(sampleRate)
+            )
+        } catch {
+            fail("could not configure system sample-rate converter: \(error)")
+        }
 
         log("registering Core Audio system tap IO callback")
         var ioProcID: AudioDeviceIOProcID?
@@ -244,10 +504,19 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         _ inputData: UnsafePointer<AudioBufferList>?
     ) {
         guard let inputData,
-              let pcm = Self.extractInt16(inputData, format: systemFormat)
+              let mono = Self.extractMono(inputData, format: systemFormat),
+              let resampler = systemResampler
         else { return }
+        let pcm: [Int16]
+        do {
+            pcm = Self.floatToInt16(try resampler.convert(mono))
+        } catch {
+            log("system sample-rate conversion failed: \(error)")
+            return
+        }
         lock.lock()
-        Self.appendBounded(pcm, to: &systemBuffer)
+        let dropped = Self.appendBounded(pcm, to: &systemBuffer)
+        systemQuality.recordDropped(dropped)
         lock.unlock()
     }
 
@@ -324,12 +593,38 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         configureMicrophone(input)
+        let aecSetting = ProcessInfo.processInfo.environment["ARCO_MIC_ECHO_CANCELLATION"]
+        if EchoCancellationPolicy.shouldEnable(mode: mode, setting: aecSetting) {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                // Platform AEC is useful for speaker leakage; avoid adding a
+                // second gain/noise-processing stage before Deepgram.
+                input.isVoiceProcessingAGCEnabled = false
+                microphoneAECEnabled = true
+                log("microphone platform echo cancellation enabled (AGC disabled)")
+            } catch {
+                microphoneAECEnabled = false
+                log("microphone echo cancellation unavailable; continuing raw: \(error)")
+            }
+        } else {
+            log("microphone echo cancellation bypassed (mode=\(mode))")
+        }
         let format = input.outputFormat(forBus: 0)
         let channelCount = max(1, Int(format.channelCount))
         log(
             "microphone format sampleRate=\(format.sampleRate) "
                 + "channels=\(channelCount)"
         )
+        let resampler: StreamingAudioResampler
+        do {
+            resampler = try StreamingAudioResampler(
+                sourceRate: format.sampleRate,
+                targetRate: Double(sampleRate)
+            )
+            microphoneResampler = resampler
+        } catch {
+            fail("could not configure microphone sample-rate converter: \(error)")
+        }
         input.installTap(
             onBus: 0,
             bufferSize: 4_800,
@@ -352,11 +647,16 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                     mono[frame] /= Float(channelCount)
                 }
             }
-            let pcm = Self.floatToInt16(
-                Self.resample(mono, from: format.sampleRate)
-            )
+            let pcm: [Int16]
+            do {
+                pcm = Self.floatToInt16(try resampler.convert(mono))
+            } catch {
+                self.log("microphone sample-rate conversion failed: \(error)")
+                return
+            }
             self.lock.lock()
-            Self.appendBounded(pcm, to: &self.micBuffer)
+            let dropped = Self.appendBounded(pcm, to: &self.micBuffer)
+            self.microphoneQuality.recordDropped(dropped)
             self.lock.unlock()
         }
 
@@ -467,12 +767,14 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         // in time and never by summing both speakers into one sample.
         let systemCount = useSystem ? min(frameSize, systemBuffer.count) : 0
         let micCount = useMic ? min(frameSize, micBuffer.count) : 0
+        let systemSamples = systemCount > 0 ? Array(systemBuffer.prefix(systemCount)) : []
+        let microphoneSamples = micCount > 0 ? Array(micBuffer.prefix(micCount)) : []
         var interleaved = [Int16](repeating: 0, count: frameSize * 2)
         for index in 0 ..< systemCount {
-            interleaved[index * 2] = systemBuffer[index]
+            interleaved[index * 2] = systemSamples[index]
         }
         for index in 0 ..< micCount {
-            interleaved[index * 2 + 1] = micBuffer[index]
+            interleaved[index * 2 + 1] = microphoneSamples[index]
         }
         if systemCount > 0 {
             systemBuffer.removeFirst(systemCount)
@@ -480,7 +782,41 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         if micCount > 0 {
             micBuffer.removeFirst(micCount)
         }
+        if useSystem {
+            systemQuality.observe(
+                samples: systemSamples,
+                paddedFrames: frameSize - systemCount
+            )
+        }
+        if useMic {
+            microphoneQuality.observe(
+                samples: microphoneSamples,
+                paddedFrames: frameSize - micCount
+            )
+        }
+        qualityTick += 1
+        let shouldLogQuality = qualityTick >= qualityLogIntervalTicks
+        let systemSnapshot = shouldLogQuality && useSystem
+            ? systemQuality.takeSnapshot()
+            : nil
+        let microphoneSnapshot = shouldLogQuality && useMic
+            ? microphoneQuality.takeSnapshot()
+            : nil
+        if shouldLogQuality {
+            qualityTick = 0
+        }
         lock.unlock()
+
+        if let systemSnapshot {
+            logQuality(source: "system", snapshot: systemSnapshot, aec: false)
+        }
+        if let microphoneSnapshot {
+            logQuality(
+                source: "microphone",
+                snapshot: microphoneSnapshot,
+                aec: microphoneAECEnabled
+            )
+        }
 
         // Emit even during silence so channel alignment remains stable from
         // process start through permission prompts and transient device gaps.
@@ -493,6 +829,27 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 reason: "audio consumer closed; stopping native recorder"
             )
         }
+    }
+
+    private func logQuality(
+        source: String,
+        snapshot: AudioQualitySnapshot,
+        aec: Bool
+    ) {
+        log(
+            String(
+                format: "ARCO_AUDIO_QUALITY source=%@ frames=%d rms=%.6f peak=%.6f clipped=%d padded=%d underflows=%d dropped=%d aec=%@",
+                source,
+                snapshot.frames,
+                snapshot.rms,
+                snapshot.peak,
+                snapshot.clippedFrames,
+                snapshot.paddedFrames,
+                snapshot.underflowEvents,
+                snapshot.droppedFrames,
+                aec ? "on" : "off"
+            )
+        )
     }
 
     private func writeAll(_ bytes: UnsafeRawBufferPointer) -> Bool {
@@ -527,9 +884,31 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             return
         }
         logAudioFormatOnce(sampleBuffer, source: "system")
-        guard let pcm = Self.extractInt16(sampleBuffer) else { return }
+        guard let extracted = Self.extractMono(sampleBuffer) else { return }
+        if systemResampler == nil
+            || abs((systemResampler?.sourceRate ?? 0) - extracted.sampleRate) > 1
+        {
+            do {
+                systemResampler = try StreamingAudioResampler(
+                    sourceRate: extracted.sampleRate,
+                    targetRate: Double(sampleRate)
+                )
+            } catch {
+                log("could not configure system sample-rate converter: \(error)")
+                return
+            }
+        }
+        guard let systemResampler else { return }
+        let pcm: [Int16]
+        do {
+            pcm = Self.floatToInt16(try systemResampler.convert(extracted.samples))
+        } catch {
+            log("system sample-rate conversion failed: \(error)")
+            return
+        }
         lock.lock()
-        Self.appendBounded(pcm, to: &systemBuffer)
+        let dropped = Self.appendBounded(pcm, to: &systemBuffer)
+        systemQuality.recordDropped(dropped)
         lock.unlock()
     }
 
@@ -555,7 +934,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         )
     }
 
-    private static func extractInt16(_ sampleBuffer: CMSampleBuffer) -> [Int16]? {
+    private static func extractMono(
+        _ sampleBuffer: CMSampleBuffer
+    ) -> (samples: [Float], sampleRate: Double)? {
         guard
             let description = CMSampleBufferGetFormatDescription(sampleBuffer),
             let pointer = CMAudioFormatDescriptionGetStreamBasicDescription(description)
@@ -610,7 +991,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         } else {
             return nil
         }
-        return floatToInt16(resample(mono, from: format.mSampleRate))
+        return (mono, format.mSampleRate)
     }
 
     private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
@@ -747,10 +1128,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         return nil
     }
 
-    private static func extractInt16(
+    private static func extractMono(
         _ audioBuffers: UnsafePointer<AudioBufferList>,
         format: AudioStreamBasicDescription
-    ) -> [Int16]? {
+    ) -> [Float]? {
         let flags = format.mFormatFlags
         let isFloat = flags & kAudioFormatFlagIsFloat != 0
         let isSignedInteger = flags & kAudioFormatFlagIsSignedInteger != 0
@@ -805,7 +1186,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 mono[frame] /= Float(channelCount)
             }
         }
-        return floatToInt16(resample(mono, from: format.mSampleRate))
+        return mono
     }
 
     private static func floatToInt16(_ samples: [Float]) -> [Int16] {
@@ -818,11 +1199,12 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private static func appendBounded(
         _ samples: [Int16],
         to buffer: inout [Int16]
-    ) {
-        guard !samples.isEmpty else { return }
+    ) -> Int {
+        guard !samples.isEmpty else { return 0 }
         if samples.count >= maxBufferedFrames {
+            let dropped = buffer.count + samples.count - maxBufferedFrames
             buffer = Array(samples.suffix(maxBufferedFrames))
-            return
+            return dropped
         }
         buffer.append(contentsOf: samples)
         let overflow = buffer.count - maxBufferedFrames
@@ -831,31 +1213,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             // device bursts, or stdout backpressure from growing memory forever.
             buffer.removeFirst(overflow)
         }
-    }
-
-    private static func resample(
-        _ samples: [Float],
-        from sourceRate: Double
-    ) -> [Float] {
-        guard !samples.isEmpty else { return [] }
-        guard sourceRate > 0, abs(sourceRate - Double(sampleRate)) > 1 else {
-            return samples
-        }
-        let ratio = Double(sampleRate) / sourceRate
-        let outputCount = max(1, Int(Double(samples.count) * ratio))
-        var result = [Float](repeating: 0, count: outputCount)
-        for index in 0 ..< outputCount {
-            let position = Double(index) / ratio
-            let sourceIndex = Int(position)
-            let fraction = Float(position - Double(sourceIndex))
-            if sourceIndex + 1 < samples.count {
-                result[index] = samples[sourceIndex] * (1 - fraction)
-                    + samples[sourceIndex + 1] * fraction
-            } else {
-                result[index] = samples[samples.count - 1]
-            }
-        }
-        return result
+        return max(0, overflow)
     }
 
     private func log(_ message: String) {
@@ -961,6 +1319,121 @@ private let arcoAudioDeviceIOProc: AudioDeviceIOProc = {
     return noErr
 }
 
-let recorder = Recorder()
-recorder.start()
-RunLoop.main.run()
+private enum RecorderSelfTestError: Error, CustomStringConvertible {
+    case failed(String)
+
+    var description: String {
+        switch self {
+        case let .failed(message): message
+        }
+    }
+}
+
+private func selfTestRequire(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+    if !condition() {
+        throw RecorderSelfTestError.failed(message)
+    }
+}
+
+private func sineWave(frequency: Double, sampleRate: Double, count: Int) -> [Float] {
+    (0 ..< count).map { index in
+        Float(sin(2 * Double.pi * frequency * Double(index) / sampleRate))
+    }
+}
+
+private func normalizedRMS(_ samples: [Float]) -> Double {
+    guard !samples.isEmpty else { return 0 }
+    return sqrt(samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(samples.count))
+}
+
+private func runRecorderSelfTests() throws {
+    do {
+        _ = try StreamingAudioResampler(sourceRate: 0, targetRate: 16_000)
+        throw RecorderSelfTestError.failed("zero source sample rate was accepted")
+    } catch let error as RecorderSelfTestError {
+        throw error
+    } catch {
+        // Expected: invalid hardware formats must be rejected before capture.
+    }
+
+    let source = sineWave(frequency: 1_000, sampleRate: 48_000, count: 48_000)
+    let resampler = try StreamingAudioResampler(sourceRate: 48_000, targetRate: 16_000)
+    var converted: [Float] = []
+    var convertedChunkCounts: [Int] = []
+    var offset = 0
+    for chunkSize in [997, 4_801, 127, 8_113, 16_003, 17_959] {
+        let end = min(source.count, offset + chunkSize)
+        if end > offset {
+            let chunk = try resampler.convert(Array(source[offset ..< end]))
+            convertedChunkCounts.append(chunk.count)
+            converted += chunk
+            offset = end
+        }
+    }
+    let emptyOutput = try resampler.convert([])
+    try selfTestRequire(emptyOutput.isEmpty, "empty input emitted audio")
+    converted += try resampler.finish()
+    try selfTestRequire(offset == source.count, "self-test did not consume the full input signal")
+    try selfTestRequire(
+        (15_936 ... 16_000).contains(converted.count),
+        "48 kHz to 16 kHz produced \(converted.count) frames"
+    )
+    let outputRMS = normalizedRMS(converted)
+    try selfTestRequire(outputRMS > 0.65 && outputRMS < 0.75, "1 kHz tone RMS was \(outputRMS)")
+    let largestStep = converted.indices.dropFirst().map { index in
+        (index, abs(Double(converted[index] - converted[index - 1])))
+    }.max { $0.1 < $1.1 } ?? (0, 0)
+    try selfTestRequire(
+        largestStep.1 < 0.5,
+        "chunked resampling introduced a discontinuity (index=\(largestStep.0), step=\(largestStep.1), chunks=\(convertedChunkCounts))"
+    )
+    let upwardZeroCrossings = zip(converted.dropFirst(), converted)
+        .filter { $0.1 <= 0.1 && $0.0 > 0.1 }
+        .count
+    try selfTestRequire(
+        (985 ... 1_001).contains(upwardZeroCrossings),
+        "1 kHz tone produced \(upwardZeroCrossings) upward zero crossings"
+    )
+    let aliasSource = sineWave(frequency: 12_000, sampleRate: 48_000, count: 48_000)
+    let aliasResampler = try StreamingAudioResampler(sourceRate: 48_000, targetRate: 16_000)
+    let aliasOutput = try aliasResampler.convert(aliasSource) + aliasResampler.finish()
+    let aliasRMS = normalizedRMS(Array(aliasOutput.dropFirst(min(256, aliasOutput.count))))
+    try selfTestRequire(
+        (15_936 ... 16_000).contains(aliasOutput.count),
+        "anti-alias test produced the wrong frame count"
+    )
+    try selfTestRequire(aliasRMS < 0.05, "12 kHz content aliased into 16 kHz output (rms=\(aliasRMS))")
+
+    var quality = AudioQualityAccumulator()
+    quality.observe(samples: [0, 16_384, 32_767, -32_768], paddedFrames: 3, droppedFrames: 2)
+    let snapshot = quality.snapshot()
+    try selfTestRequire(snapshot.frames == 4, "quality meter counted \(snapshot.frames) frames")
+    try selfTestRequire(snapshot.clippedFrames == 2, "quality meter counted \(snapshot.clippedFrames) clipped frames")
+    try selfTestRequire(snapshot.paddedFrames == 3, "quality meter lost padded-frame telemetry")
+    try selfTestRequire(snapshot.underflowEvents == 1, "quality meter lost the underflow event")
+    try selfTestRequire(snapshot.droppedFrames == 2, "quality meter lost dropped-frame telemetry")
+    try selfTestRequire(abs(snapshot.peak - 1.0) < 0.000_001, "quality peak was \(snapshot.peak)")
+    try selfTestRequire(abs(snapshot.rms - 0.749_989_827) < 0.000_001, "quality RMS was \(snapshot.rms)")
+
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "both mode did not enable AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: nil), "mic-only mode enabled AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "off"), "explicit AEC off was ignored")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "on"), "explicit AEC on was ignored")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting disabled safe automatic behavior")
+
+    FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_OK\n".utf8))
+}
+
+if isSelfTest {
+    do {
+        try runRecorderSelfTests()
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_FAILED: \(error)\n".utf8))
+        exit(1)
+    }
+} else {
+    let recorder = Recorder()
+    recorder.start()
+    RunLoop.main.run()
+}
