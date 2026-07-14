@@ -1,6 +1,6 @@
 import { AudioWaveform, Check, ChevronLeft, ChevronRight, Command, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
-import type { ProviderId, RuntimeStatus } from '../types'
+import type { ProviderConnectionTest, ProviderId, RuntimeStatus } from '../types'
 import { createProviderConfig, type ProviderConfig } from '../lib/providerConfig'
 import { DEFAULT_LISTENING_SHORTCUT, formatListeningShortcut, type ListeningShortcut } from '../lib/listeningShortcut'
 import { ShortcutRecorder } from './ShortcutRecorder'
@@ -16,7 +16,7 @@ interface ProviderSetupProps {
   onStartListeningShortcutRecording?: () => boolean | Promise<boolean>
   onCancelListeningShortcutRecording?: () => void | Promise<void>
   onRefresh?: () => Promise<RuntimeStatus[] | void> | RuntimeStatus[] | void
-  onTest: (provider: ProviderId) => Promise<boolean>
+  onTest: (provider: ProviderId) => Promise<ProviderConnectionTest>
   onComplete: (config: ProviderConfig) => void
   onCancel?: () => void
   onSkip?: () => void
@@ -73,6 +73,7 @@ export function ProviderSetup({
   )
   const [testState, setTestState] = useState<TestState>('idle')
   const [testedProvider, setTestedProvider] = useState<ProviderId | null>(null)
+  const [testError, setTestError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [configurationError, setConfigurationError] = useState<string | null>(null)
   const steps = [
@@ -107,6 +108,7 @@ export function ProviderSetup({
     setSecondary((current) => current === provider ? null : current)
     setTestState('idle')
     setTestedProvider(null)
+    setTestError(null)
     setConfigurationError(null)
     setFurthestStep(1)
   }
@@ -123,11 +125,15 @@ export function ProviderSetup({
     const providerUnderTest = primary
     setTestState('testing')
     setTestedProvider(providerUnderTest)
+    setTestError(null)
     setConfigurationError(null)
     try {
-      setTestState(await onTest(providerUnderTest) ? 'passed' : 'failed')
-    } catch {
+      const result = await onTest(providerUnderTest)
+      setTestState(result.ok ? 'passed' : 'failed')
+      setTestError(result.ok ? null : result.message.trim() || null)
+    } catch (cause) {
       setTestState('failed')
+      setTestError(cause instanceof Error ? cause.message : null)
     }
   }
 
@@ -135,6 +141,7 @@ export function ProviderSetup({
     if (!onRefresh || refreshing) return
     setTestState('idle')
     setTestedProvider(null)
+    setTestError(null)
     setConfigurationError(null)
     setFurthestStep(1)
     setRefreshing(true)
@@ -168,6 +175,7 @@ export function ProviderSetup({
       setConfigurationError(t('onboarding.configurationChanged'))
       setTestState('idle')
       setTestedProvider(null)
+      setTestError(null)
       setFurthestStep(1)
       setStep(1)
     }
@@ -353,7 +361,7 @@ export function ProviderSetup({
                   onClick={testPrimary}
                 >
                   <RefreshCw size={16} className={testState === 'testing' ? 'provider-test-spinning' : ''} aria-hidden="true" />
-                  {testState === 'testing' ? t('onboarding.testing') : t('onboarding.testProvider', { provider: primary ? providerName(primary) : t('onboarding.connection') })}
+                  {testState === 'testing' ? t('onboarding.testingMayTakeTime') : t('onboarding.testProvider', { provider: primary ? providerName(primary) : t('onboarding.connection') })}
                 </button>
                 {primaryTestPassed && (
                   <p className="provider-test-result provider-test-result-success" role="status">
@@ -362,7 +370,7 @@ export function ProviderSetup({
                 )}
                 {testState === 'failed' && (
                   <p className="provider-test-result provider-test-result-error" role="alert">
-                    {t('onboarding.providerFailed', { provider: testedProvider ? providerName(testedProvider) : t('onboarding.theProvider') })}
+                    {testError || t('onboarding.providerFailed', { provider: testedProvider ? providerName(testedProvider) : t('onboarding.theProvider') })}
                   </p>
                 )}
               </section>

@@ -23,9 +23,31 @@ const MAX_QUESTION_CHARS: usize = 8_000;
 const MAX_TRANSCRIPT_CHARS: usize = 160_000;
 const AGENT_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECTION_TEST_TOKEN: &str = "ARCO_OK";
 const CONNECTION_TEST_PROMPT: &str = "Reply with exactly ARCO_OK and nothing else. Do not use tools or read files. Do not inspect the current directory, workspace, or home directory.";
+
+#[derive(Clone, Copy, Debug)]
+struct ProcessOutputPolicy {
+    max_bytes: u64,
+    preserve_stdout_on_error: bool,
+}
+
+impl ProcessOutputPolicy {
+    const fn strict(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            preserve_stdout_on_error: false,
+        }
+    }
+
+    const fn connection_test(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            preserve_stdout_on_error: true,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentStreamUpdate {
@@ -206,8 +228,9 @@ impl AgentRunner {
             Some(&working_directory),
             self.timeout.min(CONNECTION_TEST_TIMEOUT),
             codex_sandbox.as_ref(),
-            MAX_CONNECTION_TEST_OUTPUT_BYTES,
-        )?;
+            ProcessOutputPolicy::connection_test(MAX_CONNECTION_TEST_OUTPUT_BYTES),
+        )
+        .map_err(|error| format!("{label} connection test failed: {error}"))?;
         let answer = parse_connection_test_answer(provider, &output)?;
         if answer.trim() != CONNECTION_TEST_TOKEN {
             return Err(format!(
@@ -990,13 +1013,21 @@ fn parse_connection_test_answer(provider: &str, output: &str) -> Result<String, 
                 serde_json::from_str(output.trim()).map_err(|error| {
                     format!("Claude Code returned invalid connection test JSON: {error}")
                 })?;
-            value
+            let result = value
                 .get("result")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
                 .ok_or_else(|| {
                     "Claude Code connection test JSON did not include result".to_string()
-                })
+                })?;
+            if value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+                let detail = result.trim();
+                return Err(if detail.is_empty() {
+                    "Claude Code connection test failed".to_string()
+                } else {
+                    format!("Claude Code connection test failed: {detail}")
+                });
+            }
+            Ok(result.to_string())
         }
         _ => Err(format!("unsupported agent provider: {provider}")),
     }
@@ -1371,7 +1402,7 @@ fn run_process(
         current_dir,
         timeout,
         codex_sandbox,
-        MAX_AGENT_OUTPUT_BYTES,
+        ProcessOutputPolicy::strict(MAX_AGENT_OUTPUT_BYTES),
     )
 }
 
@@ -1382,8 +1413,9 @@ fn run_process_limited(
     current_dir: Option<&Path>,
     timeout: Duration,
     codex_sandbox: Option<&RestrictedCodexSandbox>,
-    max_output_bytes: u64,
+    output_policy: ProcessOutputPolicy,
 ) -> Result<String, String> {
+    let max_output_bytes = output_policy.max_bytes;
     let mut stdout_file = NamedTempFile::new()
         .map_err(|error| format!("could not create agent output buffer: {error}"))?;
     let mut stderr_file = NamedTempFile::new()
@@ -1486,6 +1518,9 @@ fn run_process_limited(
     let stdout = read_limited(&mut stdout_file, max_output_bytes)?;
     let stderr = read_limited(&mut stderr_file, max_output_bytes)?;
     if !status.success() {
+        if output_policy.preserve_stdout_on_error && !stdout.trim().is_empty() {
+            return Ok(stdout);
+        }
         let code = status
             .code()
             .map(|value| value.to_string())
@@ -1853,6 +1888,44 @@ mod tests {
     fn provider_validation_rejects_shell_like_values() {
         let error = validate_provider("codex; rm -rf /").unwrap_err();
         assert!(error.contains("unsupported agent provider"));
+    }
+
+    #[test]
+    fn claude_connection_test_surfaces_structured_auth_failure() {
+        let output = r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#;
+
+        let error = parse_connection_test_answer("claude", output).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Claude Code connection test failed: Not logged in · Please run /login"
+        );
+    }
+
+    #[test]
+    fn connection_probe_preserves_structured_stdout_from_nonzero_exit() {
+        let args = [
+            OsString::from("-c"),
+            OsString::from("printf '{\"is_error\":true,\"result\":\"Not logged in\"}'; exit 1"),
+        ];
+
+        let output = run_process_limited(
+            Path::new("/bin/sh"),
+            &args,
+            None,
+            None,
+            Duration::from_secs(2),
+            None,
+            ProcessOutputPolicy::connection_test(1_024),
+        )
+        .unwrap();
+
+        assert_eq!(output, r#"{"is_error":true,"result":"Not logged in"}"#);
+    }
+
+    #[test]
+    fn full_provider_connection_probe_allows_ninety_seconds() {
+        assert_eq!(CONNECTION_TEST_TIMEOUT, Duration::from_secs(90));
     }
 
     #[test]
