@@ -30,6 +30,26 @@ async function attachWorkspaceAndAsk(page: Page) {
 
 const loadPublicPageBackdrop = () => readFile('tests/e2e/fixtures/github-arco-page.jpg')
 
+async function captureRecordingHudMarkup(page: Page) {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.locale', 'en')
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'recording',
+      activeMeetingId: 'demo-live',
+      startedAt: new Date(Date.now() - 128_000).toISOString(),
+      message: null,
+    }))
+  })
+  await page.goto('/?surface=hud&demo=1')
+
+  const hud = page.getByRole('region', { name: 'Arco recording controls' })
+  await expect(hud).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeVisible()
+  return hud.evaluate((element) => element.outerHTML)
+}
+
 async function placeSurfaceOnDesktop(page: Page, backdrop: Buffer) {
   const backgroundImage = `url(data:image/jpeg;base64,${backdrop.toString('base64')})`
 
@@ -53,7 +73,11 @@ test('capture the live transcript and workspace-grounded Agent after a real inte
   })
 })
 
-test('capture the global Agent after restoring its meeting conversation', async ({ page }) => {
+test('capture the global Agent and recording HUD in one live desktop scene', async ({ page, context }) => {
+  const hudPage = await context.newPage()
+  const hudMarkup = await captureRecordingHudMarkup(hudPage)
+  await hudPage.close()
+
   await page.setViewportSize({ width: 1440, height: 900 })
   await openDemo(page)
   await attachWorkspaceAndAsk(page)
@@ -70,6 +94,23 @@ test('capture the global Agent after restoring its meeting conversation', async 
   await expect(overlay.getByRole('button', { name: 'Change workspace' })).toHaveText('Arco')
   const jumpToLive = page.getByRole('button', { name: 'Jump to live' })
   await expect(jumpToLive).toBeHidden({ timeout: 10_000 })
+  await page.evaluate((markup) => {
+    const container = document.createElement('div')
+    container.innerHTML = markup
+    const hud = container.firstElementChild
+    if (!(hud instanceof HTMLElement)) throw new Error('Recording HUD markup is missing')
+    hud.style.position = 'fixed'
+    hud.style.left = '50%'
+    hud.style.bottom = '24px'
+    hud.style.width = '368px'
+    hud.style.height = '56px'
+    hud.style.transform = 'translateX(-50%)'
+    hud.style.zIndex = '10'
+    document.body.append(hud)
+  }, hudMarkup)
+  await expect(page.getByRole('region', { name: 'Arco recording controls' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeVisible()
   await page.screenshot({
     path: 'docs/images/arco-agent-overlay.png',
     fullPage: true,
@@ -77,29 +118,20 @@ test('capture the global Agent after restoring its meeting conversation', async 
   })
 })
 
-test('capture the recording HUD only after verifying both global actions', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.addInitScript(() => {
-    window.localStorage.setItem('arco.locale', 'en')
-    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
-      phase: 'recording',
-      activeMeetingId: 'demo-live',
-      startedAt: new Date(Date.now() - 128_000).toISOString(),
-      message: null,
-    }))
-  })
-  const backdrop = await loadPublicPageBackdrop()
-  await page.goto('/?surface=hud&demo=1')
-  await placeSurfaceOnDesktop(page, backdrop)
+test('README presents the in-meeting interaction once and thanks FluidVoice', async () => {
+  const [english, chinese] = await Promise.all([
+    readFile('README.md', 'utf8'),
+    readFile('README.zh-CN.md', 'utf8'),
+  ])
 
-  await expect(page.getByRole('region', { name: 'Arco recording controls' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeVisible()
-  await page.screenshot({
-    path: 'docs/images/arco-recording-hud.png',
-    fullPage: true,
-    animations: 'disabled',
-  })
+  expect(english).toContain('## Ask without leaving the conversation')
+  expect(english).not.toContain('## Stay in the conversation')
+  expect(chinese).toContain('## 不离开当前对话，直接提问')
+  for (const readme of [english, chinese]) {
+    expect(readme.match(/docs\/images\/arco-agent-overlay\.png/g)).toHaveLength(1)
+    expect(readme).not.toContain('docs/images/arco-recording-hud.png')
+    expect(readme).toContain('https://github.com/altic-dev/FluidVoice')
+  }
 })
 
 test('capture History after exercising search and restoring the full list', async ({ page }) => {

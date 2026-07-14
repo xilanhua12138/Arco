@@ -34,20 +34,12 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
   <img src="docs/images/arco-live-agent.png" alt="Arco 实时转写与 Agent 工作区" width="1000">
 </p>
 
-## 在会议进行时直接提问
+## 不离开当前对话，直接提问
 
-你可以只参考本次转写，也可以通过 macOS 原生文件夹选择器附加一个项目工作区。Arco 会为后续问题复用该工作区，并通过这台 Mac 上已登录的 Codex CLI 或 Claude Code 发起请求。
-
-<p align="center">
-  <img src="docs/images/arco-agent-overlay.png" alt="带可收起转写的 Ask Arco 全局浮窗" width="900">
-</p>
-
-## 不离开当前对话
-
-开始监听后，一个小型全局浮窗会跨应用和 macOS Space 保持可用。无需回到主窗口，就能停止录制或打开 Agent。
+你可以只参考本次转写，也可以通过 macOS 原生文件夹选择器附加一个项目工作区。Arco 会为后续问题复用该工作区，并通过这台 Mac 上已登录的 Codex CLI 或 Claude Code 发起请求。监听期间，录音控制与 Agent 会跨应用和 macOS Space 保持在最上层，让你无需离开当前对话就能提问、停止录制或回到转写证据。
 
 <p align="center">
-  <img src="docs/images/arco-recording-hud.png" alt="带停止和 Ask Arco 操作的录制浮窗" width="900">
+  <img src="docs/images/arco-agent-overlay.png" alt="覆盖在当前桌面上的 Ask Arco 全局浮窗与录音控制" width="900">
 </p>
 
 ## 真正有用的本地会议历史
@@ -169,6 +161,10 @@ pnpm desktop:package
 - **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答、用户保存的笔记分开存储。
 
 详细约束见 [PRODUCT.md](./PRODUCT.md)、[DESIGN.md](./DESIGN.md)、[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) 与 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
+
+## 致谢
+
+特别感谢 [FluidVoice](https://github.com/altic-dev/FluidVoice) 展示了高速、隐私友好、完全在设备端运行的 macOS 语音体验，并为 Arco 的本地模型与 Provider 设计提供了重要启发。Arco 没有复制或分发 FluidVoice 的 GPL-3.0 源码；依赖与许可证边界详见 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
 
 ## 参与贡献
 
