@@ -325,6 +325,7 @@ impl AgentRunner {
         };
         let output = if let Some(mut on_update) = on_update {
             let provider = provider.to_string();
+            let mut claude_stream = (provider == "claude").then(ClaudeStreamParser::default);
             run_process_streamed(
                 &binary,
                 &args,
@@ -336,6 +337,9 @@ impl AgentRunner {
                 move |line| {
                     let update = match provider.as_str() {
                         "codex" => parse_codex_stream_update(line).ok().flatten(),
+                        "claude" => claude_stream
+                            .as_mut()
+                            .and_then(|stream| stream.parse_line(line).ok().flatten()),
                         _ => None,
                     };
                     if let Some(update) = update {
@@ -499,7 +503,7 @@ struct ParsedProviderOutput {
 fn parse_provider_output(provider: &str, output: &str) -> Result<ParsedProviderOutput, String> {
     let parsed = match provider {
         "codex" => parse_codex_jsonl(output),
-        "claude" => parse_claude_json(output),
+        "claude" => parse_claude_jsonl(output),
         _ => Err(format!("unsupported agent provider: {provider}")),
     }?;
     validate_native_session_id(&parsed.provider_session_id)?;
@@ -591,25 +595,198 @@ fn parse_codex_stream_update(line: &str) -> Result<Option<AgentStreamUpdate>, St
     Ok(update)
 }
 
-fn parse_claude_json(output: &str) -> Result<ParsedProviderOutput, String> {
-    let value: serde_json::Value = serde_json::from_str(output.trim())
-        .map_err(|error| format!("Claude Code returned invalid JSON: {error}"))?;
-    Ok(ParsedProviderOutput {
-        provider_session_id: value
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Claude Code JSON did not include session_id".to_string())?
-            .to_string(),
-        provider_turn_id: value
-            .get("uuid")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        answer: value
-            .get("result")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "Claude Code JSON did not include result".to_string())?
-            .to_string(),
-    })
+#[derive(Default)]
+struct ClaudeStreamParser {
+    answer: String,
+    phase: Option<&'static str>,
+}
+
+impl ClaudeStreamParser {
+    fn phase_update(&mut self, phase: &'static str) -> Option<AgentStreamUpdate> {
+        if self.phase == Some(phase) {
+            return None;
+        }
+        self.phase = Some(phase);
+        Some(AgentStreamUpdate::Phase(phase))
+    }
+
+    fn parse_line(&mut self, line: &str) -> Result<Option<AgentStreamUpdate>, String> {
+        let event: serde_json::Value = serde_json::from_str(line)
+            .map_err(|_| "Claude Code returned an invalid streaming event".to_string())?;
+        let event_type = event.get("type").and_then(serde_json::Value::as_str);
+        let update = match event_type {
+            Some("system") => self.phase_update("analyzing"),
+            Some("stream_event") => {
+                let stream_event = event.get("event");
+                let stream_type = stream_event
+                    .and_then(|event| event.get("type"))
+                    .and_then(serde_json::Value::as_str);
+                match stream_type {
+                    Some("message_start") => {
+                        self.answer.clear();
+                        self.phase_update("analyzing")
+                    }
+                    Some("content_block_start") => {
+                        let content_type = stream_event
+                            .and_then(|event| event.get("content_block"))
+                            .and_then(|content| content.get("type"))
+                            .and_then(serde_json::Value::as_str);
+                        if matches!(content_type, Some("tool_use" | "server_tool_use")) {
+                            self.phase_update("using-tools")
+                        } else {
+                            None
+                        }
+                    }
+                    Some("content_block_delta") => {
+                        let delta = stream_event.and_then(|event| event.get("delta"));
+                        match delta
+                            .and_then(|delta| delta.get("type"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            Some("text_delta") => delta
+                                .and_then(|delta| delta.get("text"))
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|text| !text.is_empty())
+                                .map(|text| {
+                                    self.answer.push_str(text);
+                                    AgentStreamUpdate::Answer(self.answer.clone())
+                                }),
+                            Some("input_json_delta") => self.phase_update("using-tools"),
+                            _ => None,
+                        }
+                    }
+                    Some("message_delta" | "message_stop") => self.phase_update("finalizing"),
+                    _ => None,
+                }
+            }
+            Some("assistant") => {
+                let content = event
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(serde_json::Value::as_array);
+                if content.is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        matches!(
+                            block.get("type").and_then(serde_json::Value::as_str),
+                            Some("tool_use" | "server_tool_use")
+                        )
+                    })
+                }) {
+                    self.phase_update("using-tools")
+                } else {
+                    let answer = claude_assistant_text(&event).unwrap_or_default();
+                    if answer.is_empty() || answer == self.answer {
+                        None
+                    } else {
+                        self.answer = answer;
+                        Some(AgentStreamUpdate::Answer(self.answer.clone()))
+                    }
+                }
+            }
+            Some("result") => self.phase_update("finalizing"),
+            _ => None,
+        };
+        Ok(update)
+    }
+}
+
+fn claude_assistant_text(event: &serde_json::Value) -> Option<String> {
+    let answer = event
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+        .collect::<String>();
+    (!answer.trim().is_empty()).then_some(answer)
+}
+
+fn parse_claude_jsonl(output: &str) -> Result<ParsedProviderOutput, String> {
+    let mut result = None;
+    let mut streamed_answer = String::new();
+    let mut last_assistant_answer = None;
+    for (index, line) in output.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            format!(
+                "Claude Code returned invalid JSONL on line {}: {error}",
+                index + 1
+            )
+        })?;
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("stream_event") => {
+                let stream_event = value.get("event");
+                match stream_event
+                    .and_then(|event| event.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("message_start") => streamed_answer.clear(),
+                    Some("content_block_delta") => {
+                        let delta = stream_event.and_then(|event| event.get("delta"));
+                        if delta
+                            .and_then(|delta| delta.get("type"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("text_delta")
+                        {
+                            if let Some(text) = delta
+                                .and_then(|delta| delta.get("text"))
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                streamed_answer.push_str(text);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("assistant") => {
+                if let Some(answer) = claude_assistant_text(&value) {
+                    streamed_answer.clone_from(&answer);
+                    last_assistant_answer = Some(answer);
+                }
+            }
+            event_type
+                if event_type == Some("result")
+                    || (event_type.is_none()
+                        && value.get("session_id").is_some()
+                        && value.get("result").is_some()) =>
+            {
+                let final_answer = value
+                    .get("result")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|answer| !answer.trim().is_empty())
+                    .map(str::to_string)
+                    .or_else(|| last_assistant_answer.clone())
+                    .or_else(|| {
+                        (!streamed_answer.trim().is_empty()).then(|| streamed_answer.clone())
+                    })
+                    .ok_or_else(|| {
+                        "Claude Code result JSON did not include a non-empty result or assistant message"
+                            .to_string()
+                    })?;
+                result = Some(ParsedProviderOutput {
+                    provider_session_id: value
+                        .get("session_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            "Claude Code result JSON did not include session_id".to_string()
+                        })?
+                        .to_string(),
+                    provider_turn_id: value
+                        .get("uuid")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    answer: final_answer,
+                });
+            }
+            _ => {}
+        }
+    }
+    result.ok_or_else(|| "Claude Code JSONL did not include a result event".to_string())
 }
 
 fn validate_native_session_id(session_id: &str) -> Result<(), String> {
@@ -892,7 +1069,9 @@ fn safe_cli_args(
                 "--tools",
                 tools,
                 "--output-format",
-                "json",
+                "stream-json",
+                "--include-partial-messages",
+                "--verbose",
             ]
             .into_iter()
             .map(OsString::from)
@@ -1735,6 +1914,120 @@ mod tests {
         let error = parse_codex_stream_update("{not-json").unwrap_err();
         assert_eq!(error, "Codex CLI returned an invalid streaming event");
         assert!(!error.contains("not-json"));
+    }
+
+    #[test]
+    fn claude_session_args_request_partial_stream_json() {
+        let (args, _) = safe_cli_args("claude", "workspace", None).unwrap();
+        let args = args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--output-format", "stream-json"]));
+        assert!(args
+            .iter()
+            .any(|argument| argument == "--include-partial-messages"));
+        assert!(args.iter().any(|argument| argument == "--verbose"));
+    }
+
+    #[test]
+    fn claude_stream_json_result_is_final_provider_output() {
+        let output = concat!(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}},"session_id":"019f4b00-5555-7000-8000-000000000005"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","session_id":"019f4b00-5555-7000-8000-000000000005","uuid":"claude-result-stream","result":"complete"}"#,
+            "\n",
+        );
+
+        let parsed = parse_provider_output("claude", output).unwrap();
+        assert_eq!(
+            parsed.provider_session_id,
+            "019f4b00-5555-7000-8000-000000000005"
+        );
+        assert_eq!(
+            parsed.provider_turn_id.as_deref(),
+            Some("claude-result-stream")
+        );
+        assert_eq!(parsed.answer, "complete");
+    }
+
+    #[test]
+    fn claude_stream_json_uses_assistant_text_when_result_is_empty() {
+        let output = concat!(
+            r#"{"type":"stream_event","event":{"type":"message_start"},"session_id":"019f4b00-7777-7000-8000-000000000007"}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"fallback answer"}},"session_id":"019f4b00-7777-7000-8000-000000000007"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"fallback answer"}]},"session_id":"019f4b00-7777-7000-8000-000000000007"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","session_id":"019f4b00-7777-7000-8000-000000000007","uuid":"claude-result-empty","result":""}"#,
+            "\n",
+        );
+
+        let parsed = parse_provider_output("claude", output).unwrap();
+        assert_eq!(parsed.answer, "fallback answer");
+    }
+
+    #[test]
+    fn claude_partial_stream_accumulates_text_and_reports_tool_phases() {
+        let mut stream = ClaudeStreamParser::default();
+
+        assert_eq!(
+            stream
+                .parse_line(r#"{"type":"system","subtype":"init"}"#)
+                .unwrap(),
+            Some(AgentStreamUpdate::Phase("analyzing"))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private reasoning"}}}"#,
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"AR"}}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Answer("AR".into()))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"CO"}}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Answer("ARCO".into()))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Phase("using-tools"))
+        );
+        assert_eq!(
+            stream
+                .parse_line(r#"{"type":"result","subtype":"success"}"#)
+                .unwrap(),
+            Some(AgentStreamUpdate::Phase("finalizing"))
+        );
+    }
+
+    #[test]
+    fn claude_stream_parser_rejects_malformed_json_without_leaking_raw_content() {
+        let error = ClaudeStreamParser::default()
+            .parse_line("{private-bad-json")
+            .unwrap_err();
+        assert_eq!(error, "Claude Code returned an invalid streaming event");
+        assert!(!error.contains("private-bad-json"));
     }
 
     #[test]

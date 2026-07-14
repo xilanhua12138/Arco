@@ -1,4 +1,4 @@
-use arco_lib::agent::AgentRunner;
+use arco_lib::agent::{AgentRunner, AgentStreamUpdate};
 use arco_lib::capture::{
     CaptureConfig, CaptureManager, CaptureSecrets, CommandSpec, RecorderSpec, TranscriberCatalog,
     TranscriberDefinition,
@@ -638,6 +638,77 @@ printf '{{"type":"result","session_id":"{native_session}","uuid":"claude-result-
     assert!(resumed.reply.answer.contains("mode=resume"));
     assert!(!resumed.reply.answer.contains("unsafe-continue"));
     assert!(!resumed.reply.answer.contains("unsafe-ephemeral"));
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_runner_streams_claude_partial_answers_before_the_final_result() {
+    let root = TempDir::new().unwrap();
+    let native_session = "019f4b00-6666-7000-8000-000000000006";
+    let fake = executable_script(
+        root.path(),
+        "streaming-claude",
+        &format!(
+            r#"#!/bin/sh
+cat >/dev/null
+printf '{{"type":"system","subtype":"init","session_id":"{native_session}"}}\n'
+printf '{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"Hel"}}}},"session_id":"{native_session}"}}\n'
+printf '{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"lo"}}}},"session_id":"{native_session}"}}\n'
+sleep 0.2
+printf '{{"type":"result","subtype":"success","session_id":"{native_session}","uuid":"claude-result-stream","result":"Hello"}}\n'
+"#,
+        ),
+    );
+    let transcript = root.path().join("meeting-20260710-101501.md");
+    fs::write(&transcript, "# Native Claude streaming test\n").unwrap();
+    let meeting = parse_meeting(&transcript, "local", None).unwrap();
+    let workspace = root.path().to_path_buf();
+    let runner = AgentRunner::with_binary("claude", fake, Duration::from_secs(5));
+    let (event_sender, event_receiver) = std::sync::mpsc::channel();
+    let (result_sender, result_receiver) = std::sync::mpsc::channel();
+    let event_timeout = Duration::from_secs(3);
+
+    let worker = std::thread::spawn(move || {
+        let result = runner.run_session_streamed(
+            "claude",
+            "stream",
+            &meeting,
+            "workspace",
+            Some(&workspace),
+            None,
+            move |event| event_sender.send(event).unwrap(),
+        );
+        result_sender.send(result).unwrap();
+    });
+
+    assert_eq!(
+        event_receiver.recv_timeout(event_timeout).unwrap(),
+        AgentStreamUpdate::Phase("analyzing")
+    );
+    assert_eq!(
+        event_receiver.recv_timeout(event_timeout).unwrap(),
+        AgentStreamUpdate::Answer("Hel".into())
+    );
+    assert_eq!(
+        event_receiver.recv_timeout(event_timeout).unwrap(),
+        AgentStreamUpdate::Answer("Hello".into())
+    );
+    assert!(result_receiver.try_recv().is_err());
+    assert_eq!(
+        event_receiver.recv_timeout(event_timeout).unwrap(),
+        AgentStreamUpdate::Phase("finalizing")
+    );
+    let output = result_receiver
+        .recv_timeout(event_timeout)
+        .unwrap()
+        .unwrap();
+    worker.join().unwrap();
+    assert_eq!(output.provider_session_id, native_session);
+    assert_eq!(
+        output.provider_turn_id.as_deref(),
+        Some("claude-result-stream")
+    );
+    assert_eq!(output.reply.answer, "Hello");
 }
 
 #[cfg(unix)]
