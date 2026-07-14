@@ -641,6 +641,34 @@ test('History is searchable and opens a meeting as History review', async ({ pag
   await expect(page.getByRole('button', { name: /Benchmark review with Estrella/i })).toBeVisible()
 })
 
+test('an idle History review continues the same meeting instead of creating another one', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('arco.demoCapture', JSON.stringify({
+      phase: 'idle',
+      activeMeetingId: null,
+      startedAt: null,
+      message: null,
+    }))
+  })
+  await gotoConfigured(page, '/?demo=1')
+  await page.getByRole('button', { name: 'Open meeting history' }).click()
+  await page.getByRole('button', { name: /Benchmark review with Estrella/i }).click()
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Benchmark review with Estrella' })).toBeVisible()
+  const capture = page.getByRole('region', { name: 'Audio capture · Hybrid · System and room audio' })
+  await expect(capture.getByRole('button', { name: 'Continue listening' })).toBeEnabled()
+
+  await capture.getByRole('button', { name: 'Continue listening' }).click()
+
+  await expect.poll(() => page.evaluate(() => {
+    const stored = window.localStorage.getItem('arco.demoCapture')
+    return stored ? JSON.parse(stored).activeMeetingId : null
+  })).toBe('demo-yesterday')
+  await expect(page.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('heading', { level: 1, name: 'Benchmark review with Estrella' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop listening' })).toBeEnabled()
+})
+
 test('Agent chooses a workspace once and reuses it without a per-question path field', async ({ page }) => {
   await gotoConfigured(page, '/?demo=1')
 

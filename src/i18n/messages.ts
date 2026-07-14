@@ -48,6 +48,7 @@ export const en = {
   'nav.openSettings': 'Open settings',
 
   'capture.start': 'Start listening',
+  'capture.continue': 'Continue listening',
   'capture.stop': 'Stop listening',
   'capture.starting': 'Starting',
   'capture.stopping': 'Stopping',
@@ -606,6 +607,7 @@ export const zhCN: Record<TranslationKey, string> = {
   'nav.openSettings': '打开设置',
 
   'capture.start': '开始聆听',
+  'capture.continue': '继续聆听',
   'capture.stop': '停止聆听',
   'capture.starting': '正在启动',
   'capture.stopping': '正在停止',

@@ -343,7 +343,7 @@ public actor LocalStreamRunner {
     private let timelineReader: SpeakerTimelineReader?
     private let writer: TranscriptWriter
     private let language: String
-    private var detectors = [StreamingEndpointDetector(), StreamingEndpointDetector()]
+    private let detectors: [StreamingEndpointDetector]
     private var finalizedSpeakerIntervals = [[SpeakerInterval](), [SpeakerInterval]()]
     private var tentativeSpeakerIntervals = [[SpeakerInterval](), [SpeakerInterval]()]
 
@@ -352,13 +352,18 @@ public actor LocalStreamRunner {
         diarizer: StreamingSpeakerDiarizer?,
         timelineReader: SpeakerTimelineReader? = nil,
         writer: TranscriptWriter,
-        language: String
-    ) {
+        language: String,
+        voiceActivitySessions: [any VoiceActivitySession]
+    ) throws {
+        guard voiceActivitySessions.count == 2 else {
+            throw RuntimeError("Local transcription requires one Silero VAD session per source channel.")
+        }
         self.provider = provider
         self.diarizer = diarizer
         self.timelineReader = timelineReader
         self.writer = writer
         self.language = language
+        self.detectors = voiceActivitySessions.map { StreamingEndpointDetector(session: $0) }
     }
 
     public func consume(_ data: Data) async throws {
@@ -373,7 +378,7 @@ public actor LocalStreamRunner {
                 finalizedSpeakerIntervals[channel].append(contentsOf: update.finalized)
                 tentativeSpeakerIntervals[channel] = update.tentative
             }
-            if let utterance = detectors[channel].finish() {
+            for utterance in try await detectors[channel].finish() {
                 try await transcribe(utterance, channel: channel)
             }
         }
@@ -386,7 +391,7 @@ public actor LocalStreamRunner {
             // latest tentative timeline avoids double-counting stale hypotheses.
             tentativeSpeakerIntervals[channel] = update.tentative
         }
-        for utterance in detectors[channel].push(samples) {
+        for utterance in try await detectors[channel].push(samples) {
             try await transcribe(utterance, channel: channel)
         }
     }

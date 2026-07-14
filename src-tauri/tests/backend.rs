@@ -1,7 +1,7 @@
 use arco_lib::agent::{AgentRunner, AgentStreamUpdate};
 use arco_lib::capture::{
-    CaptureConfig, CaptureManager, CaptureSecrets, CommandSpec, RecorderSpec, TranscriberCatalog,
-    TranscriberDefinition,
+    CaptureConfig, CaptureManager, CaptureResume, CaptureSecrets, CommandSpec, RecorderSpec,
+    TranscriberCatalog, TranscriberDefinition,
 };
 use arco_lib::meeting_output::{
     generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
@@ -847,6 +847,50 @@ fn meeting_state_artifact_commit_reuses_binding_without_appending_a_visible_turn
         store.meeting_artifacts(meeting_id).unwrap().title.unwrap(),
         artifact
     );
+}
+
+#[test]
+fn continuing_a_meeting_invalidates_only_its_generated_summary() {
+    let root = TempDir::new().unwrap();
+    let store = MeetingStateStore::new(root.path().join("meeting-state"));
+    let meeting_id = "local:meeting-20260710-101500.md";
+    let cwd = root.path().canonicalize().unwrap();
+    let output = AgentRunOutput {
+        reply: persisted_reply("codex", "Generated meeting output"),
+        provider_session_id: "019f4b00-7777-7000-8000-000000000017".into(),
+        provider_turn_id: Some("codex-output-17".into()),
+    };
+    store
+        .commit_meeting_artifact(
+            meeting_id,
+            "title",
+            "meeting-output",
+            &cwd,
+            &output,
+            "Durable title",
+            None,
+        )
+        .unwrap();
+    store
+        .commit_meeting_artifact(
+            meeting_id,
+            "summary",
+            "meeting-output",
+            &cwd,
+            &output,
+            "Summary before the meeting continued",
+            Some(&output.provider_session_id),
+        )
+        .unwrap();
+
+    store.invalidate_generated_summary(meeting_id).unwrap();
+
+    let artifacts = store.meeting_artifacts(meeting_id).unwrap();
+    assert_eq!(
+        artifacts.title.and_then(|artifact| artifact.value),
+        Some("Durable title".into())
+    );
+    assert!(artifacts.summary.is_none());
 }
 
 #[test]
@@ -2291,6 +2335,90 @@ fn capture_manager_owns_pipeline_and_transitions_recording_to_idle() {
     assert!(transcript.contains("(stopped)"));
     assert!(transcript.contains("> Ended:"));
     assert_eq!(manager.stop().unwrap().phase, "idle", "stop is idempotent");
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_manager_continues_the_exact_historical_transcript_in_place() {
+    let root = TempDir::new().unwrap();
+    let transcript_dir = root.path().join("transcripts");
+    fs::create_dir_all(&transcript_dir).unwrap();
+    let transcript = transcript_dir.join("transcript-20260714-101500.md");
+    fs::write(
+        &transcript,
+        "# Meeting Transcript\n\n> Started: 2026-07-14 10:15:00 (stopped)\n\n**[10:15:01] Remote 1:** Existing evidence\n\n> Ended: 2026-07-14 10:16:00 (stopped)\n",
+    )
+    .unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nprintf '**[10:20:01] Remote 1:** Continued evidence\\n\\n' >> \"$1\"\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = CaptureManager::new(config);
+    let meeting_id = "local:transcript-20260714-101500.md";
+
+    let recording = manager
+        .resume_with_transcription_and_secrets(
+            "both",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            CaptureResume {
+                meeting_id: meeting_id.into(),
+                transcript_path: transcript.clone(),
+                started_at: "2026-07-14T10:15:00+08:00".into(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(recording.active_meeting_id.as_deref(), Some(meeting_id));
+    assert_eq!(recording.transcript_path.as_deref(), transcript.to_str());
+    assert_eq!(
+        recording.started_at.as_deref(),
+        Some("2026-07-14T10:15:00+08:00")
+    );
+    let live = fs::read_to_string(&transcript).unwrap();
+    assert!(live.contains("Existing evidence"));
+    assert!(live.contains("> Resumed:"));
+    assert!(live.contains("Continued evidence"));
+
+    assert_eq!(manager.stop().unwrap().phase, "idle");
+    let stopped = fs::read_to_string(&transcript).unwrap();
+    assert!(stopped.contains("Existing evidence"));
+    assert!(stopped.contains("Continued evidence"));
+    assert!(stopped.contains("> Resumed:"));
+    assert!(!stopped.contains("(live)"));
+    assert_eq!(stopped.matches("> Ended:").count(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_manager_refuses_to_continue_a_symlinked_history_entry() {
+    let root = TempDir::new().unwrap();
+    let transcript_dir = root.path().join("transcripts");
+    fs::create_dir_all(&transcript_dir).unwrap();
+    let target = root.path().join("outside.md");
+    let original = "# Must remain untouched\n";
+    fs::write(&target, original).unwrap();
+    let transcript = transcript_dir.join("transcript-linked.md");
+    std::os::unix::fs::symlink(&target, &transcript).unwrap();
+    let manager = CaptureManager::new(fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n"));
+
+    let error = manager
+        .resume_with_transcription_and_secrets(
+            "both",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            CaptureResume {
+                meeting_id: "local:transcript-linked.md".into(),
+                transcript_path: transcript,
+                started_at: "2026-07-14T10:15:00+08:00".into(),
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.contains("regular non-symlink file"));
+    assert_eq!(fs::read_to_string(target).unwrap(), original);
+    assert_eq!(manager.status().phase, "error");
 }
 
 #[cfg(unix)]

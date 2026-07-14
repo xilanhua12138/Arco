@@ -74,13 +74,23 @@ describe('Sidebar capture control', () => {
     expect(captureRegion).not.toHaveTextContent('Only people speaking near this Mac')
   })
 
-  it.each(['history', 'review'] as const)('offers the global Start action while idle on %s', (page) => {
-    renderSidebar('both', capture, page)
+  it('offers a new Start action from the History list', () => {
+    renderSidebar('both', capture, 'history')
     const captureRegion = screen.getByRole('region', {
       name: 'Audio capture · Hybrid · System and room audio',
     })
 
     expect(within(captureRegion).getByRole('button', { name: 'Start listening' })).toBeEnabled()
+  })
+
+  it('labels the idle action as Continue while reviewing a historical meeting', () => {
+    renderSidebar('both', capture, 'review')
+    const captureRegion = screen.getByRole('region', {
+      name: 'Audio capture · Hybrid · System and room audio',
+    })
+
+    expect(within(captureRegion).getByRole('button', { name: 'Continue listening' })).toBeEnabled()
+    expect(within(captureRegion).queryByRole('button', { name: 'Start listening' })).not.toBeInTheDocument()
   })
 
   it('keeps the live state compact without repeating the current meeting title', () => {

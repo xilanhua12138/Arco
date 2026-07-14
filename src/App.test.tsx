@@ -324,6 +324,56 @@ describe('Arco consumer conversation workspace', () => {
     expect(screen.queryByRole('heading', { level: 1, name: 'Benchmark review with Estrella' })).not.toBeInTheDocument()
   })
 
+  it('continues the visible History meeting when Continue listening is pressed from its review', async () => {
+    const user = userEvent.setup()
+    let capture = idleCapture
+    const resumedCapture: CaptureState = {
+      phase: 'recording',
+      activeMeetingId: pastA.id,
+      startedAt: pastA.startedAt,
+      message: 'Listening',
+    }
+    vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([pastA])
+    vi.spyOn(arcoBridge, 'captureStatus').mockImplementation(async () => capture)
+    vi.spyOn(arcoBridge, 'readMeeting').mockResolvedValue(detail(pastA, 'Historical evidence from A'))
+    const startCapture = vi.spyOn(arcoBridge, 'startCapture').mockImplementation(async () => {
+      capture = resumedCapture
+      return resumedCapture
+    })
+
+    render(<App />)
+    await openHistory(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(pastA.title) }))
+    expect(await screen.findByRole('heading', { level: 1, name: pastA.title })).toBeVisible()
+
+    const captureRegion = screen.getByRole('region', {
+      name: 'Audio capture · Hybrid · System and room audio',
+    })
+    await user.click(within(captureRegion).getByRole('button', { name: 'Continue listening' }))
+
+    expect(startCapture).toHaveBeenCalledWith('both', expect.any(Object), pastA.id)
+    expect(await screen.findByRole('heading', { level: 1, name: pastA.title })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open current meeting' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('starts a new meeting from the History list when no historical detail is open', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([pastA])
+    vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(idleCapture)
+    vi.spyOn(arcoBridge, 'readMeeting').mockResolvedValue(detail(pastA, 'Historical evidence from A'))
+    const startCapture = vi.spyOn(arcoBridge, 'startCapture').mockResolvedValue(liveCapture)
+
+    render(<App />)
+    await openHistory(user)
+    const captureRegion = screen.getByRole('region', {
+      name: 'Audio capture · Hybrid · System and room audio',
+    })
+
+    await user.click(within(captureRegion).getByRole('button', { name: 'Start listening' }))
+
+    expect(startCapture).toHaveBeenCalledWith('both', expect.any(Object))
+  })
+
   it('returns Current to the start-listening state after stopping an active meeting', async () => {
     vi.spyOn(arcoBridge, 'listMeetings').mockResolvedValue([liveB, pastA])
     vi.spyOn(arcoBridge, 'captureStatus').mockResolvedValue(liveCapture)

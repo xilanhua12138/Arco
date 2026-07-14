@@ -19,12 +19,13 @@ interface SidebarProps {
   audioMode?: AudioMode
   audioModeLocked?: boolean
   onChangePage: (page: AppPage) => void
-  onToggleCapture: () => void
+  onToggleCapture: (resumeMeetingId?: string) => void
   onOpenSettings: () => void
 }
 
 export function Sidebar({
   page,
+  meeting,
   capture,
   audioMode = 'both',
   onChangePage,
@@ -43,7 +44,7 @@ export function Sidebar({
       ? t('common.starting')
       : capture.phase === 'stopping'
         ? t('common.stopping')
-        : t('capture.start')
+        : t(page === 'review' ? 'capture.continue' : 'capture.start')
   const captureStatus = capture.phase === 'recording'
     ? t('common.listening')
     : capture.phase === 'starting'
@@ -123,7 +124,7 @@ export function Sidebar({
           <button
             type="button"
             className={`capture-card-button ${recording ? 'capture-card-button-stop' : ''}`}
-            onClick={onToggleCapture}
+            onClick={() => onToggleCapture(page === 'review' ? meeting?.id : undefined)}
             disabled={busy}
             aria-label={captureLabel}
           >

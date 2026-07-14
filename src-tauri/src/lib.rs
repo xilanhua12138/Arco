@@ -70,7 +70,7 @@ mod dock_icon_contract_tests {
 
 use agent::{AgentRunner, AgentStreamUpdate};
 use audio_setup::AudioSetupTester;
-use capture::{CaptureConfig, CaptureManager, CaptureSecrets};
+use capture::{CaptureConfig, CaptureManager, CaptureResume, CaptureSecrets};
 use deepgram_credentials::DeepgramCredentialStatus;
 use elevenlabs_credentials::ElevenLabsCredentialStatus;
 use meeting_output::{
@@ -552,6 +552,7 @@ fn start_capture(
     state: tauri::State<'_, AppState>,
     mode: String,
     transcription: Option<TranscriptionConfig>,
+    meeting_id: Option<String>,
 ) -> Result<CaptureState, String> {
     let _storage_guard = state
         .storage_change_lock
@@ -572,10 +573,30 @@ fn start_capture(
             None
         },
     };
-    let capture =
+    let resume = if let Some(meeting_id) = meeting_id {
+        let active = state.capture.active_transcript_path();
+        let detail = state.meetings.read(&meeting_id, active.as_deref())?;
+        Some(CaptureResume {
+            meeting_id,
+            transcript_path: PathBuf::from(&detail.summary.path),
+            started_at: detail.summary.started_at,
+        })
+    } else {
+        None
+    };
+    let resumed_meeting_id = resume.as_ref().map(|target| target.meeting_id.clone());
+    let capture = if let Some(resume) = resume {
+        state.capture.resume_with_transcription_and_secrets(
+            &mode,
+            transcription,
+            secrets,
+            resume,
+        )?
+    } else {
         state
             .capture
-            .start_with_transcription_and_secrets(&mode, transcription, secrets)?;
+            .start_with_transcription_and_secrets(&mode, transcription, secrets)?
+    };
     if let Err(window_error) = overlay::show_hud(&app) {
         let rollback = state.capture.stop();
         if let Err(error) = overlay::release_capture_surfaces(&app) {
@@ -587,6 +608,13 @@ fn start_capture(
                 "recording HUD could not open ({window_error}) and capture rollback failed ({stop_error})"
             ),
         });
+    }
+    if let Some(meeting_id) = resumed_meeting_id.as_deref() {
+        if let Err(error) = state.meeting_state.invalidate_generated_summary(meeting_id) {
+            log::warn!(
+                "Arco continued meeting {meeting_id} but could not invalidate its old summary: {error}"
+            );
+        }
     }
     let _ = app.emit("arco:capture-changed", &capture);
     Ok(capture)

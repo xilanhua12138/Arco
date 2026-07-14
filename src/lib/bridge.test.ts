@@ -373,6 +373,31 @@ describe('desktop transcription bridge', () => {
     expect(invokeMock).toHaveBeenCalledWith('start_capture', { mode: 'both', transcription })
   })
 
+  it('passes the reviewed meeting ID when capture continues an existing transcript', async () => {
+    const transcription: TranscriptionConfig = {
+      asr: { provider: 'local', model: 'nemotron-speech-3.5-streaming', language: 'zh-CN' },
+      diarization: { provider: 'none', model: null },
+    }
+    invokeMock.mockResolvedValue({
+      phase: 'recording',
+      activeMeetingId: 'local:transcript-20260714-101500.md',
+      startedAt: '2026-07-14T10:15:00+08:00',
+      message: 'Listening',
+    })
+
+    await arcoBridge.startCapture(
+      'both',
+      transcription,
+      'local:transcript-20260714-101500.md',
+    )
+
+    expect(invokeMock).toHaveBeenCalledWith('start_capture', {
+      mode: 'both',
+      transcription,
+      meetingId: 'local:transcript-20260714-101500.md',
+    })
+  })
+
   it('keeps ElevenLabs credential operations behind native commands', async () => {
     const ready = { configured: true, verified: true, message: 'ElevenLabs is ready.' }
     const missing = { configured: false, verified: false, message: null }
