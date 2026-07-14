@@ -34,6 +34,7 @@ import type {
   ElevenLabsCredentialStatus,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
+  ProviderConnectionTest,
   ProviderId,
   RuntimeStatus,
   TranscriptionConfig,
@@ -62,7 +63,7 @@ interface OnboardingProps {
   shortcutTestCount: number
   audioMode: AudioMode
   onRefreshRuntimes: () => Promise<RuntimeStatus[] | void> | RuntimeStatus[] | void
-  onTestProvider: (provider: ProviderId) => Promise<boolean>
+  onTestProvider: (provider: ProviderId) => Promise<ProviderConnectionTest>
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
   onSaveElevenLabsApiKey: (apiKey: string) => Promise<ElevenLabsCredentialStatus>
   onPrepareTranscriptionModel: (
@@ -157,6 +158,7 @@ export function Onboarding({
     return runtimes.some((runtime) => runtime.provider === initialDraft.primary && runtime.available) ? 'passed' : 'idle'
   })
   const [testedProvider, setTestedProvider] = useState<ProviderId | null>(initialDraft?.testedProvider ?? null)
+  const [providerTestError, setProviderTestError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [transcription, setTranscription] = useState<TranscriptionConfig>(initialDraft?.transcriptionConfig ?? initialTranscription)
   const [modelsOverride, setModelsOverride] = useState<TranscriptionModelStatus[] | null>(null)
@@ -272,16 +274,21 @@ export function Onboarding({
     if (secondary === provider) setSecondary(null)
     setProviderTest('idle')
     setTestedProvider(null)
+    setProviderTestError(null)
   }
 
   const testProvider = async () => {
     if (!primary || providerTest === 'working') return
     setProviderTest('working')
     setTestedProvider(primary)
+    setProviderTestError(null)
     try {
-      setProviderTest(await onTestProvider(primary) ? 'passed' : 'failed')
-    } catch {
+      const result = await onTestProvider(primary)
+      setProviderTest(result.ok ? 'passed' : 'failed')
+      setProviderTestError(result.ok ? null : result.message.trim() || null)
+    } catch (cause) {
       setProviderTest('failed')
+      setProviderTestError(cause instanceof Error ? cause.message : null)
     }
   }
 
@@ -300,6 +307,7 @@ export function Onboarding({
       }
       setProviderTest('idle')
       setTestedProvider(null)
+      setProviderTestError(null)
     } finally {
       setRefreshing(false)
     }
@@ -639,10 +647,10 @@ export function Onboarding({
                     <div className="onboarding-provider-test-row">
                       <button type="button" className="provider-test-button" disabled={!primary || providerTest === 'working'} onClick={testProvider}>
                         <RefreshCw size={15} className={providerTest === 'working' ? 'provider-test-spinning' : ''} />
-                        {providerTest === 'working' ? t('onboarding.testing') : t('onboarding.testProvider', { provider: primary ? providerName(primary) : t('onboarding.connection') })}
+                        {providerTest === 'working' ? t('onboarding.testingMayTakeTime') : t('onboarding.testProvider', { provider: primary ? providerName(primary) : t('onboarding.connection') })}
                       </button>
                       {providerTest === 'passed' && <span className="onboarding-inline-success"><Check size={14} /> {t('onboarding.providerReady', { provider: primary ? providerName(primary) : '' })}</span>}
-                      {providerTest === 'failed' && <span className="onboarding-inline-error" role="alert">{t('onboarding.providerFailed', { provider: primary ? providerName(primary) : t('onboarding.theProvider') })}</span>}
+                      {providerTest === 'failed' && <span className="onboarding-inline-error" role="alert">{providerTestError || t('onboarding.providerFailed', { provider: primary ? providerName(primary) : t('onboarding.theProvider') })}</span>}
                     </div>
                     <label className="onboarding-secondary-select">
                       <span>{t('onboarding.secondary')} · {t('common.optional')}</span>

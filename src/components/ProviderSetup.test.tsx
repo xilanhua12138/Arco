@@ -108,7 +108,7 @@ describe('ProviderSetup', () => {
       bothReady[1],
     ]
     const onRefresh = vi.fn().mockResolvedValue(afterRefresh)
-    const onTest = vi.fn().mockResolvedValue(true)
+    const onTest = vi.fn().mockResolvedValue({ provider: 'codex', ok: true, message: 'Codex CLI is connected.' })
     const props = { onRefresh, onTest, onComplete: vi.fn() }
     const { rerender } = render(<ProviderSetup {...props} runtimes={bothReady} />)
 
@@ -138,7 +138,7 @@ describe('ProviderSetup', () => {
       { ...bothReady[1], available: false, version: null, path: null },
     ]
     const onRefresh = vi.fn().mockResolvedValue(afterRefresh)
-    const onTest = vi.fn().mockResolvedValue(true)
+    const onTest = vi.fn().mockResolvedValue({ provider: 'codex', ok: true, message: 'Codex CLI is connected.' })
     const onComplete = vi.fn()
     const initialConfig = { setupComplete: true, primary: 'codex', secondary: 'claude' } as const
     const props = { initialConfig, onRefresh, onTest, onComplete }
@@ -197,20 +197,24 @@ describe('ProviderSetup', () => {
     expect(screen.getByRole('radio', { name: 'Claude as secondary' })).toBeDisabled()
   })
 
-  it('tests only the primary and stays on the test step after failure', async () => {
+  it('tests only the Claude primary and shows its exact failure reason', async () => {
     const user = userEvent.setup()
-    const onTest = vi.fn().mockResolvedValue(false)
+    const onTest = vi.fn().mockResolvedValue({
+      provider: 'claude',
+      ok: false,
+      message: 'Claude Code timed out after 90 seconds.',
+    })
     const onComplete = vi.fn()
     render(<ProviderSetup runtimes={bothReady} onTest={onTest} onComplete={onComplete} />)
 
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    await user.click(screen.getByRole('radio', { name: 'Claude as secondary' }))
+    await user.click(screen.getByRole('radio', { name: 'Claude as primary' }))
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    await user.click(screen.getByRole('button', { name: 'Test Codex' }))
+    await user.click(screen.getByRole('button', { name: 'Test Claude' }))
 
     expect(onTest).toHaveBeenCalledOnce()
-    expect(onTest).toHaveBeenCalledWith('codex')
-    expect(screen.getByRole('alert')).toHaveTextContent('Codex did not respond. Check its CLI login and try again.')
+    expect(onTest).toHaveBeenCalledWith('claude')
+    expect(screen.getByRole('alert')).toHaveTextContent('Claude Code timed out after 90 seconds.')
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Test connection' })).toHaveAttribute('aria-current', 'step')
     expect(onComplete).not.toHaveBeenCalled()
@@ -218,7 +222,7 @@ describe('ProviderSetup', () => {
 
   it('completes only after a successful primary test and returns the exact provider configuration', async () => {
     const user = userEvent.setup()
-    const onTest = vi.fn().mockResolvedValue(true)
+    const onTest = vi.fn().mockResolvedValue({ provider: 'codex', ok: true, message: 'Codex CLI is connected.' })
     const onComplete = vi.fn()
     render(<ProviderSetup runtimes={bothReady} onTest={onTest} onComplete={onComplete} />)
 

@@ -521,7 +521,7 @@ function App() {
         shortcutTestCount={shortcutTestCount}
         audioMode={audioMode}
         onRefreshRuntimes={arco.refreshRuntimes}
-        onTestProvider={async (provider) => (await arcoBridge.testAgentProvider(provider)).ok}
+        onTestProvider={arcoBridge.testAgentProvider}
         onSaveDeepgramApiKey={async (apiKey) => {
           setDeepgramCredentialBusy(true)
           try {
@@ -785,7 +785,7 @@ function App() {
           onStartListeningShortcutRecording={startListeningShortcutRecording}
           onCancelListeningShortcutRecording={cancelListeningShortcutRecording}
           onRefresh={arco.refreshRuntimes}
-          onTest={async (provider) => (await arcoBridge.testAgentProvider(provider)).ok}
+          onTest={arcoBridge.testAgentProvider}
           onComplete={(nextConfig) => {
             saveProviderConfig(nextConfig)
             setProviderConfig(nextConfig)

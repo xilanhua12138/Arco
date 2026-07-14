@@ -55,7 +55,11 @@ const renderOnboarding = (overrides: Partial<React.ComponentProps<typeof Onboard
     shortcutTestCount: 0,
     audioMode: 'both',
     onRefreshRuntimes: vi.fn().mockResolvedValue(runtimes),
-    onTestProvider: vi.fn().mockResolvedValue(true),
+    onTestProvider: vi.fn().mockResolvedValue({
+      provider: 'codex',
+      ok: true,
+      message: 'Codex CLI is connected.',
+    }),
     onSaveDeepgramApiKey: vi.fn().mockResolvedValue({ configured: true, verified: true, message: 'Deepgram is ready.' }),
     onSaveElevenLabsApiKey: vi.fn().mockResolvedValue({ configured: true, verified: true, message: 'ElevenLabs is ready.' }),
     onPrepareTranscriptionModel: vi.fn().mockResolvedValue([]),
@@ -116,14 +120,18 @@ describe('Onboarding', () => {
 
   it('requires a real primary CLI test when the Agent path is selected', async () => {
     const user = userEvent.setup()
-    const onTestProvider = vi.fn().mockResolvedValue(false)
+    const onTestProvider = vi.fn().mockResolvedValue({
+      provider: 'codex',
+      ok: false,
+      message: 'Codex CLI timed out after 90 seconds.',
+    })
     renderOnboarding({ onTestProvider })
 
     await continueToAgent(user)
     await user.click(screen.getByRole('button', { name: 'Test Codex' }))
 
     expect(onTestProvider).toHaveBeenCalledWith('codex')
-    expect(screen.getByRole('alert')).toHaveTextContent('Codex did not respond')
+    expect(screen.getByRole('alert')).toHaveTextContent('Codex CLI timed out after 90 seconds.')
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
   })
 
