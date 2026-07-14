@@ -8,7 +8,9 @@ import {
   HardDrive,
   Headphones,
   Mic2,
+  Cloud,
   Download,
+  Laptop,
   Keyboard,
   Languages,
   SlidersHorizontal,
@@ -251,6 +253,30 @@ export function SettingsSheet({
     })
   }
 
+  const changeDiarizationLocation = (location: 'cloud' | 'local' | 'off') => {
+    if (location === 'cloud') {
+      onChangeTranscriptionConfig({
+        ...transcriptionConfig,
+        diarization: { provider: 'deepgram', model: 'latest' },
+      })
+      return
+    }
+    if (location === 'local') {
+      onChangeTranscriptionConfig({
+        ...transcriptionConfig,
+        diarization: {
+          provider: 'local',
+          model: selectedDiarizationModel?.id ?? 'sortformer-streaming',
+        },
+      })
+      return
+    }
+    onChangeTranscriptionConfig({
+      ...transcriptionConfig,
+      diarization: { provider: 'none', model: null },
+    })
+  }
+
   const saveDeepgramKey = async () => {
     const key = deepgramApiKey.trim()
     if (!key) return
@@ -454,46 +480,62 @@ export function SettingsSheet({
                       <ChevronRight className="settings-disclosure-chevron" size={15} aria-hidden="true" />
                     </summary>
                     <div className="settings-disclosure-content">
-                      <fieldset
-                        className="cloud-provider-options provider-choice-options"
-                        aria-label={t('settings.asrProvider')}
-                        disabled={audioModeLocked}
-                      >
-                        <legend>{t('settings.asrProvider')}</legend>
-                        <label className={transcriptionConfig.asr.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
+                      <fieldset className="recognition-engine" aria-label={t('settings.asrLocation')} disabled={audioModeLocked}>
+                        <legend>{t('settings.asrLocation')}</legend>
+                        <label className={transcriptionConfig.asr.provider !== 'local' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
-                            name="transcription-provider"
-                            checked={transcriptionConfig.asr.provider === 'deepgram'}
-                            onChange={() => changeEngine('deepgram')}
+                            name="transcription-location"
+                            checked={transcriptionConfig.asr.provider !== 'local'}
+                            onChange={() => changeEngine(transcriptionConfig.asr.provider === 'local' ? 'deepgram' : transcriptionConfig.asr.provider)}
                           />
-                          <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
-                          {transcriptionConfig.asr.provider === 'deepgram' && <Check size={14} aria-hidden="true" />}
+                          <Cloud size={16} aria-hidden="true" />
+                          <span><strong>{t('settings.cloud')}</strong><small>{t('settings.cloudDescription')}</small></span>
                         </label>
-                        <label className={transcriptionConfig.asr.provider === 'elevenlabs' ? 'cloud-provider-selected' : ''}>
+                        <label className={transcriptionConfig.asr.provider === 'local' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
-                            name="transcription-provider"
-                            checked={transcriptionConfig.asr.provider === 'elevenlabs'}
-                            onChange={() => changeEngine('elevenlabs')}
-                          />
-                          <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
-                          {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
-                        </label>
-                        <label className={transcriptionConfig.asr.provider === 'local' ? 'cloud-provider-selected' : ''}>
-                          <input
-                            type="radio"
-                            name="transcription-provider"
+                            name="transcription-location"
                             checked={transcriptionConfig.asr.provider === 'local'}
                             onChange={() => changeEngine('local')}
                           />
+                          <Laptop size={16} aria-hidden="true" />
                           <span><strong>{t('settings.onDevice')}</strong><small>{t('settings.onDeviceDescription')}</small></span>
-                          {transcriptionConfig.asr.provider === 'local' && <Check size={14} aria-hidden="true" />}
                         </label>
                       </fieldset>
 
+                      {transcriptionConfig.asr.provider !== 'local' && (
+                        <fieldset
+                          className="cloud-provider-options provider-second-level"
+                          aria-label={t('settings.asrProvider')}
+                          disabled={audioModeLocked}
+                        >
+                          <legend>{t('settings.asrProvider')}</legend>
+                          <label className={transcriptionConfig.asr.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="transcription-provider"
+                              checked={transcriptionConfig.asr.provider === 'deepgram'}
+                              onChange={() => changeEngine('deepgram')}
+                            />
+                            <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
+                            {transcriptionConfig.asr.provider === 'deepgram' && <Check size={14} aria-hidden="true" />}
+                          </label>
+                          <label className={transcriptionConfig.asr.provider === 'elevenlabs' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="transcription-provider"
+                              checked={transcriptionConfig.asr.provider === 'elevenlabs'}
+                              onChange={() => changeEngine('elevenlabs')}
+                            />
+                            <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
+                            {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
+                          </label>
+                        </fieldset>
+                      )}
+
                       {transcriptionConfig.asr.provider === 'local' && (
-                        <div className="local-recognition-settings">
+                        <div className="local-recognition-settings provider-second-level">
                           <label className="settings-control-row">
                             <span><strong>{t('settings.model')}</strong><small>{selectedModel ? t(modelDetailKeys[selectedModel.id]) : ''}</small></span>
                             <select
@@ -568,83 +610,112 @@ export function SettingsSheet({
                         </div>
                       )}
 
-                      <fieldset className="diarization-models" aria-label={t('settings.diarizationProvider')}>
-                        <legend>{t('settings.diarizationProvider')}</legend>
-                        <div className="diarization-choice">
+                      <fieldset
+                        className="recognition-engine recognition-engine-three diarization-location"
+                        aria-label={t('settings.diarizationLocation')}
+                        disabled={audioModeLocked}
+                      >
+                        <legend>{t('settings.diarizationLocation')}</legend>
+                        <label className={transcriptionConfig.diarization.provider === 'deepgram' ? 'recognition-engine-selected' : ''}>
                           <input
-                            id="deepgram-streaming-diarization"
                             type="radio"
-                            name="diarization-provider"
+                            name="diarization-location"
                             checked={transcriptionConfig.diarization.provider === 'deepgram'}
-                            disabled={audioModeLocked}
-                            onChange={() => onChangeTranscriptionConfig({
-                              ...transcriptionConfig,
-                              diarization: { provider: 'deepgram', model: 'latest' },
-                            })}
+                            onChange={() => changeDiarizationLocation('cloud')}
                           />
-                          <label htmlFor="deepgram-streaming-diarization">
-                            <strong>Deepgram</strong>
-                            <small>{t('settings.deepgramNoLocalModel')}</small>
-                          </label>
-                          {deepgramCredential.configured && <em>{t('common.ready')}</em>}
-                        </div>
-                        {diarizationModels.map((model) => {
-                          const status = transcriptionModels.find((candidate) => candidate.id === model.id)
-                          const busy = ['downloading', 'optimizing', 'loading'].includes(status?.phase ?? '')
-                          const action = status?.phase === 'optimizing'
-                            ? t('common.optimizing')
-                            : status?.phase === 'loading'
-                              ? t('common.loading')
-                              : status?.phase === 'downloading'
-                                ? `${Math.round((status.progress ?? 0) * 100)}%`
-                                : t('common.download')
-                          return (
-                            <div className="diarization-choice" key={model.id}>
-                              <input
-                                id={model.id}
-                                type="radio"
-                                name="diarization-provider"
-                                checked={transcriptionConfig.diarization.provider === 'local' && transcriptionConfig.diarization.model === model.id}
-                                disabled={audioModeLocked}
-                                onChange={() => onChangeTranscriptionConfig({
-                                  ...transcriptionConfig,
-                                  diarization: { provider: 'local', model: model.id },
-                                })}
-                              />
-                              <label htmlFor={model.id}>
-                                <strong>{model.label}</strong>
-                                <small>{t(model.detailKey)}{status?.error ? ` · ${status.error}` : ''}</small>
-                              </label>
-                              {status?.installed ? (
-                                <em>{t('common.ready')}</em>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="model-action"
-                                  disabled={audioModeLocked || busy}
-                                  aria-label={t('settings.downloadModel', { model: model.label })}
-                                  onClick={() => onPrepareTranscriptionModel(model.id)}
-                                >
-                                  <Download size={14} /> {busy ? action : t('common.download')}
-                                </button>
-                              )}
-                            </div>
-                          )
-                        })}
-                        <label className="diarization-choice diarization-choice-off">
+                          <Cloud size={16} aria-hidden="true" />
+                          <span><strong>{t('settings.cloud')}</strong><small>{t('settings.diarizationCloudDescription')}</small></span>
+                        </label>
+                        <label className={transcriptionConfig.diarization.provider === 'local' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
-                            name="diarization-provider"
-                            checked={transcriptionConfig.diarization.provider === 'none'}
-                            disabled={audioModeLocked}
-                            onChange={() => onChangeTranscriptionConfig({
-                              ...transcriptionConfig,
-                              diarization: { provider: 'none', model: null },
-                            })}
+                            name="diarization-location"
+                            checked={transcriptionConfig.diarization.provider === 'local'}
+                            onChange={() => changeDiarizationLocation('local')}
                           />
-                          <span><strong>{t('common.off')}</strong><small>{t('settings.speakerOff')}</small></span>
+                          <Laptop size={16} aria-hidden="true" />
+                          <span><strong>{t('settings.onDevice')}</strong><small>{t('settings.diarizationLocalDescription')}</small></span>
+                        </label>
+                        <label className={transcriptionConfig.diarization.provider === 'none' ? 'recognition-engine-selected' : ''}>
+                          <input
+                            type="radio"
+                            name="diarization-location"
+                            checked={transcriptionConfig.diarization.provider === 'none'}
+                            onChange={() => changeDiarizationLocation('off')}
+                          />
+                          <X size={16} aria-hidden="true" />
+                          <span><strong>{t('common.off')}</strong><small>{t('settings.diarizationOffDescription')}</small></span>
                         </label>
                       </fieldset>
+
+                      {transcriptionConfig.diarization.provider === 'deepgram' && (
+                        <fieldset
+                          className="cloud-provider-options provider-second-level"
+                          aria-label={t('settings.diarizationProvider')}
+                          disabled={audioModeLocked}
+                        >
+                          <legend>{t('settings.diarizationProvider')}</legend>
+                          <label className="cloud-provider-selected">
+                            <input
+                              type="radio"
+                              name="diarization-cloud-provider"
+                              checked
+                              onChange={() => changeDiarizationLocation('cloud')}
+                            />
+                            <span><strong>Deepgram</strong><small>{t('settings.deepgramNoLocalModel')}</small></span>
+                            {deepgramCredential.configured ? <em>{t('common.ready')}</em> : <Check size={14} aria-hidden="true" />}
+                          </label>
+                        </fieldset>
+                      )}
+
+                      {transcriptionConfig.diarization.provider === 'local' && (
+                        <fieldset className="diarization-models provider-second-level" aria-label={t('settings.localDiarizationModel')}>
+                          <legend>{t('settings.localDiarizationModel')}</legend>
+                          {diarizationModels.map((model) => {
+                            const status = transcriptionModels.find((candidate) => candidate.id === model.id)
+                            const busy = ['downloading', 'optimizing', 'loading'].includes(status?.phase ?? '')
+                            const action = status?.phase === 'optimizing'
+                              ? t('common.optimizing')
+                              : status?.phase === 'loading'
+                                ? t('common.loading')
+                                : status?.phase === 'downloading'
+                                  ? `${Math.round((status.progress ?? 0) * 100)}%`
+                                  : t('common.download')
+                            return (
+                              <div className="diarization-choice" key={model.id}>
+                                <input
+                                  id={model.id}
+                                  type="radio"
+                                  name="diarization-model"
+                                  checked={transcriptionConfig.diarization.model === model.id}
+                                  disabled={audioModeLocked}
+                                  onChange={() => onChangeTranscriptionConfig({
+                                    ...transcriptionConfig,
+                                    diarization: { provider: 'local', model: model.id },
+                                  })}
+                                />
+                                <label htmlFor={model.id}>
+                                  <strong>{model.label}</strong>
+                                  <small>{t(model.detailKey)}{status?.error ? ` · ${status.error}` : ''}</small>
+                                </label>
+                                {status?.installed ? (
+                                  <em>{t('common.ready')}</em>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="model-action"
+                                    disabled={audioModeLocked || busy}
+                                    aria-label={t('settings.downloadModel', { model: model.label })}
+                                    onClick={() => onPrepareTranscriptionModel(model.id)}
+                                  >
+                                    <Download size={14} /> {busy ? action : t('common.download')}
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </fieldset>
+                      )}
 
                       {(transcriptionConfig.asr.provider === 'deepgram' || transcriptionConfig.diarization.provider === 'deepgram') && (
                         <div className="deepgram-provider-panel">

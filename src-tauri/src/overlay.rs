@@ -37,6 +37,12 @@ pub struct SurfaceFrame {
     pub height: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLayout {
+    PlaceDefault,
+    PreservePosition,
+}
+
 fn physical_size(logical: (f64, f64), scale_factor: f64) -> (i64, i64) {
     (
         (logical.0 * scale_factor).round() as i64,
@@ -204,9 +210,22 @@ fn agent_visibility_after_toggle(currently_visible: bool) -> bool {
     !currently_visible
 }
 
+fn agent_layout_for_show(window_existed: bool) -> AgentLayout {
+    if window_existed {
+        AgentLayout::PreservePosition
+    } else {
+        AgentLayout::PlaceDefault
+    }
+}
+
+fn agent_layout_for_transcript_change(window_visible: bool) -> Option<AgentLayout> {
+    window_visible.then_some(AgentLayout::PreservePosition)
+}
+
 pub fn toggle_agent(app: &AppHandle) -> Result<bool, String> {
-    let currently_visible = app
-        .get_webview_window(AGENT_LABEL)
+    let existing_agent = app.get_webview_window(AGENT_LABEL);
+    let currently_visible = existing_agent
+        .as_ref()
         .map(|agent| agent.is_visible().map_err(|error| error.to_string()))
         .transpose()?
         .unwrap_or(false);
@@ -216,15 +235,21 @@ pub fn toggle_agent(app: &AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let agent = ensure_agent_window(app)?;
-    let physical_size = agent.inner_size().map_err(|error| error.to_string())?;
-    let source_scale_factor = agent.scale_factor().map_err(|error| error.to_string())?;
-    let requested = logical_size_from_physical(
-        (physical_size.width, physical_size.height),
-        source_scale_factor,
-    );
-    let monitor = preferred_monitor(app, AGENT_LABEL)?;
-    apply_agent_size_and_position(&agent, geometry(&monitor), requested)?;
+    let layout = agent_layout_for_show(existing_agent.is_some());
+    let agent = match existing_agent {
+        Some(agent) => agent,
+        None => ensure_agent_window(app)?,
+    };
+    if layout == AgentLayout::PlaceDefault {
+        let physical_size = agent.inner_size().map_err(|error| error.to_string())?;
+        let source_scale_factor = agent.scale_factor().map_err(|error| error.to_string())?;
+        let requested = logical_size_from_physical(
+            (physical_size.width, physical_size.height),
+            source_scale_factor,
+        );
+        let monitor = preferred_monitor(app, AGENT_LABEL)?;
+        apply_agent_size_and_position(&agent, geometry(&monitor), requested)?;
+    }
     agent.show().map_err(|error| error.to_string())?;
     agent.set_focus().map_err(|error| error.to_string())?;
     Ok(true)
@@ -250,12 +275,41 @@ fn apply_agent_size_and_position(
         .map_err(|error| error.to_string())
 }
 
+fn apply_agent_size_preserving_position(
+    agent: &WebviewWindow,
+    monitor: MonitorGeometry,
+    requested: (f64, f64),
+) -> Result<(), String> {
+    let fitted = fitted_agent_size(monitor, requested);
+    let position = agent.outer_position().map_err(|error| error.to_string())?;
+    agent
+        .set_min_size(Some(LogicalSize::new(
+            fitted.0.min(432.0),
+            fitted.1.min(500.0),
+        )))
+        .map_err(|error| error.to_string())?;
+    agent
+        .set_size(LogicalSize::new(fitted.0, fitted.1))
+        .map_err(|error| error.to_string())?;
+    agent
+        .set_position(position)
+        .map_err(|error| error.to_string())
+}
+
 pub fn set_agent_transcript_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
     let Some(agent) = app.get_webview_window(AGENT_LABEL) else {
         return Ok(());
     };
-    let monitor = preferred_monitor(app, AGENT_LABEL)?;
-    apply_agent_size_and_position(
+    let window_visible = agent.is_visible().map_err(|error| error.to_string())?;
+    if agent_layout_for_transcript_change(window_visible).is_none() {
+        return Ok(());
+    }
+    let monitor = agent
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .map(Ok)
+        .unwrap_or_else(|| preferred_monitor(app, AGENT_LABEL))?;
+    apply_agent_size_preserving_position(
         &agent,
         geometry(&monitor),
         if visible {
@@ -401,15 +455,35 @@ fn ensure_agent_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_frame, agent_visibility_after_toggle, capture_surface_labels, hud_position,
-        logical_size_from_physical, monitor_fallback_labels, MonitorGeometry, AGENT_COLLAPSED_SIZE,
-        AGENT_LABEL, AGENT_SIZE, HUD_LABEL, HUD_SIZE,
+        agent_frame, agent_layout_for_show, agent_layout_for_transcript_change,
+        agent_visibility_after_toggle, capture_surface_labels, hud_position,
+        logical_size_from_physical, monitor_fallback_labels, AgentLayout, MonitorGeometry,
+        AGENT_COLLAPSED_SIZE, AGENT_LABEL, AGENT_SIZE, HUD_LABEL, HUD_SIZE,
     };
 
     #[test]
     fn pressing_the_hud_agent_action_again_closes_the_visible_overlay() {
         assert!(agent_visibility_after_toggle(false));
         assert!(!agent_visibility_after_toggle(true));
+    }
+
+    #[test]
+    fn reopening_an_existing_agent_preserves_the_user_dragged_position() {
+        assert_eq!(agent_layout_for_show(false), AgentLayout::PlaceDefault);
+        assert_eq!(agent_layout_for_show(true), AgentLayout::PreservePosition);
+    }
+
+    #[test]
+    fn transcript_updates_resize_a_visible_agent_without_moving_it() {
+        assert_eq!(
+            agent_layout_for_transcript_change(true),
+            Some(AgentLayout::PreservePosition)
+        );
+    }
+
+    #[test]
+    fn transcript_updates_do_not_touch_a_user_hidden_agent() {
+        assert_eq!(agent_layout_for_transcript_change(false), None);
     }
 
     #[test]

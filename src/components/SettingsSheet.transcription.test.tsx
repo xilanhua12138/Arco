@@ -137,12 +137,15 @@ describe('SettingsSheet local transcription', () => {
     )
 
     await ensureRecognitionOpen()
-    const recognition = screen.getByRole('group', { name: 'Speech recognition provider' })
+    const recognition = screen.getByRole('group', { name: 'Speech recognition location' })
     expect(within(recognition).getByRole('radio', { name: /This Mac/i })).toBeChecked()
     expect(within(recognition).getByText(/Nemotron or Whisper · audio stays on device/i)).toBeVisible()
+    expect(screen.queryByRole('group', { name: 'Speech recognition provider' })).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'On-device model' })).toHaveValue('nemotron-speech-3.5-streaming')
-    expect(screen.getAllByText('Streaming Sortformer')[0]).toBeVisible()
-    expect(screen.getByRole('radio', { name: /Streaming Sortformer.*up to 4 speakers/i })).toBeChecked()
+    expect(within(screen.getByRole('group', { name: 'Speaker separation location' })).getByRole('radio', { name: /This Mac/i })).toBeChecked()
+    expect(screen.queryByRole('group', { name: 'Speaker separation provider' })).not.toBeInTheDocument()
+    const localDiarization = screen.getByRole('group', { name: 'Local speaker separation model' })
+    expect(within(localDiarization).getByRole('radio', { name: /Streaming Sortformer.*up to 4 speakers/i })).toBeChecked()
     expect(screen.getByText('Audio and transcript stay on this Mac.')).toBeVisible()
   })
 
@@ -269,9 +272,12 @@ describe('SettingsSheet local transcription', () => {
 
     await ensureRecognitionOpen()
 
-    expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).not.toBeChecked()
-    expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
-    expect(screen.getByRole('radio', { name: /LS-EEND Meeting/i })).not.toBeChecked()
+    expect(within(screen.getByRole('group', { name: 'Speech recognition location' })).getByRole('radio', { name: /Cloud/i })).toBeChecked()
+    expect(within(screen.getByRole('group', { name: 'Speaker separation location' })).getByRole('radio', { name: /This Mac/i })).toBeChecked()
+    expect(screen.queryByRole('group', { name: 'Speaker separation provider' })).not.toBeInTheDocument()
+    const localDiarization = screen.getByRole('group', { name: 'Local speaker separation model' })
+    expect(within(localDiarization).getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
+    expect(within(localDiarization).getByRole('radio', { name: /LS-EEND Meeting/i })).not.toBeChecked()
     expect(screen.getByText('Deepgram ASR')).toBeVisible()
     expect(screen.getByText(/speaker labels come from the selected provider/i)).toBeVisible()
   })
@@ -322,8 +328,9 @@ describe('SettingsSheet local transcription', () => {
 
     await ensureRecognitionOpen()
     expect(screen.getByText('ElevenLabs ASR')).toBeVisible()
-    expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).toBeVisible()
-    expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeVisible()
+    expect(within(screen.getByRole('group', { name: 'Speaker separation location' })).getByRole('radio', { name: /Off/i })).toBeChecked()
+    expect(screen.queryByRole('group', { name: 'Speaker separation provider' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Local speaker separation model' })).not.toBeInTheDocument()
     expect(screen.getByText(/keeps source lanes only/i)).toBeVisible()
     expect(screen.queryByText(/when listening stops|final speaker/i)).not.toBeInTheDocument()
 
@@ -466,9 +473,12 @@ describe('SettingsSheet local transcription', () => {
     )
 
     await ensureRecognitionOpen()
-    const recognition = screen.getByRole('group', { name: 'Speech recognition provider' })
-    expect(within(recognition).getByRole('radio', { name: /Deepgram/i })).toBeChecked()
-    expect(within(recognition).getByRole('radio', { name: /This Mac/i })).not.toBeChecked()
+    const location = screen.getByRole('group', { name: 'Speech recognition location' })
+    expect(within(location).getByRole('radio', { name: /Cloud/i })).toBeChecked()
+    expect(within(location).getByRole('radio', { name: /This Mac/i })).not.toBeChecked()
+    const provider = screen.getByRole('group', { name: 'Speech recognition provider' })
+    expect(within(provider).getByRole('radio', { name: /Deepgram/i })).toBeChecked()
+    expect(screen.queryByRole('combobox', { name: 'On-device model' })).not.toBeInTheDocument()
   })
 
   it('keeps the download action disabled while showing model progress', async () => {

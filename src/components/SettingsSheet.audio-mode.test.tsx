@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { SettingsSheet } from './SettingsSheet'
@@ -68,7 +68,9 @@ describe('SettingsSheet audio scenarios', () => {
     const recognitionDetails = screen.getByText('Recognition').closest('details')
     expect(recognitionDetails).toHaveAttribute('open')
     expect(screen.getByText('Deepgram · Chinese · Deepgram streaming')).toBeVisible()
+    expect(within(screen.getByRole('group', { name: 'Speech recognition location' })).getByRole('radio', { name: /Cloud/i })).toBeChecked()
     expect(screen.getByRole('group', { name: 'Speech recognition provider' })).toBeVisible()
+    expect(within(screen.getByRole('group', { name: 'Speaker separation location' })).getByRole('radio', { name: /Cloud/i })).toBeChecked()
     expect(screen.getByRole('group', { name: 'Speaker separation provider' })).toBeVisible()
     expect(screen.queryByText('Remote 1… · In room 1…')).not.toBeInTheDocument()
     expect(screen.getAllByText('Deepgram streaming').length).toBeGreaterThan(0)
