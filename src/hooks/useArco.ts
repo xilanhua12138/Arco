@@ -9,6 +9,8 @@ import {
 import { loadProviderConfig, resolveProviderRoute } from '../lib/providerConfig'
 import type {
   AskAgentInput,
+  AgentStreamingTurn,
+  AgentStreamEvent,
   AudioMode,
   CaptureState,
   MeetingDetail,
@@ -17,8 +19,8 @@ import type {
   NoteDocument,
   PersistedAgentTurn,
   SaveNoteInput,
-    RuntimeStatus,
-    TranscriptionConfig,
+  RuntimeStatus,
+  TranscriptionConfig,
 } from '../types'
 import { useI18n } from '../i18n/i18n'
 
@@ -44,6 +46,7 @@ export function useArco() {
   const [notesLoading, setNotesLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [agentRunning, setAgentRunning] = useState(false)
+  const [agentStreamingTurn, setAgentStreamingTurn] = useState<AgentStreamingTurn | null>(null)
   const [error, setError] = useState<string | null>(null)
   const selectedRef = useRef<string | null>(null)
   const activeCaptureRef = useRef<string | null>(null)
@@ -389,11 +392,37 @@ export function useArco() {
   }, [t])
 
   const askAgent = useCallback(async (input: AskAgentInput) => {
-    if (!input.question.trim()) return false
+    const question = input.question.trim()
+    if (!question) return false
+    const requestId = globalThis.crypto?.randomUUID?.()
+      ?? `agent-${Date.now()}-${Math.random().toString(16).slice(2)}`
     setAgentRunning(true)
+    setAgentStreamingTurn({
+      requestId,
+      meetingId: input.meetingId,
+      question,
+      phase: 'starting',
+      answer: '',
+    })
     setError(null)
     try {
-      const reply = await arcoBridge.runAgent({ ...input, question: input.question.trim() })
+      const onEvent = (event: AgentStreamEvent) => {
+        setAgentStreamingTurn((current) => {
+          if (
+            !current
+            || current.requestId !== event.requestId
+            || current.meetingId !== event.meetingId
+          ) return current
+          if (event.type === 'status' && event.phase) {
+            return { ...current, phase: event.phase }
+          }
+          if (event.type === 'answer' && typeof event.answer === 'string') {
+            return { ...current, answer: event.answer }
+          }
+          return current
+        })
+      }
+      const reply = await arcoBridge.runAgent({ ...input, question, requestId }, onEvent)
       setAgentTurnsByMeeting((current) => ({
         ...current,
         [input.meetingId]: [
@@ -407,6 +436,7 @@ export function useArco() {
       return false
     } finally {
       setAgentRunning(false)
+      setAgentStreamingTurn((current) => current?.requestId === requestId ? null : current)
     }
   }, [t])
 
@@ -462,6 +492,7 @@ export function useArco() {
     notesLoading,
     loading,
     agentRunning,
+    agentStreamingTurn,
     error,
     isDesktop: arcoBridge.isDesktop(),
     selectMeeting,

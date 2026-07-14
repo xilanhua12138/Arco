@@ -4,30 +4,34 @@ Arco supports online, in-person, and hybrid meetings without pretending that an 
 
 ## Provider boundary
 
-The frontend persists one validated `TranscriptionConfig`:
+The frontend persists one validated config with independent ASR and diarization providers:
 
 ```ts
 type TranscriptionConfig = {
-  provider: 'deepgram' | 'elevenlabs' | 'local'
-  model:
-    | 'nova-3'
-    | 'scribe-v2-realtime'
-    | 'nemotron-speech-3.5-streaming'
-    | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
-    | 'whisper-medium' | 'whisper-large'
-  language: 'auto' | 'zh-CN' | 'en-US'
+  asr: {
+    provider: 'deepgram' | 'elevenlabs' | 'local'
+    model:
+      | 'nova-3'
+      | 'scribe-v2-realtime'
+      | 'nemotron-speech-3.5-streaming'
+      | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
+      | 'whisper-medium' | 'whisper-large'
+    language: 'auto' | 'zh-CN' | 'en-US'
+  }
   diarization:
-    | 'provider'
-    | 'sortformer-streaming'
-    | 'lseend-ami-streaming'
-    | 'lseend-dihard3-streaming'
-    | 'none'
+    | { provider: 'deepgram', model: 'latest' }
+    | { provider: 'local', model:
+        | 'sortformer-streaming'
+        | 'pyannote-wespeaker-streaming'
+        | 'lseend-ami-streaming'
+        | 'lseend-dihard3-streaming' }
+    | { provider: 'none', model: null }
 }
 ```
 
-Rust validates the combination and resolves it through a `TranscriberCatalog`. Each definition owns its executable, fixed arguments, credential requirement, and readiness timeout. The capture manager does not know inference APIs: it starts the chosen definition in an owned process group, supplies the shared PCM stream, and waits for the one-use ready-file.
+Rust validates each provider/model pair independently and resolves a pipeline through a `TranscriberCatalog`. Each worker definition owns its executable, fixed arguments, credential requirement, and readiness timeout. The capture manager does not know inference APIs: it starts the resolved workers in owned process groups, supplies the live PCM stream, and waits for every one-use ready-file.
 
-The local sidecar has a second, deliberately smaller abstraction: `LocalTranscriptionProvider`. Nemotron and Whisper implement that protocol; the selected FluidAudio diarizer is composed alongside either engine. Model status, download, removal, and inference are separate commands, so capture never silently downloads models or mutates its model set.
+The local sidecar has two deliberately smaller boundaries: `LocalTranscriptionProvider` for Nemotron/Whisper and a standalone streaming diarization runner for FluidAudio. If both selections are local, Arco fuses them in one process and loads their models once. In a mixed pipeline, the ASR side reads the shared streaming speaker timeline while the diarization side updates it. Model status, download, removal, and inference are separate commands, so capture never silently downloads models or mutates its model set.
 
 ## Capture layout
 
@@ -46,6 +50,17 @@ frame 1: system[1], mic[1]
 
 For `system` mode the mic channel is silent. For `mic` mode the system channel is silent. The product presents these as Online, In-person, and Hybrid meeting scenarios. The scenario and transcription config remain fixed until the meeting stops.
 
+The provider composition is explicit:
+
+| ASR | Diarization | Runtime layout |
+|---|---|---|
+| Deepgram | Deepgram | One fused Deepgram stream |
+| Local | Local | One fused local process |
+| Any provider | Off | One ASR worker |
+| Different providers | Deepgram or local | Two workers; bounded PCM fan-out plus one shared streaming speaker timeline |
+
+Mixed local/remote use works in both directions. For example, ElevenLabs ASR can use local Sortformer, and local Whisper can use Deepgram diarization. A remote provider selected for either role receives meeting audio and may incur its normal usage cost, even when the other role stays on-device.
+
 ## On-device ASR
 
 The bundled Swift sidecar provides:
@@ -61,25 +76,26 @@ The bundled Swift sidecar provides:
 
 Each stereo channel has independent 200 ms pre-roll, 500 ms minimum speech, and 600 ms trailing-silence endpointing. The sidecar incrementally consumes the live stream, finalizes an utterance at the endpoint, transcribes it, and writes the shared Markdown adapter with audio-relative start/end metadata. Nemotron uses its token timing envelope; Whisper preserves its returned segment timings. Arco currently persists finalized local segments rather than exposing unstable interim text.
 
-Models live under `~/Library/Application Support/Arco/models/`. Whisper downloads are staged, checked against their exact expected byte size, and atomically moved into place. Nemotron, Sortformer, and LS-EEND use FluidAudio's model manifests/caches plus separate Arco installation markers. A local ready signal is emitted only after the selected ASR and optional diarizer are loaded.
+Models live under `~/Library/Application Support/Arco/models/`. Whisper downloads are staged, checked against their exact expected byte size, and atomically moved into place. Nemotron, Sortformer, Pyannote + WeSpeaker, and LS-EEND use FluidAudio's model manifests/caches plus separate Arco installation markers. Each local worker emits its ready signal only after its selected model is loaded.
 
 The implementation depends directly on Apache-2.0 FluidAudio and MIT SwiftWhisper. FluidVoice informed the product/model matrix, but its GPL-3.0 source is not copied into Arco.
 
 ## On-device streaming speaker separation
 
-Local speaker separation offers three explicit FluidAudio backends:
+Local speaker separation offers four explicit FluidAudio backends:
 
 | Model | Intended use | Speaker slots per source |
 |---|---|---:|
 | Streaming Sortformer | Stable identities for typical meetings | 4 |
+| Pyannote + WeSpeaker (experimental) | Familiar segmentation + embedding pipeline with rolling speaker memory | Dynamic |
 | LS-EEND Meeting (AMI) | Meetings with overlap or quiet speech | 4 |
 | LS-EEND General (DIHARD3) | Complex rooms and larger groups | 10 |
 
-Sortformer uses the palettized `fastV2_1` model on CPU + Neural Engine. LS-EEND uses the 100 ms streaming variants on CPU. Arco creates one diarizer timeline per active source channel while sharing the loaded model weights.
+Sortformer uses the palettized `fastV2_1` model on CPU + Neural Engine. Pyannote + WeSpeaker runs a five-second Core ML window every two seconds: the oldest two seconds are finalized and the overlapping three-second edge remains revisable. LS-EEND uses the 100 ms streaming variants on CPU. Arco creates one diarizer timeline per active source channel while sharing the loaded model weights.
 
-Each backend returns finalized history plus a revisable tentative edge. Arco appends only new finalized intervals and replaces the tentative edge on every update, avoiding stale-hypothesis double counting. It finalizes each channel's diarizer before flushing the last utterance. Each finalized ASR segment is assigned to the speaker slot with the greatest temporal overlap.
+Each backend returns finalized history plus a revisable tentative edge. Arco appends only new finalized intervals and replaces the tentative edge on every update, avoiding stale-hypothesis double counting. The standalone diarizer atomically publishes a versioned timeline for both channels as the meeting continues. A separate ASR worker waits up to 1.5 seconds for timeline coverage for each finalized segment, then chooses the speaker slot with the greatest temporal overlap. It never waits until capture stops to rewrite the transcript.
 
-The local provider has a five-minute readiness ceiling and remains visibly `Starting` until the selected ASR and diarizer are loaded. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service should keep the diarizer warm across meetings and amortize that per-process load.
+Local workers have a five-minute readiness ceiling and the capture remains visibly `Starting` until every selected worker is ready. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service should keep the diarizer warm across meetings and amortize that per-process load.
 
 The identity key remains `(channel, speaker)`:
 
@@ -94,7 +110,7 @@ A slot is not a durable human identity, and the same human heard through both so
 
 ## Deepgram streaming request
 
-Deepgram remains the migration-safe default and uses its own word-level diarization:
+Deepgram remains the migration-safe default. When selected for both roles, it uses one request with word-level diarization:
 
 ```text
 wss://api.deepgram.com/v1/listen
@@ -110,7 +126,9 @@ wss://api.deepgram.com/v1/listen
   &endpointing=300
 ```
 
-The Deepgram branch never prepares or loads a local diarization model. Conversely, local ASR never sends audio to Deepgram.
+When Deepgram is ASR-only, Arco omits `diarize_model` and attributes finalized segments from the selected external timeline. When Deepgram is diarization-only, it keeps word-level diarization enabled, publishes those intervals to the timeline, and does not write a second transcript. Therefore local ASR plus Deepgram diarization does send audio to Deepgram.
+
+Arco maps the UI's automatic-language choice to Deepgram's streaming multilingual value, `language=multi`; it never sends the unsupported literal `language=auto`.
 
 Use `diarize_model=latest`; do not combine it with the deprecated `diarize=true` parameter.
 
@@ -127,12 +145,13 @@ Deepgram may restart numbering after a reconnect. Arco namespaces identities by 
 
 ## ElevenLabs realtime transcription
 
-ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not currently expose speaker diarization or dual-channel transcription, so Arco does not claim that this provider separates speakers.
+ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not currently expose speaker diarization or dual-channel transcription, so it is registered as an ASR provider, not a diarization provider.
 
 - Arco opens one realtime WebSocket for each active source. `system` sends only channel 0, `mic` sends only channel 1, and `both` sends each channel through its own connection.
-- Realtime commits receive one source label per channel: `Remote 1` or `In room 1`. These are location labels, not detected speaker identities.
+- With diarization off, realtime commits receive one source label per channel: `Remote 1` or `In room 1`. These are location labels, not detected speaker identities.
+- With Deepgram or a local streaming diarizer selected, each finalized ElevenLabs segment reads the shared timeline and receives the dominant overlapping speaker label.
 - Audio is streamed only while the meeting is active. Arco does not buffer meeting audio for a later ElevenLabs batch pass and does not replace the transcript after capture stops.
-- Choose Deepgram or an on-device diarization model when realtime multi-speaker separation is required.
+- Speaker attribution remains incremental; Arco does not run a stop-time batch pass or replace the transcript after capture stops.
 
 The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned sidecar environment.
 
@@ -150,7 +169,7 @@ Primary references:
 
 The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; both cloud providers remain streaming-only.
 
-Rust reports `recording` only after provider readiness. Deepgram signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. The local sidecar signals after model load; a missing or incomplete model is a terminal setup error.
+Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
 
 ## Echo caveat
 

@@ -20,10 +20,8 @@ const runtimes: RuntimeStatus[] = [
 ]
 
 const deepgramConfig: TranscriptionConfig = {
-  provider: 'deepgram',
-  model: 'nova-3',
-  language: 'zh-CN',
-  diarization: 'provider',
+  asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' },
+  diarization: { provider: 'deepgram', model: 'latest' },
 }
 
 const emptyDeepgram: DeepgramCredentialStatus = {
@@ -148,18 +146,24 @@ describe('Onboarding', () => {
 
   it('offers ElevenLabs and verifies its key before transcription can continue', async () => {
     const user = userEvent.setup()
+    const onSaveDeepgramApiKey = vi.fn().mockResolvedValue({
+      configured: true,
+      verified: true,
+      message: 'Deepgram is ready.',
+    })
     const onSaveElevenLabsApiKey = vi.fn().mockResolvedValue({
       configured: true,
       verified: true,
       message: 'ElevenLabs is ready.',
     })
-    renderOnboarding({ onSaveElevenLabsApiKey })
+    renderOnboarding({ onSaveDeepgramApiKey, onSaveElevenLabsApiKey })
 
     await continueToAgent(user)
     await chooseTranscriptOnly(user)
     await user.click(screen.getByRole('radio', { name: 'ElevenLabs' }))
 
-    expect(screen.getByText(/Realtime speaker separation is not available/i)).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Deepgram speaker separation' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Speaker separation model' })).toBeVisible()
     expect(screen.queryByText(/when listening stops|final speaker/i)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
     await user.type(screen.getByLabelText('ElevenLabs API key'), 'sk_0123456789abcdefghijklmnopqrstuvwxyz')
@@ -167,6 +171,13 @@ describe('Onboarding', () => {
 
     expect(onSaveElevenLabsApiKey).toHaveBeenCalledWith('sk_0123456789abcdefghijklmnopqrstuvwxyz')
     expect(await screen.findByText('ElevenLabs is ready.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Deepgram API key'), 'dg_live_abcdefghijklmnopqrstuvwxyz')
+    await user.click(screen.getByRole('button', { name: 'Verify & save' }))
+
+    expect(onSaveDeepgramApiKey).toHaveBeenCalledWith('dg_live_abcdefghijklmnopqrstuvwxyz')
+    expect(await screen.findByText('Deepgram is ready.')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })
 
@@ -188,11 +199,13 @@ describe('Onboarding', () => {
     await continueToAgent(user)
     await chooseTranscriptOnly(user)
     await user.click(screen.getByRole('radio', { name: 'On this Mac' }))
+    await user.click(screen.getByRole('radio', { name: 'Speaker separation model' }))
 
     const speechSelect = screen.getByRole('combobox', { name: 'Speech recognition model' })
     const speakerSelect = screen.getByRole('combobox', { name: 'Speaker separation model' })
     expect(within(speechSelect).getAllByRole('option')).toHaveLength(6)
-    expect(within(speakerSelect).getAllByRole('option')).toHaveLength(3)
+    expect(within(speakerSelect).getAllByRole('option')).toHaveLength(4)
+    expect(within(speakerSelect).getByRole('option', { name: 'Pyannote + WeSpeaker' })).toBeVisible()
 
     await user.selectOptions(speechSelect, 'whisper-base')
     await user.click(screen.getByRole('button', { name: 'Download speech model' }))
@@ -200,7 +213,7 @@ describe('Onboarding', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: 'Download speaker model' }))
-    expect(onPrepareTranscriptionModel).toHaveBeenNthCalledWith(2, 'whisper-base', 'sortformer-streaming')
+    expect(onPrepareTranscriptionModel).toHaveBeenNthCalledWith(2, 'sortformer-streaming')
     expect(await screen.findAllByText('Ready on this Mac')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })

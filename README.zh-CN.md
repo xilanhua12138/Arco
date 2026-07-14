@@ -64,7 +64,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 | --- | --- | --- |
 | 混合会议采集 | 使用 ScreenCaptureKit 与 AVAudioEngine，分别采集系统音频和房间麦克风。 | 同一场会议里的线上和现场发言都清晰可辨。 |
 | 流式转写 | 可选择 Deepgram，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
-| 多说话人分离 | 使用 Deepgram diarization，或可选的本地 Streaming Sortformer，在每条音频通道内分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
+| 多说话人分离 | 独立选择 Deepgram，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
 | 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
 | 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
 | 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |

@@ -15,6 +15,7 @@ import {
 import { useState } from 'react'
 import type {
   AskAgentInput,
+  AgentStreamingTurn,
   ContextScope,
   MeetingDetail,
   PersistedAgentTurn,
@@ -41,6 +42,7 @@ interface InsightPanelProps {
   onClose?: () => void
   showHeader?: boolean
   onConnectAgent?: () => void
+  streamingTurn?: AgentStreamingTurn | null
 }
 
 const sourceIcon = (kind: PersistedAgentTurn['sources'][number]['kind']) => {
@@ -65,6 +67,7 @@ export function InsightPanel({
   onClose,
   showHeader = false,
   onConnectAgent,
+  streamingTurn = null,
 }: InsightPanelProps) {
   const { t } = useI18n()
   const [scope, setScope] = useState<ContextScope>('transcript')
@@ -75,6 +78,16 @@ export function InsightPanel({
   const [openContextTurnId, setOpenContextTurnId] = useState<string | null>(null)
   const [savingTurnId, setSavingTurnId] = useState<string | null>(null)
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
+  const activeStreamingTurn = streamingTurn?.meetingId === meeting?.summary.id
+    ? streamingTurn
+    : null
+  const streamingStatus = activeStreamingTurn?.phase === 'starting'
+    ? t('agent.stream.starting')
+    : activeStreamingTurn?.phase === 'using-tools'
+      ? t('agent.stream.usingTools')
+      : activeStreamingTurn?.phase === 'finalizing'
+        ? t('agent.stream.finalizing')
+        : t('agent.thinking')
   const runtime = provider
     ? runtimes.find((candidate) => candidate.provider === provider)
     : undefined
@@ -272,17 +285,21 @@ export function InsightPanel({
         {pendingQuestion && (
           <article className="agent-reply agent-pending-turn">
             <h3 className="agent-turn-question">{pendingQuestion}</h3>
-            <div className="agent-thinking" role="status">
-              <span /><span /><span />
-              {t('agent.thinking')}
-            </div>
+            {activeStreamingTurn?.answer ? (
+              <MarkdownContent className="agent-reply-markdown">{activeStreamingTurn.answer}</MarkdownContent>
+            ) : (
+              <div className="agent-thinking" role="status">
+                <span /><span /><span />
+                {streamingStatus}
+              </div>
+            )}
           </article>
         )}
 
         {running && !pendingQuestion && (
           <div className="agent-thinking" role="status">
             <span /><span /><span />
-            {t('agent.thinking')}
+            {streamingStatus}
           </div>
         )}
         </>}

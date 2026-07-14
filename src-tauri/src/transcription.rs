@@ -23,29 +23,20 @@ impl LocalTranscriptionRuntime {
         self.run(["models"])
     }
 
-    pub fn prepare(
-        &self,
-        model: &str,
-        diarization_model: Option<&str>,
-    ) -> Result<Vec<TranscriptionModelStatus>, String> {
-        self.prepare_with_progress(model, diarization_model, |_| {})
+    pub fn prepare(&self, model: &str) -> Result<Vec<TranscriptionModelStatus>, String> {
+        self.prepare_with_progress(model, |_| {})
     }
 
     pub fn prepare_with_progress<F>(
         &self,
         model: &str,
-        diarization_model: Option<&str>,
         mut on_progress: F,
     ) -> Result<Vec<TranscriptionModelStatus>, String>
     where
         F: FnMut(TranscriptionModelStatus),
     {
-        validate_model(model, false)?;
-        let mut args = vec!["prepare", "--model", model];
-        if let Some(diarization_model) = diarization_model {
-            validate_model(diarization_model, true)?;
-            args.extend(["--diarization", diarization_model]);
-        }
+        validate_model(model, true)?;
+        let args = vec!["prepare", "--model", model];
         let binary = self.binary.as_ref().ok_or_else(|| {
             "The on-device transcription runtime is not installed in this Arco build.".to_string()
         })?;
@@ -127,6 +118,7 @@ fn validate_model(model: &str, allow_diarizer: bool) -> Result<(), String> {
     ];
     const DIARIZERS: &[&str] = &[
         "sortformer-streaming",
+        "pyannote-wespeaker-streaming",
         "lseend-ami-streaming",
         "lseend-dihard3-streaming",
     ];
@@ -145,7 +137,6 @@ mod tests {
     fn model_management_rejects_cloud_and_unknown_ids() {
         assert!(validate_model("nova-3", false).is_err());
         assert!(validate_model("whisper-imaginary", false).is_err());
-        assert!(validate_model("sortformer-streaming", false).is_err());
         assert!(validate_model("sortformer-streaming", true).is_ok());
         assert!(validate_model("whisper-large", false).is_ok());
     }
@@ -154,11 +145,11 @@ mod tests {
     fn model_management_accepts_only_known_local_diarizers() {
         for model in [
             "sortformer-streaming",
+            "pyannote-wespeaker-streaming",
             "lseend-ami-streaming",
             "lseend-dihard3-streaming",
         ] {
             assert!(validate_model(model, true).is_ok(), "{model}");
-            assert!(validate_model(model, false).is_err(), "{model}");
         }
         assert!(validate_model("deepgram-diarization", true).is_err());
     }

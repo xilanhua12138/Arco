@@ -1,3 +1,6 @@
+use crate::speaker_timeline::{
+    wait_for_speaker, SpeakerInterval as TimelineInterval, SpeakerTimelineStore,
+};
 use chrono::{Local, TimeZone};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -17,6 +20,7 @@ const SAMPLE_RATE: usize = 16_000;
 const FRAME_BYTES: usize = 4;
 const READ_CHUNK_BYTES: usize = 6_400;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
+const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -29,6 +33,35 @@ pub struct Segment {
     pub connection_id: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriberRole {
+    Combined,
+    Asr,
+    Diarization,
+}
+
+impl TranscriberRole {
+    fn from_environment() -> Result<Self, String> {
+        match std::env::var("ARCO_TRANSCRIBER_ROLE")
+            .unwrap_or_else(|_| "combined".into())
+            .as_str()
+        {
+            "combined" => Ok(Self::Combined),
+            "asr" => Ok(Self::Asr),
+            "diarization" => Ok(Self::Diarization),
+            value => Err(format!("unsupported Deepgram transcriber role: {value}")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TimelineUpdate {
+    channel: usize,
+    processed_until: f64,
+    finalized: Vec<TimelineInterval>,
+    tentative: Vec<TimelineInterval>,
+}
+
 #[derive(Clone, Debug)]
 struct AudioChunk {
     data: Vec<u8>,
@@ -36,17 +69,26 @@ struct AudioChunk {
 }
 
 pub fn deepgram_url(model: &str, language: &str) -> String {
+    deepgram_url_with_diarization(model, language, true)
+}
+
+pub fn deepgram_url_with_diarization(model: &str, language: &str, diarization: bool) -> String {
     let language = match language {
         "zh-CN" | "zh-Hans" => "zh-Hans",
         "en-US" => "en-US",
+        "auto" => "multi",
         value if !value.trim().is_empty() => value,
         _ => "zh-Hans",
     };
-    format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&encoding=linear16&sample_rate=16000&channels=2&multichannel=true&diarize_model=latest&punctuate=true&smart_format=true&endpointing=300",
+    let mut url = format!(
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&encoding=linear16&sample_rate=16000&channels=2&multichannel=true&punctuate=true&smart_format=true&endpointing=300",
         urlencoding::encode(if model.trim().is_empty() { "nova-3" } else { model }),
         urlencoding::encode(language),
-    )
+    );
+    if diarization {
+        url.push_str("&diarize_model=latest");
+    }
+    url
 }
 
 pub fn deepgram_payload_error(payload: &Value) -> Option<String> {
@@ -211,6 +253,48 @@ pub fn segments_from_result(payload: &Value) -> Vec<Segment> {
     }]
 }
 
+fn timeline_update_from_result(payload: &Value, origin: f64) -> Option<TimelineUpdate> {
+    if payload.get("type").and_then(Value::as_str) != Some("Results")
+        || payload.get("is_final").and_then(Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    let channel = response_channel(payload);
+    let payload_start = number(payload.get("start"), 0.0) + origin;
+    let payload_end = payload_start + number(payload.get("duration"), 0.0);
+    let words = payload
+        .pointer("/channel/alternatives/0/words")
+        .and_then(Value::as_array)?;
+    let mut finalized: Vec<TimelineInterval> = Vec::new();
+    for word in words {
+        let Some(speaker) = word.get("speaker").and_then(Value::as_i64) else {
+            continue;
+        };
+        let start = number(word.get("start"), payload_start - origin) + origin;
+        let end = number(word.get("end"), start - origin) + origin;
+        if end <= start {
+            continue;
+        }
+        if let Some(previous) = finalized.last_mut() {
+            if previous.speaker == speaker && start <= previous.end + 0.02 {
+                previous.end = previous.end.max(end);
+                continue;
+            }
+        }
+        finalized.push(TimelineInterval {
+            speaker,
+            start,
+            end,
+        });
+    }
+    Some(TimelineUpdate {
+        channel,
+        processed_until: payload_end,
+        finalized,
+        tentative: Vec::new(),
+    })
+}
+
 fn response_channel(payload: &Value) -> usize {
     let value = payload.get("channel_index").unwrap_or(&Value::Null);
     value
@@ -268,28 +352,31 @@ struct SpeakerRegistry {
 }
 
 impl SpeakerRegistry {
+    fn speaker_id(&mut self, connection_id: u64, channel: usize, speaker: Option<i64>) -> usize {
+        let channel = channel.min(1);
+        let key = (connection_id, channel, speaker);
+        *self.labels.entry(key).or_insert_with(|| {
+            let number = self.next[channel];
+            self.next[channel] += 1;
+            number
+        })
+    }
+
     fn relabel(&mut self, segments: Vec<Segment>, connection_id: u64) -> Vec<Segment> {
         segments
             .into_iter()
             .map(|mut segment| {
-                let channel = segment.channel.min(1);
-                if self.next[channel] == 0 {
-                    self.next[channel] = 1;
-                }
-                let key = (connection_id, segment.channel, segment.speaker);
-                let number = *self.labels.entry(key).or_insert_with(|| {
-                    let number = self.next[channel];
-                    self.next[channel] += 1;
-                    number
-                });
+                let number = self.speaker_id(connection_id, segment.channel, segment.speaker);
                 segment.label = format!(
-                    "{} {number}",
+                    "{} {}",
                     if segment.channel == 0 {
                         "Remote"
                     } else {
                         "In room"
-                    }
+                    },
+                    number + 1,
                 );
+                segment.speaker = Some(number as i64);
                 segment.connection_id = Some(connection_id);
                 segment
             })
@@ -404,11 +491,15 @@ fn signal_ready() -> Result<(), String> {
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_connection(
     api_key: &str,
     url: &str,
     receiver: &mut mpsc::Receiver<AudioChunk>,
-    writer: &TranscriptWriter,
+    writer: Option<&TranscriptWriter>,
+    timeline_store: &mut Option<SpeakerTimelineStore>,
+    external_timeline: Option<&Path>,
+    role: TranscriberRole,
     speakers: &mut SpeakerRegistry,
     connection_id: u64,
 ) -> Result<bool, String> {
@@ -455,12 +546,59 @@ async fn stream_connection(
                             return Err(format!("Deepgram rejected the streaming configuration: {error}"));
                         }
                         let origin = connection_origin.unwrap_or(0.0);
-                        let shifted = segments_from_result(&payload).into_iter().map(|mut segment| {
+                        if role == TranscriberRole::Diarization {
+                            if let Some(mut update) = timeline_update_from_result(&payload, origin) {
+                                for interval in &mut update.finalized {
+                                    interval.speaker = speakers.speaker_id(
+                                        connection_id,
+                                        update.channel,
+                                        Some(interval.speaker),
+                                    ) as i64;
+                                }
+                                if let Some(store) = timeline_store.as_mut() {
+                                    store.update(
+                                        update.channel,
+                                        update.processed_until,
+                                        update.finalized,
+                                        update.tentative,
+                                    )?;
+                                }
+                            }
+                            continue;
+                        }
+
+                        let shifted: Vec<_> = segments_from_result(&payload).into_iter().map(|mut segment| {
                             segment.start += origin;
                             segment.end += origin;
                             segment
                         }).collect();
-                        for segment in speakers.relabel(shifted, connection_id) {
+                        let attributed = if role == TranscriberRole::Combined {
+                            speakers.relabel(shifted, connection_id)
+                        } else {
+                            let mut attributed = Vec::with_capacity(shifted.len());
+                            for mut segment in shifted {
+                                let speaker = if let Some(path) = external_timeline {
+                                    wait_for_speaker(
+                                        path,
+                                        segment.channel,
+                                        segment.start,
+                                        segment.end,
+                                        SPEAKER_TIMELINE_WAIT,
+                                    )
+                                    .await
+                                    .unwrap_or(0)
+                                } else {
+                                    0
+                                };
+                                segment.speaker = Some(speaker);
+                                segment.label = participant_label(segment.channel, Some(speaker));
+                                segment.connection_id = None;
+                                attributed.push(segment);
+                            }
+                            attributed
+                        };
+                        let writer = writer.ok_or_else(|| "Deepgram ASR has no transcript writer".to_string())?;
+                        for segment in attributed {
                             writer.append(&segment)?;
                         }
                     }
@@ -481,11 +619,27 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
     }
     let model = std::env::var("DEEPGRAM_MODEL").unwrap_or_else(|_| "nova-3".into());
     let language = std::env::var("DEEPGRAM_LANG").unwrap_or_else(|_| "zh-Hans".into());
+    let role = TranscriberRole::from_environment()?;
+    let timeline_path = std::env::var_os("ARCO_SPEAKER_TIMELINE_FILE").map(PathBuf::from);
+    if role == TranscriberRole::Diarization && timeline_path.is_none() {
+        return Err("Deepgram diarization requires ARCO_SPEAKER_TIMELINE_FILE".into());
+    }
     let session_started_at = std::env::var("ARCO_SESSION_STARTED_AT_UNIX")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
-    let writer = TranscriptWriter::new(transcript_path.to_path_buf(), session_started_at)?;
+    let writer = if role == TranscriberRole::Diarization {
+        None
+    } else {
+        Some(TranscriptWriter::new(
+            transcript_path.to_path_buf(),
+            session_started_at,
+        )?)
+    };
+    let mut timeline_store = timeline_path
+        .as_ref()
+        .filter(|_| role == TranscriberRole::Diarization)
+        .map(|path| SpeakerTimelineStore::new(path.clone()));
     let buffer_seconds = std::env::var("ARCO_AUDIO_BUFFER_SECONDS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -497,14 +651,19 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
     let mut speakers = SpeakerRegistry::default();
     let mut connection_id = 0u64;
     let mut retry = 1u64;
-    let url = deepgram_url(&model, &language);
+    let url = deepgram_url_with_diarization(&model, &language, role != TranscriberRole::Asr);
     loop {
         connection_id += 1;
         match stream_connection(
             api_key.trim(),
             &url,
             &mut receiver,
-            &writer,
+            writer.as_ref(),
+            &mut timeline_store,
+            timeline_path
+                .as_deref()
+                .filter(|_| role == TranscriberRole::Asr),
+            role,
             &mut speakers,
             connection_id,
         )
@@ -582,6 +741,53 @@ mod tests {
             vec!["First person.", "Second person."]
         );
         assert!(!segments.iter().any(|segment| segment.label == "You"));
+    }
+
+    #[test]
+    fn independent_asr_can_disable_deepgram_diarization_while_diarizer_keeps_it_streaming() {
+        let asr_url = deepgram_url_with_diarization("nova-3", "zh-CN", false);
+        let diarization_url = deepgram_url_with_diarization("nova-3", "zh-CN", true);
+        let automatic_url = deepgram_url_with_diarization("nova-3", "auto", true);
+
+        assert!(!asr_url.contains("diarize"));
+        assert!(diarization_url.contains("diarize_model=latest"));
+        assert!(diarization_url.contains("multichannel=true"));
+        assert!(automatic_url.contains("language=multi"));
+        assert!(!automatic_url.contains("language=auto"));
+    }
+
+    #[test]
+    fn finalized_words_become_channel_local_streaming_timeline_intervals() {
+        let payload = result(
+            1,
+            json!([
+                {"punctuated_word":"First", "speaker":0, "start":0.0, "end":0.4},
+                {"punctuated_word":"still first", "speaker":0, "start":0.4, "end":0.8},
+                {"punctuated_word":"Second", "speaker":2, "start":0.9, "end":1.3}
+            ]),
+            "First still first Second",
+            true,
+        );
+
+        let update = timeline_update_from_result(&payload, 4.0).unwrap();
+        assert_eq!(update.channel, 1);
+        assert_eq!(update.processed_until, 5.5);
+        assert_eq!(
+            update.finalized,
+            vec![
+                crate::speaker_timeline::SpeakerInterval {
+                    speaker: 0,
+                    start: 4.0,
+                    end: 4.8
+                },
+                crate::speaker_timeline::SpeakerInterval {
+                    speaker: 2,
+                    start: 4.9,
+                    end: 5.3
+                },
+            ]
+        );
+        assert!(update.tentative.is_empty());
     }
 
     #[test]

@@ -8,14 +8,35 @@ use chrono::Local;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn pipeline_layout(transcription: &TranscriptionConfig) -> Vec<&'static str> {
+    match (
+        transcription.asr.provider.as_str(),
+        transcription.diarization.provider.as_str(),
+    ) {
+        ("deepgram", "deepgram") => vec!["deepgram-combined"],
+        ("local", "local") => vec!["local-combined"],
+        ("deepgram", "local") => vec!["deepgram-asr", "local-diarization"],
+        ("deepgram", "none") => vec!["deepgram-asr"],
+        ("elevenlabs", "local") => vec!["elevenlabs-asr", "local-diarization"],
+        ("elevenlabs", "deepgram") => {
+            vec!["elevenlabs-asr", "deepgram-diarization"]
+        }
+        ("elevenlabs", "none") => vec!["elevenlabs-asr"],
+        ("local", "deepgram") => vec!["local-asr", "deepgram-diarization"],
+        ("local", "none") => vec!["local-asr"],
+        _ => Vec::new(),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CommandSpec {
@@ -51,6 +72,19 @@ pub struct TranscriberDefinition {
     pub requires_deepgram_key: bool,
     pub requires_elevenlabs_key: bool,
     pub ready_timeout: Duration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CaptureSecrets {
+    pub deepgram: Option<String>,
+    pub elevenlabs: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedTranscriber {
+    label: &'static str,
+    definition: TranscriberDefinition,
+    environment: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,7 +151,7 @@ impl CaptureConfig {
                     ready_timeout: Duration::from_secs(20),
                 },
                 local: local_binary.map(|program| TranscriberDefinition {
-                    command: CommandSpec::new(program, vec![OsString::from("stream")]),
+                    command: CommandSpec::new(program, Vec::new()),
                     requires_deepgram_key: false,
                     requires_elevenlabs_key: false,
                     // The ASR model is fast once loaded, but a first Core ML
@@ -200,21 +234,30 @@ pub fn discover_local_transcriber(paths: &AppPaths) -> Option<PathBuf> {
         })
 }
 
+struct TranscriberChild {
+    label: &'static str,
+    child: Child,
+}
+
 struct CaptureChildren {
     recorder: Child,
-    transcriber: Child,
+    transcribers: Vec<TranscriberChild>,
+    _audio_pump: JoinHandle<()>,
+    timeline: Option<PathBuf>,
 }
 
 struct PipelineReadySignals {
     recorder: PathBuf,
-    transcriber: PathBuf,
+    transcribers: Vec<PathBuf>,
 }
 
 impl PipelineReadySignals {
-    fn new(log_dir: &Path, suffix: &str) -> Self {
+    fn new(log_dir: &Path, suffix: &str, transcriber_count: usize) -> Self {
         let signals = Self {
             recorder: log_dir.join(format!("recorder-ready-{suffix}.signal")),
-            transcriber: log_dir.join(format!("transcriber-ready-{suffix}.signal")),
+            transcribers: (0..transcriber_count)
+                .map(|index| log_dir.join(format!("transcriber-ready-{suffix}-{index}.signal")))
+                .collect(),
         };
         signals.clear();
         signals
@@ -222,7 +265,9 @@ impl PipelineReadySignals {
 
     fn clear(&self) {
         let _ = fs::remove_file(&self.recorder);
-        let _ = fs::remove_file(&self.transcriber);
+        for transcriber in &self.transcribers {
+            let _ = fs::remove_file(transcriber);
+        }
     }
 }
 
@@ -304,14 +349,14 @@ impl CaptureManager {
         mode: &str,
         transcription: TranscriptionConfig,
     ) -> Result<CaptureState, String> {
-        self.start_with_transcription_and_secret(mode, transcription, None)
+        self.start_with_transcription_and_secrets(mode, transcription, CaptureSecrets::default())
     }
 
-    pub fn start_with_transcription_and_secret(
+    pub fn start_with_transcription_and_secrets(
         &self,
         mode: &str,
         transcription: TranscriptionConfig,
-        provider_api_key: Option<String>,
+        secrets: CaptureSecrets,
     ) -> Result<CaptureState, String> {
         validate_mode(mode)?;
         transcription.validate()?;
@@ -337,7 +382,7 @@ impl CaptureManager {
             transcription: Some(transcription.clone()),
         };
 
-        match self.spawn_pipeline(mode, &transcription, provider_api_key.as_deref()) {
+        match self.spawn_pipeline(mode, &transcription, &secrets) {
             Ok((children, transcript, started_at, source)) => {
                 let id = meeting_id(&source, &transcript)?;
                 inner.transcript = Some(transcript.clone());
@@ -384,7 +429,7 @@ impl CaptureManager {
         inner.state.phase = "stopping".into();
         inner.state.message = Some("Finalizing transcript…".into());
 
-        // Only these two Child handles are touched. Arco never scans the global
+        // Only these owned Child handles are touched. Arco never scans the global
         // process table and never sends signals to another recorder/listener.
         terminate_recorder_then_transcriber(&mut children);
         let transcript = inner.transcript.take();
@@ -404,7 +449,7 @@ impl CaptureManager {
         &self,
         mode: &str,
         transcription: &TranscriptionConfig,
-        provider_api_key: Option<&str>,
+        secrets: &CaptureSecrets,
     ) -> Result<(CaptureChildren, PathBuf, String, String), String> {
         let destination = self
             .destination
@@ -412,41 +457,6 @@ impl CaptureManager {
             .map_err(|_| "transcript storage destination is unavailable".to_string())?
             .clone();
         let transcript_dir = destination.path;
-        let transcriber_definition = self.resolve_transcriber(transcription)?;
-        if transcriber_definition.requires_deepgram_key
-            && provider_api_key
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_none()
-            && !self
-                .config
-                .environment
-                .get("DEEPGRAM_API_KEY")
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-            && std::env::var("DEEPGRAM_API_KEY")
-                .map(|value| value.trim().is_empty())
-                .unwrap_or(true)
-        {
-            return Err("Deepgram is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
-        }
-        if transcriber_definition.requires_elevenlabs_key
-            && provider_api_key
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_none()
-            && !self
-                .config
-                .environment
-                .get("ELEVENLABS_API_KEY")
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-            && std::env::var("ELEVENLABS_API_KEY")
-                .map(|value| value.trim().is_empty())
-                .unwrap_or(true)
-        {
-            return Err("ElevenLabs is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
-        }
 
         fs::create_dir_all(&transcript_dir).map_err(|error| {
             format!(
@@ -467,16 +477,31 @@ impl CaptureManager {
                 recorder_binary.display()
             ));
         }
-        if !is_executable(&transcriber_definition.command.program) {
-            return Err(format!(
-                "transcriber runtime is not executable: {}",
-                transcriber_definition.command.program.display()
-            ));
-        }
 
         let now = Local::now();
         let started_at = now.to_rfc3339();
         let session_started_at_unix = format!("{:.3}", now.timestamp_millis() as f64 / 1_000.0);
+        let suffix = format!("{}-{}", std::process::id(), now.timestamp_micros());
+        let layout = pipeline_layout(transcription);
+        if layout.is_empty() {
+            return Err("the selected ASR and diarization providers cannot be composed".into());
+        }
+        let timeline = (layout.len() > 1).then(|| {
+            self.config
+                .log_dir
+                .join(format!("speaker-timeline-{suffix}.json"))
+        });
+        let resolved = self.resolve_transcribers(transcription, timeline.as_deref())?;
+        for transcriber in &resolved {
+            if !is_executable(&transcriber.definition.command.program) {
+                return Err(format!(
+                    "{} runtime is not executable: {}",
+                    transcriber.label,
+                    transcriber.definition.command.program.display()
+                ));
+            }
+            self.validate_credentials(&transcriber.definition, secrets)?;
+        }
         let transcript = create_transcript(
             &transcript_dir,
             &now.format("%Y%m%d-%H%M%S").to_string(),
@@ -485,10 +510,8 @@ impl CaptureManager {
 
         let recorder_log = open_log(&self.config.log_dir.join("recorder.log"))?;
         let transcriber_log = open_log(&self.config.log_dir.join("transcriber.log"))?;
-        let ready_signals = PipelineReadySignals::new(
-            &self.config.log_dir,
-            &format!("{}-{}", std::process::id(), now.timestamp_micros()),
-        );
+        let ready_signals =
+            PipelineReadySignals::new(&self.config.log_dir, &suffix, resolved.len());
         let mut recorder_command = Command::new(&recorder_binary);
         recorder_command
             .arg(mode)
@@ -513,58 +536,83 @@ impl CaptureManager {
             }
         };
 
-        let mut transcriber_command = Command::new(&transcriber_definition.command.program);
-        transcriber_command
-            .args(&transcriber_definition.command.args)
-            .arg(&transcript)
-            .stdin(Stdio::from(recorder_stdout))
-            .stdout(Stdio::from(transcriber_log.try_clone().map_err(
-                |error| format!("could not clone transcriber log: {error}"),
-            )?))
-            .stderr(Stdio::from(transcriber_log))
-            .envs(&self.config.environment)
-            .env("ARCO_READY_FILE", &ready_signals.transcriber)
-            .env("ARCO_AUDIO_MODE", mode)
-            .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
-        if let Some(api_key) = provider_api_key
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            transcriber_command.env(
-                if transcription.provider == "elevenlabs" {
-                    "ELEVENLABS_API_KEY"
-                } else {
-                    "DEEPGRAM_API_KEY"
-                },
-                api_key,
-            );
-        }
-        if let Err(error) = configure_process_group(&mut transcriber_command) {
-            let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
-            let _ = finalize_transcript(&transcript, "error");
-            return Err(format!(
-                "could not isolate live transcriber process: {error}"
-            ));
-        }
-        let transcriber = match transcriber_command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
+        let ready_timeouts: Vec<_> = resolved
+            .iter()
+            .map(|transcriber| transcriber.definition.ready_timeout)
+            .collect();
+        let mut transcribers = Vec::with_capacity(resolved.len());
+        let mut inputs = Vec::with_capacity(resolved.len());
+        for (index, transcriber) in resolved.into_iter().enumerate() {
+            let mut command = Command::new(&transcriber.definition.command.program);
+            command
+                .args(&transcriber.definition.command.args)
+                .arg(&transcript)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(transcriber_log.try_clone().map_err(
+                    |error| format!("could not clone transcriber log: {error}"),
+                )?))
+                .stderr(Stdio::from(transcriber_log.try_clone().map_err(
+                    |error| format!("could not clone transcriber log: {error}"),
+                )?))
+                .envs(&self.config.environment)
+                .envs(&transcriber.environment)
+                .env("ARCO_READY_FILE", &ready_signals.transcribers[index])
+                .env("ARCO_AUDIO_MODE", mode)
+                .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
+            apply_secret(&mut command, &transcriber.definition, secrets);
+            if let Err(error) = configure_process_group(&mut command) {
+                terminate_partial_pipeline(&mut recorder, &mut transcribers);
                 let _ = finalize_transcript(&transcript, "error");
-                return Err(format!("could not start live transcriber: {error}"));
+                return Err(format!(
+                    "could not isolate {} process: {error}",
+                    transcriber.label
+                ));
             }
-        };
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    terminate_partial_pipeline(&mut recorder, &mut transcribers);
+                    let _ = finalize_transcript(&transcript, "error");
+                    return Err(format!("could not start {}: {error}", transcriber.label));
+                }
+            };
+            let Some(input) = child.stdin.take() else {
+                let _ = terminate_process_tree(&mut child, Duration::from_millis(250));
+                terminate_partial_pipeline(&mut recorder, &mut transcribers);
+                let _ = finalize_transcript(&transcript, "error");
+                return Err(format!(
+                    "{} did not expose an audio input",
+                    transcriber.label
+                ));
+            };
+            inputs.push(input);
+            transcribers.push(TranscriberChild {
+                label: transcriber.label,
+                child,
+            });
+        }
+
+        let audio_pump = std::thread::Builder::new()
+            .name("arco-audio-provider-fanout".into())
+            .spawn(move || pump_audio(recorder_stdout, inputs))
+            .map_err(|error| {
+                terminate_partial_pipeline(&mut recorder, &mut transcribers);
+                let _ = finalize_transcript(&transcript, "error");
+                format!("could not start audio provider fan-out: {error}")
+            })?;
 
         let mut children = CaptureChildren {
             recorder,
-            transcriber,
+            transcribers,
+            _audio_pump: audio_pump,
+            timeline,
         };
         if self.config.requires_ready_signal {
             if let Err(error) = wait_for_pipeline_ready(
                 &mut children,
                 &ready_signals.recorder,
-                &ready_signals.transcriber,
-                transcriber_definition.ready_timeout,
+                &ready_signals.transcribers,
+                &ready_timeouts,
             ) {
                 terminate_recorder_then_transcriber(&mut children);
                 let _ = finalize_transcript(&transcript, "error");
@@ -575,29 +623,208 @@ impl CaptureManager {
         Ok((children, transcript, started_at, destination.source))
     }
 
-    fn resolve_transcriber(
+    fn resolve_transcribers(
         &self,
         transcription: &TranscriptionConfig,
-    ) -> Result<TranscriberDefinition, String> {
-        if transcription.provider == "deepgram" {
-            return Ok(self.config.transcribers.deepgram.clone());
-        }
-        if transcription.provider == "elevenlabs" {
-            return Ok(self.config.transcribers.elevenlabs.clone());
-        }
-        let mut local = self.config.transcribers.local.clone().ok_or_else(|| {
+        timeline: Option<&Path>,
+    ) -> Result<Vec<ResolvedTranscriber>, String> {
+        let local = || {
+            self.config.transcribers.local.clone().ok_or_else(|| {
             "The on-device transcription runtime is not installed. Build or reinstall Arco to add local speech models."
                 .to_string()
-        })?;
-        local.command.args.extend([
-            OsString::from("--model"),
-            OsString::from(&transcription.model),
-            OsString::from("--language"),
-            OsString::from(&transcription.language),
-            OsString::from("--diarization"),
-            OsString::from(&transcription.diarization),
-        ]);
-        Ok(local)
+        })
+        };
+        let timeline_environment = || -> Result<HashMap<String, String>, String> {
+            let path = timeline.ok_or_else(|| {
+                "mixed ASR and diarization providers require a shared streaming timeline"
+                    .to_string()
+            })?;
+            Ok(HashMap::from([(
+                "ARCO_SPEAKER_TIMELINE_FILE".into(),
+                path.to_string_lossy().into_owned(),
+            )]))
+        };
+        let mut result = Vec::new();
+        for label in pipeline_layout(transcription) {
+            let resolved = match label {
+                "deepgram-combined" | "deepgram-asr" | "deepgram-diarization" => {
+                    let mut environment = HashMap::from([
+                        (
+                            "ARCO_TRANSCRIBER_ROLE".into(),
+                            match label {
+                                "deepgram-combined" => "combined",
+                                "deepgram-diarization" => "diarization",
+                                _ => "asr",
+                            }
+                            .into(),
+                        ),
+                        ("DEEPGRAM_MODEL".into(), "nova-3".into()),
+                        ("DEEPGRAM_LANG".into(), transcription.asr.language.clone()),
+                    ]);
+                    if label != "deepgram-combined" && transcription.diarization.provider != "none"
+                    {
+                        environment.extend(timeline_environment()?);
+                    }
+                    ResolvedTranscriber {
+                        label,
+                        definition: self.config.transcribers.deepgram.clone(),
+                        environment,
+                    }
+                }
+                "elevenlabs-asr" => {
+                    let mut environment = HashMap::from([(
+                        "ELEVENLABS_LANG".into(),
+                        transcription.asr.language.clone(),
+                    )]);
+                    if transcription.diarization.provider != "none" {
+                        environment.extend(timeline_environment()?);
+                    }
+                    ResolvedTranscriber {
+                        label,
+                        definition: self.config.transcribers.elevenlabs.clone(),
+                        environment,
+                    }
+                }
+                "local-combined" | "local-asr" => {
+                    let mut definition = local()?;
+                    definition.command.args.extend([
+                        OsString::from("stream"),
+                        OsString::from("--model"),
+                        OsString::from(&transcription.asr.model),
+                        OsString::from("--language"),
+                        OsString::from(&transcription.asr.language),
+                        OsString::from("--diarization"),
+                        OsString::from(if label == "local-combined" {
+                            transcription.diarization.model.as_deref().unwrap_or("none")
+                        } else {
+                            "none"
+                        }),
+                    ]);
+                    ResolvedTranscriber {
+                        label,
+                        definition,
+                        environment: if transcription.diarization.provider == "deepgram" {
+                            timeline_environment()?
+                        } else {
+                            HashMap::new()
+                        },
+                    }
+                }
+                "local-diarization" => {
+                    let mut definition = local()?;
+                    definition.command.args.extend([
+                        OsString::from("diarize"),
+                        OsString::from("--model"),
+                        OsString::from(transcription.diarization.model.as_deref().ok_or_else(
+                            || "local diarization requires a streaming model".to_string(),
+                        )?),
+                    ]);
+                    ResolvedTranscriber {
+                        label,
+                        definition,
+                        environment: timeline_environment()?,
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "unsupported transcription pipeline worker: {label}"
+                    ))
+                }
+            };
+            result.push(resolved);
+        }
+        Ok(result)
+    }
+
+    fn validate_credentials(
+        &self,
+        definition: &TranscriberDefinition,
+        secrets: &CaptureSecrets,
+    ) -> Result<(), String> {
+        if definition.requires_deepgram_key
+            && !credential_available(
+                secrets.deepgram.as_deref(),
+                "DEEPGRAM_API_KEY",
+                &self.config.environment,
+            )
+        {
+            return Err("Deepgram is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
+        }
+        if definition.requires_elevenlabs_key
+            && !credential_available(
+                secrets.elevenlabs.as_deref(),
+                "ELEVENLABS_API_KEY",
+                &self.config.environment,
+            )
+        {
+            return Err("ElevenLabs is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
+        }
+        Ok(())
+    }
+}
+
+fn credential_available(
+    secret: Option<&str>,
+    environment_key: &str,
+    environment: &HashMap<String, String>,
+) -> bool {
+    secret.is_some_and(|value| !value.trim().is_empty())
+        || environment
+            .get(environment_key)
+            .is_some_and(|value| !value.trim().is_empty())
+        || std::env::var(environment_key)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn apply_secret(
+    command: &mut Command,
+    definition: &TranscriberDefinition,
+    secrets: &CaptureSecrets,
+) {
+    if definition.requires_deepgram_key {
+        if let Some(secret) = secrets
+            .deepgram
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            command.env("DEEPGRAM_API_KEY", secret);
+        }
+    }
+    if definition.requires_elevenlabs_key {
+        if let Some(secret) = secrets
+            .elevenlabs
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            command.env("ELEVENLABS_API_KEY", secret);
+        }
+    }
+}
+
+fn pump_audio<R: Read>(mut source: R, mut destinations: Vec<ChildStdin>) {
+    let _ = fan_out_audio(&mut source, &mut destinations);
+}
+
+fn fan_out_audio<R: Read, W: Write>(source: &mut R, destinations: &mut [W]) -> std::io::Result<()> {
+    let mut buffer = [0u8; 6_400];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        for destination in destinations.iter_mut() {
+            destination.write_all(&buffer[..read])?;
+        }
+    }
+}
+
+fn terminate_partial_pipeline(recorder: &mut Child, transcribers: &mut Vec<TranscriberChild>) {
+    let _ = terminate_process_tree(recorder, Duration::from_millis(250));
+    for transcriber in transcribers {
+        let _ = terminate_process_tree(&mut transcriber.child, Duration::from_millis(250));
     }
 }
 
@@ -625,11 +852,16 @@ fn interrupt_active_capture(inner: &mut CaptureInner) {
 fn wait_for_pipeline_ready(
     children: &mut CaptureChildren,
     recorder_ready_file: &Path,
-    transcriber_ready_file: &Path,
-    transcriber_timeout: Duration,
+    transcriber_ready_files: &[PathBuf],
+    transcriber_timeouts: &[Duration],
 ) -> Result<(), String> {
     let started = Instant::now();
-    let recorder_timeout = transcriber_timeout.min(MAX_RECORDER_READY_TIMEOUT);
+    let recorder_timeout = transcriber_timeouts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(MAX_RECORDER_READY_TIMEOUT)
+        .min(MAX_RECORDER_READY_TIMEOUT);
     loop {
         match children.recorder.try_wait() {
             Ok(Some(status)) => {
@@ -644,22 +876,26 @@ fn wait_for_pipeline_ready(
             }
             Ok(None) => {}
         }
-        match children.transcriber.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "live transcriber exited before readiness ({status})"
-                ))
+        for transcriber in &mut children.transcribers {
+            match transcriber.child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "transcriber exited before readiness: {} ({status})",
+                        transcriber.label,
+                    ))
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "could not inspect {} while starting: {error}",
+                        transcriber.label
+                    ))
+                }
+                Ok(None) => {}
             }
-            Err(error) => {
-                return Err(format!(
-                    "could not inspect live transcriber while starting: {error}"
-                ))
-            }
-            Ok(None) => {}
         }
         let recorder_ready = recorder_ready_file.is_file();
-        let transcriber_ready = transcriber_ready_file.is_file();
-        if recorder_ready && transcriber_ready {
+        let transcribers_ready = transcriber_ready_files.iter().all(|path| path.is_file());
+        if recorder_ready && transcribers_ready {
             return Ok(());
         }
         if !recorder_ready && started.elapsed() >= recorder_timeout {
@@ -668,11 +904,22 @@ fn wait_for_pipeline_ready(
                 recorder_timeout.as_secs_f64()
             ));
         }
-        if !transcriber_ready && started.elapsed() >= transcriber_timeout {
-            return Err(format!(
-                "live transcriber did not become ready within {:.1} seconds",
-                transcriber_timeout.as_secs_f64()
-            ));
+        for (index, ready_file) in transcriber_ready_files.iter().enumerate() {
+            let timeout = transcriber_timeouts
+                .get(index)
+                .copied()
+                .unwrap_or(Duration::from_secs(20));
+            if !ready_file.is_file() && started.elapsed() >= timeout {
+                let label = children
+                    .transcribers
+                    .get(index)
+                    .map(|transcriber| transcriber.label)
+                    .unwrap_or("live transcriber");
+                return Err(format!(
+                    "{label} did not become ready within {:.1} seconds",
+                    timeout.as_secs_f64()
+                ));
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -691,25 +938,30 @@ fn refresh_children(inner: &mut CaptureInner) {
     let Some(children) = inner.children.as_mut() else {
         return;
     };
-    let recorder_status = children.recorder.try_wait();
-    let transcriber_status = children.transcriber.try_wait();
-    let failure = match (recorder_status, transcriber_status) {
-        (_, Err(error)) => Some(format!("could not inspect live transcriber: {error}")),
-        (Err(error), _) => Some(format!("could not inspect native recorder: {error}")),
-        (Ok(recorder), Ok(transcriber)) => match (recorder, transcriber) {
-            // A failed transcriber closes its stdin and can make the recorder
-            // receive SIGPIPE. Preserve the causal transcriber exit in that race.
-            (_, Some(status)) if !status.success() => {
-                Some(format!("live transcriber exited unexpectedly ({status})"))
+    let mut failure = None;
+    for transcriber in &mut children.transcribers {
+        match transcriber.child.try_wait() {
+            Err(error) => {
+                failure = Some(format!("could not inspect {}: {error}", transcriber.label));
+                break;
             }
-            (Some(status), _) if !status.success() => {
-                Some(format!("native recorder exited unexpectedly ({status})"))
+            Ok(Some(status)) => {
+                failure = Some(format!(
+                    "transcriber exited unexpectedly: {} ({status})",
+                    transcriber.label,
+                ));
+                break;
             }
-            (_, Some(status)) => Some(format!("live transcriber exited unexpectedly ({status})")),
-            (Some(status), _) => Some(format!("native recorder exited unexpectedly ({status})")),
-            (None, None) => None,
-        },
-    };
+            Ok(None) => {}
+        }
+    }
+    if failure.is_none() {
+        failure = match children.recorder.try_wait() {
+            Err(error) => Some(format!("could not inspect native recorder: {error}")),
+            Ok(Some(status)) => Some(format!("native recorder exited unexpectedly ({status})")),
+            Ok(None) => None,
+        };
+    }
     let Some(error) = failure else {
         return;
     };
@@ -729,20 +981,25 @@ fn refresh_children(inner: &mut CaptureInner) {
 fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
     let _ = terminate_process_tree(&mut children.recorder, Duration::from_millis(500));
 
-    match children
-        .transcriber
-        .wait_timeout(Duration::from_secs(2))
-        .ok()
-        .flatten()
-    {
-        Some(_) => {
-            // A helper may exit before one of its descendants. Signal the
-            // owned process group as a final sweep.
-            let _ = terminate_process_tree(&mut children.transcriber, Duration::ZERO);
+    for transcriber in &mut children.transcribers {
+        match transcriber
+            .child
+            .wait_timeout(Duration::from_secs(2))
+            .ok()
+            .flatten()
+        {
+            Some(_) => {
+                // A helper may exit before one of its descendants. Signal the
+                // owned process group as a final sweep.
+                let _ = terminate_process_tree(&mut transcriber.child, Duration::ZERO);
+            }
+            None => {
+                let _ = terminate_process_tree(&mut transcriber.child, Duration::from_millis(500));
+            }
         }
-        None => {
-            let _ = terminate_process_tree(&mut children.transcriber, Duration::from_millis(500));
-        }
+    }
+    if let Some(timeline) = children.timeline.take() {
+        let _ = fs::remove_file(timeline);
     }
 }
 
@@ -1084,5 +1341,127 @@ mod tests {
         assert!(!transcriber_signal.exists());
         assert!(regular_log.exists());
         assert!(unrelated_signal.exists());
+    }
+
+    #[test]
+    fn provider_pipeline_fuses_matching_engines_and_fans_out_mixed_engines() {
+        let config = |asr: &str, diarization: &str| TranscriptionConfig {
+            asr: crate::models::AsrConfig {
+                provider: asr.into(),
+                model: match asr {
+                    "deepgram" => "nova-3",
+                    "elevenlabs" => "scribe-v2-realtime",
+                    _ => "whisper-small",
+                }
+                .into(),
+                language: "auto".into(),
+            },
+            diarization: crate::models::DiarizationConfig {
+                provider: diarization.into(),
+                model: match diarization {
+                    "deepgram" => Some("latest".into()),
+                    "local" => Some("sortformer-streaming".into()),
+                    _ => None,
+                },
+            },
+        };
+
+        assert_eq!(
+            pipeline_layout(&config("deepgram", "deepgram")),
+            ["deepgram-combined"]
+        );
+        assert_eq!(
+            pipeline_layout(&config("local", "local")),
+            ["local-combined"]
+        );
+        assert_eq!(
+            pipeline_layout(&config("elevenlabs", "local")),
+            ["elevenlabs-asr", "local-diarization"]
+        );
+        assert_eq!(
+            pipeline_layout(&config("local", "deepgram")),
+            ["local-asr", "deepgram-diarization"]
+        );
+        assert_eq!(
+            pipeline_layout(&config("elevenlabs", "none")),
+            ["elevenlabs-asr"]
+        );
+    }
+
+    #[test]
+    fn pcm_fanout_delivers_every_byte_to_each_provider_across_chunk_boundaries() {
+        let payload: Vec<u8> = (0..12_804).map(|index| (index % 251) as u8).collect();
+        let mut source = std::io::Cursor::new(payload.clone());
+        let mut destinations = [Vec::new(), Vec::new()];
+
+        fan_out_audio(&mut source, &mut destinations).unwrap();
+
+        assert_eq!(destinations[0], payload);
+        assert_eq!(destinations[1], payload);
+    }
+
+    #[test]
+    fn mixed_pipeline_resolves_independent_commands_and_one_shared_timeline() {
+        let definition = |requires_deepgram_key, requires_elevenlabs_key| TranscriberDefinition {
+            command: CommandSpec::new(PathBuf::from("/bin/echo"), Vec::new()),
+            requires_deepgram_key,
+            requires_elevenlabs_key,
+            ready_timeout: Duration::from_secs(20),
+        };
+        let manager = CaptureManager::new(CaptureConfig {
+            transcript_dir: PathBuf::from("/tmp/transcripts"),
+            log_dir: PathBuf::from("/tmp/logs"),
+            recorder: RecorderSpec::Executable(PathBuf::from("/bin/echo")),
+            transcribers: TranscriberCatalog {
+                deepgram: definition(true, false),
+                elevenlabs: definition(false, true),
+                local: Some(definition(false, false)),
+            },
+            environment: HashMap::new(),
+            requires_ready_signal: false,
+        });
+        let config = TranscriptionConfig {
+            asr: crate::models::AsrConfig {
+                provider: "elevenlabs".into(),
+                model: "scribe-v2-realtime".into(),
+                language: "zh-CN".into(),
+            },
+            diarization: crate::models::DiarizationConfig {
+                provider: "local".into(),
+                model: Some("pyannote-wespeaker-streaming".into()),
+            },
+        };
+        let timeline = Path::new("/tmp/speaker-timeline.json");
+
+        let resolved = manager
+            .resolve_transcribers(&config, Some(timeline))
+            .unwrap();
+
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|worker| worker.label)
+                .collect::<Vec<_>>(),
+            vec!["elevenlabs-asr", "local-diarization"]
+        );
+        assert_eq!(
+            resolved[0]
+                .environment
+                .get("ARCO_SPEAKER_TIMELINE_FILE")
+                .map(String::as_str),
+            Some("/tmp/speaker-timeline.json")
+        );
+        assert_eq!(
+            resolved[1]
+                .definition
+                .command
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["diarize", "--model", "pyannote-wespeaker-streaming"]
+        );
+        assert!(resolved[0].definition.requires_elevenlabs_key);
+        assert!(!resolved[1].definition.requires_elevenlabs_key);
     }
 }

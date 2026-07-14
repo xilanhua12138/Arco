@@ -88,6 +88,7 @@ function App() {
   const [notesStorageChanging, setNotesStorageChanging] = useState(false)
   const [storageError, setStorageError] = useState<string | null>(null)
   const returnFocusRef = useRef<string | null>(null)
+  const loadedNotesQueryRef = useRef<string | null>(null)
   const registeredShortcutRef = useRef<ListeningShortcut>(null)
   const toggleListeningRef = useRef<() => void>(() => undefined)
   const providerRoute = resolveProviderRoute(providerConfig, arco.runtimes)
@@ -211,7 +212,10 @@ function App() {
 
   const showPage = async (nextPage: AppPage) => {
     setSettingsOpen(false)
-    if (nextPage === 'notes') void refreshSavedNotes(notesQuery)
+    if (nextPage === 'notes') {
+      await refreshSavedNotes(notesQuery)
+      loadedNotesQueryRef.current = notesQuery
+    }
     if (
       nextPage === 'current' &&
       arco.capture.phase === 'recording' &&
@@ -435,8 +439,11 @@ function App() {
   }, [query, refreshMeetings])
 
   useEffect(() => {
-    if (page !== 'notes') return
-    const timer = window.setTimeout(() => void refreshSavedNotes(notesQuery), 180)
+    if (page !== 'notes' || loadedNotesQueryRef.current === notesQuery) return
+    const timer = window.setTimeout(() => {
+      loadedNotesQueryRef.current = notesQuery
+      void refreshSavedNotes(notesQuery)
+    }, 180)
     return () => window.clearTimeout(timer)
   }, [notesQuery, page, refreshSavedNotes])
 
@@ -491,6 +498,7 @@ function App() {
       primaryProvider={providerConfig.primary ?? providerRoute.provider}
       isFailover={providerRoute.isFailover}
       running={arco.agentRunning}
+      streamingTurn={arco.agentStreamingTurn}
       onAsk={arco.askAgent}
       onToggleSaved={arco.setAgentTurnSaved}
       workspace={agentWorkspace.workspace}
@@ -525,8 +533,8 @@ function App() {
           }
         }}
         onSaveElevenLabsApiKey={saveElevenLabsApiKey}
-        onPrepareTranscriptionModel={async (model, diarizationModel) => {
-          const next = await arcoBridge.prepareTranscriptionModel(model, diarizationModel)
+        onPrepareTranscriptionModel={async (model) => {
+          const next = await arcoBridge.prepareTranscriptionModel(model)
           setTranscriptionModels(next)
           return next
         }}
@@ -720,7 +728,7 @@ function App() {
         onRemoveElevenLabsApiKey={removeElevenLabsApiKey}
         onOpenElevenLabsConsole={arcoBridge.openElevenLabsConsole}
         onChangeTranscriptionConfig={changeTranscriptionConfig}
-        onPrepareTranscriptionModel={(model, diarizationModel) => {
+        onPrepareTranscriptionModel={(model) => {
           const selectedStatus = transcriptionModels.find((status) => status.id === model)
           if (!selectedStatus?.installed) {
             mergeTranscriptionModelStatus({
@@ -732,20 +740,7 @@ function App() {
               path: null,
             })
           }
-          if (diarizationModel) {
-            mergeTranscriptionModelStatus({
-              id: diarizationModel,
-              installed: false,
-              phase: 'downloading',
-              progress: 0,
-              error: null,
-              path: null,
-            })
-          }
-          void arcoBridge.prepareTranscriptionModel(
-            model,
-            diarizationModel,
-          ).then(setTranscriptionModels).catch((cause) => {
+          void arcoBridge.prepareTranscriptionModel(model).then(setTranscriptionModels).catch((cause) => {
             const error = cause instanceof Error ? cause.message : String(cause)
             mergeTranscriptionModelStatus({
               id: model,
@@ -755,16 +750,6 @@ function App() {
               error,
               path: null,
             })
-            if (diarizationModel) {
-              mergeTranscriptionModelStatus({
-                id: diarizationModel,
-                installed: false,
-                phase: 'failed',
-                progress: null,
-                error,
-                path: null,
-              })
-            }
           })
         }}
         onRemoveTranscriptionModel={(model) => {

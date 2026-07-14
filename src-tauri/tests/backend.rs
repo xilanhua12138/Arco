@@ -1,6 +1,6 @@
 use arco_lib::agent::AgentRunner;
 use arco_lib::capture::{
-    CaptureConfig, CaptureManager, CommandSpec, RecorderSpec, TranscriberCatalog,
+    CaptureConfig, CaptureManager, CaptureSecrets, CommandSpec, RecorderSpec, TranscriberCatalog,
     TranscriberDefinition,
 };
 use arco_lib::meeting_output::{
@@ -9,8 +9,8 @@ use arco_lib::meeting_output::{
 use arco_lib::meeting_state::MeetingStateStore;
 use arco_lib::meetings::{parse_meeting, MeetingStore};
 use arco_lib::models::{
-    AgentReply, AgentRunOutput, AgentSource, MeetingSummary, ProviderConnectionTest,
-    TranscriptionConfig,
+    AgentReply, AgentRunOutput, AgentSource, AsrConfig, DiarizationConfig, MeetingSummary,
+    ProviderConnectionTest, TranscriptionConfig,
 };
 use arco_lib::notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage};
 use arco_lib::process::{configure_process_group, terminate_process_tree};
@@ -2363,7 +2363,7 @@ fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
     config.requires_ready_signal = true;
     config.transcribers.deepgram.requires_deepgram_key = true;
     config.transcribers.local = Some(TranscriberDefinition {
-        command: CommandSpec::new(local, vec![OsString::from("stream")]),
+        command: CommandSpec::new(local, Vec::new()),
         requires_deepgram_key: false,
         requires_elevenlabs_key: false,
         ready_timeout: Duration::from_secs(3),
@@ -2374,10 +2374,15 @@ fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
     );
     let manager = CaptureManager::new(config);
     let transcription = TranscriptionConfig {
-        provider: "local".into(),
-        model: "nemotron-speech-3.5-streaming".into(),
-        language: "zh-CN".into(),
-        diarization: "lseend-ami-streaming".into(),
+        asr: AsrConfig {
+            provider: "local".into(),
+            model: "nemotron-speech-3.5-streaming".into(),
+            language: "zh-CN".into(),
+        },
+        diarization: DiarizationConfig {
+            provider: "local".into(),
+            model: Some("pyannote-wespeaker-streaming".into()),
+        },
     };
 
     let capture = manager
@@ -2386,9 +2391,10 @@ fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
 
     assert_eq!(capture.transcription, Some(transcription));
     let args = fs::read_to_string(args_path).unwrap();
+    assert_eq!(args.matches("stream\n").count(), 1);
     assert!(args.contains("stream\n--model\nnemotron-speech-3.5-streaming"));
     assert!(args.contains("--language\nzh-CN"));
-    assert!(args.contains("--diarization\nlseend-ami-streaming"));
+    assert!(args.contains("--diarization\npyannote-wespeaker-streaming"));
     assert!(args.contains("transcript-"));
     assert_eq!(manager.stop().unwrap().phase, "idle");
 }
@@ -2424,10 +2430,13 @@ fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
     let secret = "0123456789abcdef0123456789abcdef".to_string();
 
     manager
-        .start_with_transcription_and_secret(
+        .start_with_transcription_and_secrets(
             "both",
             TranscriptionConfig::default(),
-            Some(secret.clone()),
+            CaptureSecrets {
+                deepgram: Some(secret.clone()),
+                elevenlabs: None,
+            },
         )
         .unwrap();
 
@@ -2461,15 +2470,27 @@ fn elevenlabs_selection_routes_its_sidecar_secret_and_audio_mode() {
     );
     let manager = CaptureManager::new(config);
     let transcription = TranscriptionConfig {
-        provider: "elevenlabs".into(),
-        model: "scribe-v2-realtime".into(),
-        language: "zh-CN".into(),
-        diarization: "none".into(),
+        asr: AsrConfig {
+            provider: "elevenlabs".into(),
+            model: "scribe-v2-realtime".into(),
+            language: "zh-CN".into(),
+        },
+        diarization: DiarizationConfig {
+            provider: "none".into(),
+            model: None,
+        },
     };
     let secret = "sk_0123456789abcdef0123456789abcdef".to_string();
 
     let capture = manager
-        .start_with_transcription_and_secret("mic", transcription.clone(), Some(secret.clone()))
+        .start_with_transcription_and_secrets(
+            "mic",
+            transcription.clone(),
+            CaptureSecrets {
+                deepgram: None,
+                elevenlabs: Some(secret.clone()),
+            },
+        )
         .unwrap();
 
     assert_eq!(capture.transcription, Some(transcription));
@@ -2487,10 +2508,15 @@ fn capture_rejects_invalid_or_unavailable_local_provider_contracts() {
     let manager = CaptureManager::new(fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n"));
 
     let invalid = TranscriptionConfig {
-        provider: "local".into(),
-        model: "whisper-imaginary".into(),
-        language: "auto".into(),
-        diarization: "sortformer-streaming".into(),
+        asr: AsrConfig {
+            provider: "local".into(),
+            model: "whisper-imaginary".into(),
+            language: "auto".into(),
+        },
+        diarization: DiarizationConfig {
+            provider: "local".into(),
+            model: Some("sortformer-streaming".into()),
+        },
     };
     assert!(manager
         .start_with_transcription("mic", invalid)
@@ -2498,10 +2524,15 @@ fn capture_rejects_invalid_or_unavailable_local_provider_contracts() {
         .contains("unsupported local transcription model"));
 
     let unavailable = TranscriptionConfig {
-        provider: "local".into(),
-        model: "whisper-base".into(),
-        language: "auto".into(),
-        diarization: "none".into(),
+        asr: AsrConfig {
+            provider: "local".into(),
+            model: "whisper-base".into(),
+            language: "auto".into(),
+        },
+        diarization: DiarizationConfig {
+            provider: "none".into(),
+            model: None,
+        },
     };
     assert!(manager
         .start_with_transcription("mic", unavailable)

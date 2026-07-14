@@ -179,8 +179,8 @@ export function NotesPage({
       </header>
 
       <section className="notes-workspace" aria-label={t('notes.workspace')}>
-        <aside className="notes-index" aria-label={t('notes.results')}>
-          {loading ? (
+        <aside className="notes-index" aria-label={t('notes.results')} aria-busy={loading}>
+          {loading && notes.length === 0 ? (
             <div className="notes-loading" role="status" aria-label={t('notes.loading')}>
               {[0, 1, 2].map((item) => <span key={item} />)}
             </div>

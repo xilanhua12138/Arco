@@ -4,8 +4,16 @@ import { arcoBridge } from './bridge'
 
 const invokeMock = vi.hoisted(() => vi.fn())
 const openMock = vi.hoisted(() => vi.fn())
+const channelHandlers = vi.hoisted(() => [] as Array<(event: unknown) => void>)
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: invokeMock,
+  Channel: class {
+    set onmessage(handler: (event: unknown) => void) {
+      channelHandlers.push(handler)
+    }
+  },
+}))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openMock }))
 
 const input: AskAgentInput = {
@@ -111,10 +119,13 @@ describe('browser Agent bridge', () => {
   it('models an explicit demo model download without touching the network', async () => {
     window.history.replaceState({}, '', '/?demo=1')
 
-    const prepared = await arcoBridge.prepareTranscriptionModel('whisper-base', 'lseend-dihard3-streaming')
+    const preparedAsr = await arcoBridge.prepareTranscriptionModel('whisper-base')
+    const prepared = await arcoBridge.prepareTranscriptionModel('lseend-dihard3-streaming')
 
-    expect(prepared).toEqual(expect.arrayContaining([
+    expect(preparedAsr).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'whisper-base', installed: true, phase: 'ready' }),
+    ]))
+    expect(prepared).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'lseend-dihard3-streaming', installed: true, phase: 'ready' }),
     ]))
 
@@ -198,6 +209,7 @@ describe('desktop meeting output bridge', () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     invokeMock.mockReset()
     openMock.mockReset()
+    channelHandlers.length = 0
   })
 
   it('persists the visible quick-action message while sending its detailed Agent prompt', async () => {
@@ -217,6 +229,30 @@ describe('desktop meeting output bridge', () => {
       meetingId: 'demo-live',
       workspace: null,
       contextScope: 'transcript',
+      requestId: expect.any(String),
+      onEvent: expect.anything(),
+    })
+  })
+
+  it('forwards native Agent process events to the caller before the invoke resolves', async () => {
+    const onEvent = vi.fn()
+    invokeMock.mockImplementation(async () => {
+      channelHandlers.at(-1)?.({
+        type: 'status',
+        requestId: 'request-native',
+        meetingId: 'demo-live',
+        phase: 'analyzing',
+      })
+      return { question: input.question }
+    })
+
+    await arcoBridge.runAgent({ ...input, requestId: 'request-native' }, onEvent)
+
+    expect(onEvent).toHaveBeenCalledWith({
+      type: 'status',
+      requestId: 'request-native',
+      meetingId: 'demo-live',
+      phase: 'analyzing',
     })
   })
 
@@ -320,10 +356,8 @@ describe('desktop transcription bridge', () => {
 
   it('passes the selected provider contract when capture starts', async () => {
     const transcription: TranscriptionConfig = {
-      provider: 'local',
-      model: 'nemotron-speech-3.5-streaming',
-      language: 'zh-CN',
-      diarization: 'sortformer-streaming',
+      asr: { provider: 'local', model: 'nemotron-speech-3.5-streaming', language: 'zh-CN' },
+      diarization: { provider: 'local', model: 'sortformer-streaming' },
     }
     invokeMock.mockResolvedValue({
       phase: 'recording',

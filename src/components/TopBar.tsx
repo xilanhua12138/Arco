@@ -32,11 +32,11 @@ export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting
   const remoteSpeakers = speakers.filter((speaker) => speaker.toLocaleLowerCase().startsWith('remote'))
   const roomSpeakers = speakers.filter((speaker) => speaker.toLocaleLowerCase().startsWith('in room'))
   const utteranceCount = detail?.lines.length ?? meeting?.utteranceCount ?? 0
-  const transcriptionProvider = capture.transcription?.provider === 'deepgram'
+  const transcriptionProvider = capture.transcription?.asr.provider === 'deepgram'
     ? 'Deepgram'
-    : capture.transcription?.provider === 'elevenlabs'
+    : capture.transcription?.asr.provider === 'elevenlabs'
       ? 'ElevenLabs'
-      : capture.transcription?.provider === 'local'
+      : capture.transcription?.asr.provider === 'local'
         ? t('common.onThisMac')
         : null
   const editingTitle = Boolean(meeting && editingMeetingId === meeting.id)

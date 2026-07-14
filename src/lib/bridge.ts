@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   demoAgentReply,
@@ -9,6 +9,7 @@ import {
 } from './demoData'
 import type {
   AskAgentInput,
+  AgentStreamEvent,
   AudioMode,
   AudioSetupCheck,
   CaptureState,
@@ -53,6 +54,9 @@ const demoNotesStorageKey = 'arco.demoNotesStorage'
 const demoDefaultTranscriptDirectory = '/Users/demo/Library/Application Support/Arco/transcripts'
 const demoDefaultNotesDirectory = '/Users/demo/Library/Application Support/Arco/notes'
 
+const createAgentRequestId = () => globalThis.crypto?.randomUUID?.()
+  ?? `agent-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
 const demoTranscriptionModels: TranscriptionModelStatus[] = [
   {
     id: 'nemotron-speech-3.5-streaming',
@@ -72,6 +76,14 @@ const demoTranscriptionModels: TranscriptionModelStatus[] = [
   })),
   {
     id: 'sortformer-streaming',
+    installed: false,
+    phase: 'not-installed',
+    progress: null,
+    error: null,
+    path: null,
+  },
+  {
+    id: 'pyannote-wespeaker-streaming',
     installed: false,
     phase: 'not-installed',
     progress: null,
@@ -491,16 +503,13 @@ export const arcoBridge = {
     return hasExplicitDemoMode() ? readDemoTranscriptionModels() : demoTranscriptionModels
   },
 
-  async prepareTranscriptionModel(model: LocalTranscriptionModelId, diarizationModel?: LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
+  async prepareTranscriptionModel(model: LocalTranscriptionModelId | LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
-      return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model, diarizationModel })
+      return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model })
     }
     if (hasExplicitDemoMode()) {
       await wait(120)
-      let statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, true)
-      if (diarizationModel) {
-        statuses = updateDemoTranscriptionModel(statuses, diarizationModel, true)
-      }
+      const statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, true)
       writeDemoTranscriptionModels(statuses)
       return statuses
     }
@@ -652,8 +661,14 @@ export const arcoBridge = {
     return updated
   },
 
-  async runAgent(input: AskAgentInput): Promise<PersistedAgentTurn> {
+  async runAgent(
+    input: AskAgentInput,
+    onEvent: (event: AgentStreamEvent) => void = () => undefined,
+  ): Promise<PersistedAgentTurn> {
+    const requestId = input.requestId ?? createAgentRequestId()
     if (hasTauriRuntime()) {
+      const eventChannel = new Channel<AgentStreamEvent>()
+      eventChannel.onmessage = onEvent
       return invoke<PersistedAgentTurn>('run_agent', {
         provider: input.provider,
         usedFallback: input.usedFallback,
@@ -662,11 +677,19 @@ export const arcoBridge = {
         meetingId: input.meetingId,
         workspace: input.workspace ?? null,
         contextScope: input.contextScope,
+        requestId,
+        onEvent: eventChannel,
       })
     }
     if (!hasExplicitDemoMode()) {
       throw new Error('Browser preview cannot call your local CLI. Open the Arco desktop app to ask Codex or Claude.')
     }
+    onEvent({
+      type: 'status',
+      requestId,
+      meetingId: input.meetingId,
+      phase: 'analyzing',
+    })
     await wait(500)
     const turn: PersistedAgentTurn = {
       ...demoAgentReply,
@@ -693,6 +716,12 @@ export const arcoBridge = {
       usedFallback: input.usedFallback,
       createdAt: new Date().toISOString(),
     }
+    onEvent({
+      type: 'answer',
+      requestId,
+      meetingId: input.meetingId,
+      answer: turn.answer,
+    })
     writeDemoTurns([...readDemoTurns(), turn])
     return turn
   },

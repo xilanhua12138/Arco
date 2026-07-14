@@ -5,10 +5,8 @@ import type { TranscriptionConfig, TranscriptionModelStatus } from '../types'
 import { SettingsSheet } from './SettingsSheet'
 
 const localConfig: TranscriptionConfig = {
-  provider: 'local',
-  model: 'nemotron-speech-3.5-streaming',
-  language: 'zh-CN',
-  diarization: 'sortformer-streaming',
+  asr: { provider: 'local', model: 'nemotron-speech-3.5-streaming', language: 'zh-CN' },
+  diarization: { provider: 'local', model: 'sortformer-streaming' },
 }
 
 const statuses: TranscriptionModelStatus[] = [
@@ -107,7 +105,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ ...localConfig, diarization: 'none' }}
+        transcriptionConfig={{ ...localConfig, diarization: { provider: 'none', model: null } }}
         transcriptionModels={statuses}
         onClose={vi.fn()}
       />,
@@ -144,7 +142,28 @@ describe('SettingsSheet local transcription', () => {
     expect(screen.getByText('Audio and transcript stay on this Mac.')).toBeVisible()
   })
 
-  it('offers three independent on-device diarization models', async () => {
+  it('discloses the cloud audio boundary when local ASR uses Deepgram diarization', async () => {
+    const user = userEvent.setup()
+    render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ ...localConfig, diarization: { provider: 'deepgram', model: 'latest' } }}
+        transcriptionModels={statuses}
+        onChangeTranscriptionConfig={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByText('Recognition'))
+
+    expect(screen.getByText(/Speech recognition runs on this Mac/i)).toBeVisible()
+    expect(screen.getByText(/Audio is also sent to Deepgram for speaker separation/i)).toBeVisible()
+    expect(screen.queryByText('Audio and transcript stay on this Mac.')).not.toBeInTheDocument()
+  })
+
+  it('offers four independent on-device diarization models', async () => {
     const user = userEvent.setup()
     render(
       <SettingsSheet
@@ -161,6 +180,7 @@ describe('SettingsSheet local transcription', () => {
     await user.click(screen.getByText('Recognition'))
 
     expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /Pyannote \+ WeSpeaker/i })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: /LS-EEND Meeting/i })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: /LS-EEND General/i })).not.toBeChecked()
   })
@@ -174,7 +194,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ ...localConfig, diarization: 'lseend-ami-streaming' }}
+        transcriptionConfig={{ ...localConfig, diarization: { provider: 'local', model: 'lseend-ami-streaming' } }}
         transcriptionModels={[
           ...statuses,
           {
@@ -196,18 +216,50 @@ describe('SettingsSheet local transcription', () => {
     const download = screen.getByRole('button', { name: 'Download LS-EEND Meeting' })
     await user.click(download)
 
-    expect(prepare).toHaveBeenCalledWith('nemotron-speech-3.5-streaming', 'lseend-ami-streaming')
-    expect(changeConfig).not.toHaveBeenCalledWith(expect.objectContaining({ provider: 'deepgram' }))
+    expect(prepare).toHaveBeenCalledWith('lseend-ami-streaming')
+    expect(changeConfig).not.toHaveBeenCalledWith(expect.objectContaining({ asr: expect.objectContaining({ provider: 'deepgram' }) }))
   })
 
-  it('shows only Deepgram built-in diarization for the cloud provider', async () => {
+  it('downloads the experimental Pyannote and WeSpeaker streaming model independently', async () => {
+    const user = userEvent.setup()
+    const prepare = vi.fn()
+    render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ ...localConfig, diarization: { provider: 'local', model: 'pyannote-wespeaker-streaming' } }}
+        transcriptionModels={[
+          ...statuses,
+          {
+            id: 'pyannote-wespeaker-streaming',
+            installed: false,
+            phase: 'not-installed',
+            progress: null,
+            error: null,
+            path: null,
+          },
+        ]}
+        onPrepareTranscriptionModel={prepare}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByText('Recognition'))
+    expect(screen.getByText('Experimental · Pyannote + WeSpeaker · 5-second rolling window')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Download Pyannote + WeSpeaker' }))
+
+    expect(prepare).toHaveBeenCalledWith('pyannote-wespeaker-streaming')
+  })
+
+  it('lets a cloud ASR select a different streaming diarization provider', async () => {
     const user = userEvent.setup()
     render(
       <SettingsSheet
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'local', model: 'sortformer-streaming' } }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={vi.fn()}
         onClose={vi.fn()}
@@ -216,9 +268,11 @@ describe('SettingsSheet local transcription', () => {
 
     await user.click(screen.getByText('Recognition'))
 
-    expect(screen.getAllByText('Deepgram built-in')[0]).toBeVisible()
-    expect(screen.queryByRole('radio', { name: /Streaming Sortformer/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: /LS-EEND/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /LS-EEND Meeting/i })).not.toBeChecked()
+    expect(screen.getByText('Deepgram ASR')).toBeVisible()
+    expect(screen.getByText(/speaker labels come from the selected provider/i)).toBeVisible()
   })
 
   it('offers ElevenLabs as an independent realtime provider without speaker diarization', async () => {
@@ -229,7 +283,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'deepgram', model: 'latest' } }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={changeConfig}
         elevenLabsCredential={{ configured: false, verified: false, message: null }}
@@ -242,14 +296,12 @@ describe('SettingsSheet local transcription', () => {
     await user.click(within(providers).getByRole('radio', { name: /ElevenLabs/i }))
 
     expect(changeConfig).toHaveBeenCalledWith({
-      provider: 'elevenlabs',
-      model: 'scribe-v2-realtime',
-      language: 'zh-CN',
-      diarization: 'none',
+      asr: { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'zh-CN' },
+      diarization: { provider: 'deepgram', model: 'latest' },
     })
   })
 
-  it('configures ElevenLabs with its own key and never claims speaker separation', async () => {
+  it('configures ElevenLabs ASR independently from streaming speaker separation', async () => {
     const user = userEvent.setup()
     const saveKey = vi.fn().mockResolvedValue(undefined)
     const openConsole = vi.fn().mockResolvedValue(undefined)
@@ -258,7 +310,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'auto', diarization: 'none' }}
+        transcriptionConfig={{ asr: { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'auto' }, diarization: { provider: 'none', model: null } }}
         transcriptionModels={statuses}
         elevenLabsCredential={{ configured: false, verified: false, message: null }}
         onSaveElevenLabsApiKey={saveKey}
@@ -268,8 +320,10 @@ describe('SettingsSheet local transcription', () => {
     )
 
     await user.click(screen.getByText('Recognition'))
-    expect(screen.getByText(/Realtime speaker separation is not available/i)).toBeVisible()
-    expect(screen.getByText(/keeps system and room audio as separate source lanes/i)).toBeVisible()
+    expect(screen.getByText('ElevenLabs ASR')).toBeVisible()
+    expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).toBeVisible()
+    expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeVisible()
+    expect(screen.getByText(/keeps source lanes only/i)).toBeVisible()
     expect(screen.queryByText(/when listening stops|final speaker/i)).not.toBeInTheDocument()
 
     await user.type(screen.getByLabelText('ElevenLabs API key'), 'sk_0123456789abcdefghijklmnopqrstuvwxyz')
@@ -292,7 +346,7 @@ describe('SettingsSheet local transcription', () => {
         runtimes={[]}
         isDesktop
         audioModeLocked
-        transcriptionConfig={{ ...localConfig, model: 'whisper-base' }}
+        transcriptionConfig={{ ...localConfig, asr: { ...localConfig.asr, model: 'whisper-base' } }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={vi.fn()}
         onPrepareTranscriptionModel={prepare}
@@ -315,7 +369,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ ...localConfig, model: 'whisper-base' }}
+        transcriptionConfig={{ ...localConfig, asr: { ...localConfig.asr, model: 'whisper-base' } }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={vi.fn()}
         onPrepareTranscriptionModel={prepare}
@@ -364,7 +418,7 @@ describe('SettingsSheet local transcription', () => {
     await user.click(download)
 
     expect(prepare).toHaveBeenCalledOnce()
-    expect(prepare).toHaveBeenCalledWith('nemotron-speech-3.5-streaming', 'sortformer-streaming')
+    expect(prepare).toHaveBeenCalledWith('sortformer-streaming')
   })
 
   it('shows Sortformer download progress without pretending the model is ready', async () => {
@@ -406,7 +460,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'deepgram', model: 'latest' } }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={vi.fn()}
         onClose={vi.fn()}
@@ -427,7 +481,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ ...localConfig, model: 'whisper-base' }}
+        transcriptionConfig={{ ...localConfig, asr: { ...localConfig.asr, model: 'whisper-base' } }}
         transcriptionModels={statuses.map((status) => status.id === 'whisper-base'
           ? { ...status, phase: 'downloading', progress: 0.42 }
           : status)}
@@ -454,10 +508,8 @@ describe('SettingsSheet local transcription', () => {
         runtimes={[]}
         isDesktop
         transcriptionConfig={{
-          provider: 'deepgram',
-          model: 'nova-3',
-          language: 'zh-CN',
-          diarization: 'provider',
+          asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' },
+          diarization: { provider: 'deepgram', model: 'latest' },
         }}
         transcriptionModels={statuses}
         onChangeTranscriptionConfig={vi.fn()}
@@ -493,7 +545,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'deepgram', model: 'latest' } }}
         transcriptionModels={statuses}
         deepgramCredential={{ configured: false, verified: false, message: null }}
         onOpenDeepgramConsole={vi.fn().mockRejectedValue(new Error('Could not open the Deepgram console.'))}
@@ -513,7 +565,7 @@ describe('SettingsSheet local transcription', () => {
         open
         runtimes={[]}
         isDesktop
-        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'deepgram', model: 'latest' } }}
         transcriptionModels={statuses}
         deepgramCredential={{ configured: true, verified: true, message: null }}
         onRemoveDeepgramApiKey={vi.fn()}

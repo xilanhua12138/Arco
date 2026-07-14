@@ -33,10 +33,15 @@ describe('first-run onboarding state', () => {
       secondary: null,
       testedProvider: null,
       transcriptionConfig: {
-        provider: 'local' as const,
-        model: 'whisper-base' as const,
-        language: 'zh-CN' as const,
-        diarization: 'lseend-ami-streaming' as const,
+        asr: {
+          provider: 'local' as const,
+          model: 'whisper-base' as const,
+          language: 'zh-CN' as const,
+        },
+        diarization: {
+          provider: 'local' as const,
+          model: 'lseend-ami-streaming' as const,
+        },
       },
       audioMode: 'both' as const,
       listeningShortcut: 'CommandOrControl+Shift+Space' as const,
@@ -70,6 +75,10 @@ describe('first-run onboarding state', () => {
       step: 4,
       furthestStep: 4,
       listeningShortcut: 'CommandOrControl+Shift+Space',
+      transcriptionConfig: {
+        asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' },
+        diarization: { provider: 'deepgram', model: 'latest' },
+      },
     })
     expect(JSON.parse(window.localStorage.getItem(ONBOARDING_DRAFT_STORAGE_KEY) ?? '{}'))
       .toMatchObject({ step: 4, listeningShortcut: 'CommandOrControl+Shift+Space' })
@@ -92,10 +101,15 @@ describe('first-run onboarding state', () => {
       secondary: null,
       testedProvider: 'codex' as const,
       transcriptionConfig: {
-        provider: 'deepgram' as const,
-        model: 'nova-3' as const,
-        language: 'zh-CN' as const,
-        diarization: 'provider' as const,
+        asr: {
+          provider: 'deepgram' as const,
+          model: 'nova-3' as const,
+          language: 'zh-CN' as const,
+        },
+        diarization: {
+          provider: 'deepgram' as const,
+          model: 'latest' as const,
+        },
       },
       audioMode: 'both' as const,
       listeningShortcut: 'CommandOrControl+Shift+Space' as const,

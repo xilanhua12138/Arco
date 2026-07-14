@@ -28,6 +28,7 @@ const renderPanel = ({
   onToggleSaved = successfulSave(),
   workspace = null,
   onChooseWorkspace = vi.fn(async () => null),
+  streamingTurn = null,
 }: {
   replies?: typeof demoAgentReply[]
   runtimes?: RuntimeStatus[]
@@ -38,6 +39,13 @@ const renderPanel = ({
   onToggleSaved?: SaveHandler
   workspace?: string | null
   onChooseWorkspace?: () => Promise<string | null>
+  streamingTurn?: {
+    requestId: string
+    meetingId: string
+    question: string
+    phase: 'starting' | 'analyzing' | 'using-tools' | 'finalizing'
+    answer: string
+  } | null
 } = {}) => {
   render(
     <InsightPanel
@@ -52,6 +60,7 @@ const renderPanel = ({
       onToggleSaved={onToggleSaved}
       workspace={workspace}
       onChooseWorkspace={onChooseWorkspace}
+      streamingTurn={streamingTurn}
     />,
   )
   return { onAsk, onToggleSaved }
@@ -122,6 +131,29 @@ describe('InsightPanel product safeguards', () => {
       question: 'Answer what was asked',
       agentPrompt: 'What is the strongest direct answer to the latest question in this meeting?',
     }))
+  })
+
+  it('replaces the waiting indicator with the latest completed Codex message while the run continues', async () => {
+    const user = userEvent.setup()
+    const onAsk = vi.fn<(input: AskAgentInput) => Promise<boolean>>(
+      () => new Promise<boolean>(() => undefined),
+    )
+    renderPanel({
+      onAsk,
+      streamingTurn: {
+        requestId: 'request-1',
+        meetingId: meeting.summary.id,
+        question: 'Answer what was asked',
+        phase: 'using-tools',
+        answer: '**Decision:** ship the smaller scope.',
+      },
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Answer what was asked' }))
+
+    expect(screen.getByText('Decision:').tagName).toBe('STRONG')
+    expect(screen.getByText(/ship the smaller scope/)).toBeVisible()
+    expect(screen.queryByText('Reading this meeting and your selected context…')).not.toBeInTheDocument()
   })
 
   it('keeps the quick-action label as the visible user message after the answer arrives', () => {

@@ -127,35 +127,53 @@ impl CaptureState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TranscriptionConfig {
+pub struct AsrConfig {
     pub provider: String,
     pub model: String,
     pub language: String,
-    pub diarization: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiarizationConfig {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionConfig {
+    pub asr: AsrConfig,
+    pub diarization: DiarizationConfig,
 }
 
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            provider: "deepgram".into(),
-            model: "nova-3".into(),
-            language: "zh-CN".into(),
-            diarization: "provider".into(),
+            asr: AsrConfig {
+                provider: "deepgram".into(),
+                model: "nova-3".into(),
+                language: "zh-CN".into(),
+            },
+            diarization: DiarizationConfig {
+                provider: "deepgram".into(),
+                model: Some("latest".into()),
+            },
         }
     }
 }
 
 impl TranscriptionConfig {
     pub fn validate(&self) -> Result<(), String> {
-        match self.provider.as_str() {
+        match self.asr.provider.as_str() {
             "deepgram" => {
-                if self.model != "nova-3" || self.diarization != "provider" {
-                    return Err("Deepgram requires model nova-3 with provider diarization".into());
+                if self.asr.model != "nova-3" {
+                    return Err("Deepgram ASR requires model nova-3".into());
                 }
             }
             "elevenlabs" => {
-                if self.model != "scribe-v2-realtime" || self.diarization != "none" {
-                    return Err("ElevenLabs realtime does not support speaker diarization".into());
+                if self.asr.model != "scribe-v2-realtime" {
+                    return Err("ElevenLabs ASR requires model scribe-v2-realtime".into());
                 }
             }
             "local" => {
@@ -167,35 +185,57 @@ impl TranscriptionConfig {
                     "whisper-medium",
                     "whisper-large",
                 ];
-                if !MODELS.contains(&self.model.as_str()) {
+                if !MODELS.contains(&self.asr.model.as_str()) {
                     return Err(format!(
                         "unsupported local transcription model: {}",
-                        self.model
+                        self.asr.model
                     ));
                 }
-                if !matches!(
-                    self.diarization.as_str(),
-                    "sortformer-streaming"
-                        | "lseend-ami-streaming"
-                        | "lseend-dihard3-streaming"
-                        | "none"
-                ) {
-                    return Err(
-                        "local transcription requires a local diarization model or no diarization"
-                            .into(),
-                    );
-                }
-                if self.model == "nemotron-speech-3.5-streaming" && !cfg!(target_arch = "aarch64") {
+                if self.asr.model == "nemotron-speech-3.5-streaming"
+                    && !cfg!(target_arch = "aarch64")
+                {
                     return Err("Nemotron Speech 3.5 requires Apple Silicon".into());
                 }
             }
             other => return Err(format!("unsupported transcription provider: {other}")),
         }
-        if !matches!(self.language.as_str(), "auto" | "zh-CN" | "en-US") {
+        if !matches!(self.asr.language.as_str(), "auto" | "zh-CN" | "en-US") {
             return Err(format!(
                 "unsupported transcription language: {}",
-                self.language
+                self.asr.language
             ));
+        }
+        match (
+            self.diarization.provider.as_str(),
+            self.diarization.model.as_deref(),
+        ) {
+            ("deepgram", Some("latest")) => {}
+            (
+                "local",
+                Some(
+                    "sortformer-streaming"
+                    | "pyannote-wespeaker-streaming"
+                    | "lseend-ami-streaming"
+                    | "lseend-dihard3-streaming",
+                ),
+            ) => {}
+            ("none", None) => {}
+            ("deepgram", model) => {
+                return Err(format!(
+                    "Deepgram diarization requires model latest, got {}",
+                    model.unwrap_or("none")
+                ))
+            }
+            ("local", model) => {
+                return Err(format!(
+                    "unsupported local diarization model: {}",
+                    model.unwrap_or("none")
+                ))
+            }
+            ("none", Some(_)) => {
+                return Err("disabled speaker diarization cannot select a model".into())
+            }
+            (other, _) => return Err(format!("unsupported diarization provider: {other}")),
         }
         Ok(())
     }
@@ -203,14 +243,26 @@ impl TranscriptionConfig {
 
 #[cfg(test)]
 mod transcription_config_tests {
-    use super::TranscriptionConfig;
+    use super::{AsrConfig, DiarizationConfig, TranscriptionConfig};
 
     fn local(diarization: &str) -> TranscriptionConfig {
         TranscriptionConfig {
-            provider: "local".into(),
-            model: "whisper-base".into(),
-            language: "auto".into(),
-            diarization: diarization.into(),
+            asr: AsrConfig {
+                provider: "local".into(),
+                model: "whisper-base".into(),
+                language: "auto".into(),
+            },
+            diarization: if diarization == "none" {
+                DiarizationConfig {
+                    provider: "none".into(),
+                    model: None,
+                }
+            } else {
+                DiarizationConfig {
+                    provider: "local".into(),
+                    model: Some(diarization.into()),
+                }
+            },
         }
     }
 
@@ -218,6 +270,7 @@ mod transcription_config_tests {
     fn local_transcription_accepts_each_native_diarizer() {
         for diarization in [
             "sortformer-streaming",
+            "pyannote-wespeaker-streaming",
             "lseend-ami-streaming",
             "lseend-dihard3-streaming",
             "none",
@@ -227,32 +280,66 @@ mod transcription_config_tests {
     }
 
     #[test]
-    fn cloud_and_local_diarization_backends_cannot_be_mixed() {
-        let deepgram = TranscriptionConfig {
-            diarization: "lseend-ami-streaming".into(),
-            ..TranscriptionConfig::default()
-        };
-        assert!(deepgram.validate().is_err());
+    fn diarization_provider_rejects_a_model_from_another_provider() {
+        let mut config = TranscriptionConfig::default();
+        config.diarization.model = Some("lseend-ami-streaming".into());
+        assert!(config.validate().is_err());
 
-        assert!(local("provider").validate().is_err());
+        assert!(local("latest").validate().is_err());
+    }
+
+    #[test]
+    fn independent_provider_config_accepts_local_remote_streaming_mixes() {
+        let remote_asr_local_diarization = serde_json::json!({
+            "asr": {
+                "provider": "elevenlabs",
+                "model": "scribe-v2-realtime",
+                "language": "auto"
+            },
+            "diarization": {
+                "provider": "local",
+                "model": "sortformer-streaming"
+            }
+        });
+        let local_asr_remote_diarization = serde_json::json!({
+            "asr": {
+                "provider": "local",
+                "model": "whisper-small",
+                "language": "zh-CN"
+            },
+            "diarization": {
+                "provider": "deepgram",
+                "model": "latest"
+            }
+        });
+
+        for value in [remote_asr_local_diarization, local_asr_remote_diarization] {
+            let config: TranscriptionConfig = serde_json::from_value(value).unwrap();
+            assert!(config.validate().is_ok());
+        }
     }
 
     #[test]
     fn elevenlabs_requires_scribe_realtime_without_speaker_diarization() {
         let valid = TranscriptionConfig {
-            provider: "elevenlabs".into(),
-            model: "scribe-v2-realtime".into(),
-            language: "auto".into(),
-            diarization: "none".into(),
+            asr: AsrConfig {
+                provider: "elevenlabs".into(),
+                model: "scribe-v2-realtime".into(),
+                language: "auto".into(),
+            },
+            diarization: DiarizationConfig {
+                provider: "none".into(),
+                model: None,
+            },
         };
         assert!(valid.validate().is_ok());
 
         let mut wrong_model = valid.clone();
-        wrong_model.model = "nova-3".into();
+        wrong_model.asr.model = "nova-3".into();
         assert!(wrong_model.validate().is_err());
 
         let mut wrong_diarizer = valid;
-        wrong_diarizer.diarization = "provider".into();
+        wrong_diarizer.diarization.model = Some("latest".into());
         assert!(wrong_diarizer.validate().is_err());
     }
 }
@@ -286,6 +373,19 @@ pub struct AgentReply {
     pub answer: String,
     pub sources: Vec<AgentSource>,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStreamEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub request_id: String,
+    pub meeting_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

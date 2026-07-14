@@ -94,6 +94,7 @@ export function AgentOverlay() {
               primaryProvider={providerConfig.primary ?? providerRoute.provider}
               isFailover={providerRoute.isFailover}
               running={arco.agentRunning}
+              streamingTurn={arco.agentStreamingTurn}
               showHeader={false}
               onAsk={arco.askAgent}
               onToggleSaved={arco.setAgentTurnSaved}

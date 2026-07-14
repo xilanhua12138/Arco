@@ -1,3 +1,4 @@
+use crate::speaker_timeline::wait_for_speaker;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{Local, TimeZone};
 use futures_util::{SinkExt, StreamExt};
@@ -20,12 +21,14 @@ const SAMPLE_RATE: usize = 16_000;
 const STEREO_FRAME_BYTES: usize = 4;
 const READ_CHUNK_BYTES: usize = 6_400;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
+const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 const REALTIME_MODEL: &str = "scribe_v2_realtime";
 const REALTIME_ENDPOINT: &str = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     pub channel: usize,
+    pub speaker: i64,
     pub label: String,
     pub text: String,
     pub start: f64,
@@ -113,11 +116,38 @@ pub fn segments_from_realtime(payload: &Value, channel: usize) -> Vec<Segment> {
         .unwrap_or(start);
     vec![Segment {
         channel,
+        speaker: 0,
         label: source_label(channel),
         text: text.into(),
         start,
         end: end.max(start),
     }]
+}
+
+async fn attribute_segment(mut segment: Segment, timeline_path: Option<&Path>) -> Segment {
+    let Some(path) = timeline_path else {
+        return segment;
+    };
+    let speaker = wait_for_speaker(
+        path,
+        segment.channel,
+        segment.start,
+        segment.end,
+        SPEAKER_TIMELINE_WAIT,
+    )
+    .await
+    .unwrap_or(0);
+    segment.speaker = speaker;
+    segment.label = format!(
+        "{} {}",
+        if segment.channel == 0 {
+            "Remote"
+        } else {
+            "In room"
+        },
+        speaker + 1,
+    );
+    segment
 }
 
 fn source_label(channel: usize) -> String {
@@ -167,8 +197,8 @@ impl TranscriptWriter {
         .and_then(|_| {
             writeln!(
                 file,
-                "<!-- arco channel={} speaker=0 stream=elevenlabs-realtime start={:.3} end={:.3} -->\n",
-                segment.channel, segment.start, segment.end,
+                "<!-- arco channel={} speaker={} stream=elevenlabs-realtime start={:.3} end={:.3} -->\n",
+                segment.channel, segment.speaker, segment.start, segment.end,
             )
         })
         .and_then(|_| file.flush())
@@ -266,6 +296,7 @@ async fn stream_connected_channel(
     >,
     receiver: &mut mpsc::Receiver<AudioChunk>,
     writer: &Arc<Mutex<TranscriptWriter>>,
+    timeline_path: Option<&Path>,
     channel: usize,
 ) -> Result<bool, String> {
     let (mut sink, mut stream) = socket.split();
@@ -315,6 +346,7 @@ async fn stream_connected_channel(
                         for mut segment in segments_from_realtime(&payload, channel) {
                             segment.start += origin;
                             segment.end += origin;
+                            let segment = attribute_segment(segment, timeline_path).await;
                             writer.lock().await.append(&segment)?;
                         }
                     }
@@ -336,6 +368,7 @@ struct RealtimeSession<'a> {
     api_key: &'a str,
     language: &'a str,
     writer: Arc<Mutex<TranscriptWriter>>,
+    timeline_path: Option<PathBuf>,
     ready_channels: Arc<AtomicUsize>,
     expected_ready_channels: usize,
 }
@@ -363,8 +396,14 @@ async fn run_realtime_channel(
                         signal_ready()?;
                     }
                 }
-                match stream_connected_channel(socket, &mut receiver, &session.writer, channel)
-                    .await
+                match stream_connected_channel(
+                    socket,
+                    &mut receiver,
+                    &session.writer,
+                    session.timeline_path.as_deref(),
+                    channel,
+                )
+                .await
                 {
                     Ok(true) => return Ok(()),
                     Ok(false) => {}
@@ -429,6 +468,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         transcript_path.to_path_buf(),
         session_started_at,
     )?));
+    let timeline_path = std::env::var_os("ARCO_SPEAKER_TIMELINE_FILE").map(PathBuf::from);
     let buffer_seconds = std::env::var("ARCO_AUDIO_BUFFER_SECONDS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -441,6 +481,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         api_key: api_key.trim(),
         language: &language,
         writer,
+        timeline_path,
         ready_channels: Arc::new(AtomicUsize::new(0)),
         expected_ready_channels,
     };
@@ -498,6 +539,37 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].label, "In room 1");
         assert_eq!(segments[0].text, "Hello from the room.");
+    }
+
+    #[tokio::test]
+    async fn an_independent_streaming_diarizer_can_label_elevenlabs_asr_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let timeline_path = root.path().join("speaker-timeline.json");
+        let mut timeline =
+            crate::speaker_timeline::SpeakerTimelineStore::new(timeline_path.clone());
+        timeline
+            .update(
+                1,
+                1.0,
+                vec![crate::speaker_timeline::SpeakerInterval {
+                    speaker: 2,
+                    start: 0.0,
+                    end: 1.0,
+                }],
+                vec![],
+            )
+            .unwrap();
+        let segment = Segment {
+            channel: 1,
+            speaker: 0,
+            label: "In room 1".into(),
+            text: "Hello".into(),
+            start: 0.1,
+            end: 0.9,
+        };
+
+        let attributed = attribute_segment(segment, Some(&timeline_path)).await;
+        assert_eq!(attributed.label, "In room 3");
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod notes;
 mod overlay;
 pub mod paths;
 pub mod process;
+pub mod speaker_timeline;
 pub mod storage;
 pub mod transcription;
 
@@ -67,9 +68,9 @@ mod dock_icon_contract_tests {
     }
 }
 
-use agent::AgentRunner;
+use agent::{AgentRunner, AgentStreamUpdate};
 use audio_setup::AudioSetupTester;
-use capture::{CaptureConfig, CaptureManager};
+use capture::{CaptureConfig, CaptureManager, CaptureSecrets};
 use deepgram_credentials::DeepgramCredentialStatus;
 use elevenlabs_credentials::ElevenLabsCredentialStatus;
 use meeting_output::{
@@ -78,15 +79,16 @@ use meeting_output::{
 use meeting_state::MeetingStateStore;
 use meetings::MeetingStore;
 use models::{
-    AudioSetupCheck, CaptureState, GeneratedMeetingArtifact, MeetingDetail, MeetingSummary,
-    NoteDocument, PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus, SavedNote,
-    TranscriptionConfig, TranscriptionModelStatus,
+    AgentStreamEvent, AudioSetupCheck, CaptureState, GeneratedMeetingArtifact, MeetingDetail,
+    MeetingSummary, NoteDocument, PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus,
+    SavedNote, TranscriptionConfig, TranscriptionModelStatus,
 };
 use notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage, NotesStorageSettings};
 use paths::AppPaths;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use storage::{TranscriptStorage, TranscriptStorageSettings};
+use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 use transcription::LocalTranscriptionRuntime;
@@ -522,11 +524,10 @@ async fn prepare_transcription_model(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     model: String,
-    diarization_model: Option<String>,
 ) -> Result<Vec<TranscriptionModelStatus>, String> {
     let runtime = state.transcription.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        runtime.prepare_with_progress(&model, diarization_model.as_deref(), |status| {
+        runtime.prepare_with_progress(&model, |status| {
             let _ = app.emit("arco:transcription-model-progress", status);
         })
     })
@@ -557,16 +558,24 @@ fn start_capture(
         .lock()
         .map_err(|_| "transcript storage coordinator is unavailable".to_string())?;
     let transcription = transcription.unwrap_or_default();
-    let provider_api_key = match transcription.provider.as_str() {
-        "deepgram" => deepgram_credentials::load_api_key()?,
-        "elevenlabs" => elevenlabs_credentials::load_api_key()?,
-        _ => None,
+    let secrets = CaptureSecrets {
+        deepgram: if transcription.asr.provider == "deepgram"
+            || transcription.diarization.provider == "deepgram"
+        {
+            deepgram_credentials::load_api_key()?
+        } else {
+            None
+        },
+        elevenlabs: if transcription.asr.provider == "elevenlabs" {
+            elevenlabs_credentials::load_api_key()?
+        } else {
+            None
+        },
     };
-    let capture = state.capture.start_with_transcription_and_secret(
-        &mode,
-        transcription,
-        provider_api_key,
-    )?;
+    let capture =
+        state
+            .capture
+            .start_with_transcription_and_secrets(&mode, transcription, secrets)?;
     if let Err(window_error) = overlay::show_hud(&app) {
         let rollback = state.capture.stop();
         if let Err(error) = overlay::release_capture_surfaces(&app) {
@@ -641,10 +650,16 @@ fn run_agent(
     meeting_id: String,
     context_scope: Option<String>,
     workspace: Option<String>,
+    request_id: String,
+    on_event: Channel<AgentStreamEvent>,
 ) -> Result<PersistedAgentTurn, String> {
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("question cannot be empty".to_string());
+    }
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() || request_id.len() > 128 || request_id.chars().any(char::is_control) {
+        return Err("invalid Agent request ID".to_string());
     }
     let agent_prompt = agent_prompt
         .as_deref()
@@ -677,13 +692,42 @@ fn run_agent(
         &canonical_cwd,
     )?;
     let expected_session_id = binding.as_ref().map(|binding| binding.session_id.as_str());
-    let output = state.agent.run_session(
+    let _ = on_event.send(AgentStreamEvent {
+        event_type: "status".into(),
+        request_id: request_id.clone(),
+        meeting_id: meeting_id.clone(),
+        phase: Some("starting".into()),
+        answer: None,
+    });
+    let stream_channel = on_event.clone();
+    let stream_request_id = request_id.clone();
+    let stream_meeting_id = meeting_id.clone();
+    let output = state.agent.run_session_streamed(
         &provider,
         agent_prompt,
         &meeting,
         context_scope,
         workspace.as_deref(),
         expected_session_id,
+        move |update| {
+            let event = match update {
+                AgentStreamUpdate::Phase(phase) => AgentStreamEvent {
+                    event_type: "status".into(),
+                    request_id: stream_request_id.clone(),
+                    meeting_id: stream_meeting_id.clone(),
+                    phase: Some(phase.into()),
+                    answer: None,
+                },
+                AgentStreamUpdate::Answer(answer) => AgentStreamEvent {
+                    event_type: "answer".into(),
+                    request_id: stream_request_id.clone(),
+                    meeting_id: stream_meeting_id.clone(),
+                    phase: None,
+                    answer: Some(answer),
+                },
+            };
+            let _ = stream_channel.send(event);
+        },
     )?;
     let turn = state.meeting_state.commit_agent_turn(
         &meeting_id,

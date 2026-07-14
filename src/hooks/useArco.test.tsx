@@ -361,3 +361,89 @@ describe('useArco cross-window capture synchronization', () => {
     expect(result.current.capture.phase).toBe('idle')
   })
 })
+
+describe('useArco Agent process streaming', () => {
+  it('exposes status and answer snapshots before committing the persisted turn', async () => {
+    const detail = meetingWith(2)
+    mockMeetingBackend(detail)
+    let pushEvent!: (event: {
+      type: 'status' | 'answer'
+      requestId: string
+      meetingId: string
+      phase?: 'starting' | 'analyzing' | 'using-tools' | 'finalizing'
+      answer?: string
+    }) => void
+    let finishRun!: () => void
+    const completedTurn = {
+      ...demoAgentReply,
+      id: 'persisted-stream-turn',
+      meetingId: detail.summary.id,
+      question: 'What did we decide?',
+      answer: 'The persisted final answer.',
+    }
+    vi.spyOn(arcoBridge, 'runAgent').mockImplementation((input, onEvent) => new Promise((resolve) => {
+      expect(onEvent).toEqual(expect.any(Function))
+      pushEvent = onEvent!
+      finishRun = () => resolve(completedTurn)
+      expect(input.requestId).toEqual(expect.any(String))
+    }))
+
+    const { result } = renderHook(() => useArco())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    let askPromise!: Promise<boolean>
+    act(() => {
+      askPromise = result.current.askAgent({
+        provider: 'codex',
+        usedFallback: false,
+        question: 'What did we decide?',
+        meetingId: detail.summary.id,
+        contextScope: 'transcript',
+      })
+    })
+    await waitFor(() => expect(result.current.agentRunning).toBe(true))
+    const requestId = result.current.agentStreamingTurn?.requestId
+    expect(requestId).toEqual(expect.any(String))
+
+    act(() => {
+      pushEvent({
+        type: 'status',
+        requestId: requestId!,
+        meetingId: detail.summary.id,
+        phase: 'using-tools',
+      })
+      pushEvent({
+        type: 'answer',
+        requestId: requestId!,
+        meetingId: detail.summary.id,
+        answer: 'A completed intermediate Codex message.',
+      })
+      pushEvent({
+        type: 'answer',
+        requestId: 'stale-request',
+        meetingId: detail.summary.id,
+        answer: 'This stale request must not replace the live answer.',
+      })
+      pushEvent({
+        type: 'answer',
+        requestId: requestId!,
+        meetingId: 'another-meeting',
+        answer: 'This other meeting must not replace the live answer.',
+      })
+    })
+
+    expect(result.current.agentStreamingTurn).toMatchObject({
+      phase: 'using-tools',
+      answer: 'A completed intermediate Codex message.',
+    })
+    expect(result.current.agentReplies).toEqual([])
+
+    await act(async () => {
+      finishRun()
+      await askPromise
+    })
+
+    expect(result.current.agentStreamingTurn).toBeNull()
+    expect(result.current.agentReplies).toEqual([completedTurn])
+  })
+})

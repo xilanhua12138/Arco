@@ -66,8 +66,7 @@ interface OnboardingProps {
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
   onSaveElevenLabsApiKey: (apiKey: string) => Promise<ElevenLabsCredentialStatus>
   onPrepareTranscriptionModel: (
-    model: LocalTranscriptionModelId,
-    diarizationModel?: LocalDiarizationModelId,
+    model: LocalTranscriptionModelId | LocalDiarizationModelId,
   ) => Promise<TranscriptionModelStatus[]>
   onTestAudio: (mode: AudioMode) => Promise<AudioSetupCheck>
   onRelaunch: () => void | Promise<void>
@@ -182,16 +181,16 @@ export function Onboarding({
 
   const primary = selectedPrimary ?? firstAvailable
   const models = modelsOverride ?? transcriptionModels
-  const credential = transcription.provider === 'elevenlabs'
-    ? elevenLabsCredentialOverride ?? elevenLabsCredential
-    : deepgramCredentialOverride ?? deepgramCredential
-  const selectedLocalModel: LocalTranscriptionModelId = transcription.provider === 'local'
-    ? transcription.model as LocalTranscriptionModelId
+  const currentDeepgramCredential = deepgramCredentialOverride ?? deepgramCredential
+  const currentElevenLabsCredential = elevenLabsCredentialOverride ?? elevenLabsCredential
+  const asrCredential = transcription.asr.provider === 'elevenlabs'
+    ? currentElevenLabsCredential
+    : currentDeepgramCredential
+  const selectedLocalModel: LocalTranscriptionModelId = transcription.asr.provider === 'local'
+    ? transcription.asr.model as LocalTranscriptionModelId
     : defaultLocalModel
-  const selectedDiarizationModel: LocalDiarizationModelId = transcription.provider === 'local'
-    && transcription.diarization !== 'none'
-    && transcription.diarization !== 'provider'
-    ? transcription.diarization as LocalDiarizationModelId
+  const selectedDiarizationModel: LocalDiarizationModelId = transcription.diarization.provider === 'local'
+    ? transcription.diarization.model as LocalDiarizationModelId
     : defaultDiarizationModel
   const selectedLocalStatus = modelStatus(models, selectedLocalModel)
   const selectedDiarizationStatus = modelStatus(models, selectedDiarizationModel)
@@ -208,10 +207,14 @@ export function Onboarding({
   const runtimeFor = (provider: ProviderId) => runtimes.find((runtime) => runtime.provider === provider)
   const providerReady = agentChoice === 'transcript'
     || (primary !== null && providerTest === 'passed' && testedProvider === primary)
-  const localReady = modelReady(models, selectedLocalModel) && modelReady(models, selectedDiarizationModel)
-  const transcriptionReady = transcription.provider === 'local'
-    ? localReady
-    : credential.configured && credential.verified
+  const asrReady = transcription.asr.provider === 'local'
+    ? modelReady(models, selectedLocalModel)
+    : asrCredential.configured && asrCredential.verified
+  const diarizationReady = transcription.diarization.provider === 'none'
+    || (transcription.diarization.provider === 'local'
+      ? modelReady(models, selectedDiarizationModel)
+      : currentDeepgramCredential.configured && currentDeepgramCredential.verified)
+  const transcriptionReady = asrReady && diarizationReady
   const audioReady = (['system', 'microphone'] as const).every((source) => (
     audioChecks[source].state === 'passed' && audioChecks[source].result?.ready
   ))
@@ -246,12 +249,12 @@ export function Onboarding({
 
   const progressSummary = useMemo(() => ({
     agent: agentChoice === 'transcript' ? t('onboarding.transcriptOnly') : primary ? providerName(primary) : t('common.notSet'),
-    transcription: transcription.provider === 'deepgram'
+    transcription: transcription.asr.provider === 'deepgram'
       ? 'Deepgram'
-      : transcription.provider === 'elevenlabs'
+      : transcription.asr.provider === 'elevenlabs'
         ? 'ElevenLabs'
         : t('onboarding.onThisMac'),
-  }), [agentChoice, primary, t, transcription.provider])
+  }), [agentChoice, primary, t, transcription.asr.provider])
 
   const reveal = (next: number) => {
     setFurthestStep((current) => Math.max(current, next))
@@ -302,35 +305,33 @@ export function Onboarding({
     }
   }
 
-  const changeProvider = (provider: TranscriptionConfig['provider']) => {
+  const changeProvider = (provider: TranscriptionConfig['asr']['provider']) => {
     setApiKey('')
     setTranscriptionError(null)
     setTranscriptionState('idle')
-    setTranscription(provider === 'local'
-      ? {
-          provider: 'local',
-          model: selectedLocalModel,
-          language: transcription.language,
-          diarization: selectedDiarizationModel,
-        }
-      : provider === 'deepgram'
-        ? { provider: 'deepgram', model: 'nova-3', language: transcription.language, diarization: 'provider' }
-        : { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: transcription.language, diarization: 'none' })
+    setTranscription((current) => ({
+      ...current,
+      asr: provider === 'local'
+        ? { provider: 'local', model: selectedLocalModel, language: current.asr.language }
+        : provider === 'deepgram'
+          ? { provider: 'deepgram', model: 'nova-3', language: current.asr.language }
+          : { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: current.asr.language },
+    }))
   }
 
   const changeLanguage = (language: TranscriptionLanguage) => {
-    setTranscription((current) => ({ ...current, language }))
+    setTranscription((current) => ({ ...current, asr: { ...current.asr, language } }))
   }
 
-  const saveCloudCredential = async () => {
+  const saveCloudCredential = async (provider: 'deepgram' | 'elevenlabs') => {
     if (!apiKey.trim() || transcriptionState === 'working') return
     setTranscriptionState('working')
     setTranscriptionError(null)
     try {
-      const next = transcription.provider === 'elevenlabs'
+      const next = provider === 'elevenlabs'
         ? await onSaveElevenLabsApiKey(apiKey.trim())
         : await onSaveDeepgramApiKey(apiKey.trim())
-      if (transcription.provider === 'elevenlabs') setElevenLabsCredentialOverride(next)
+      if (provider === 'elevenlabs') setElevenLabsCredentialOverride(next)
       else setDeepgramCredentialOverride(next)
       setApiKey('')
       setTranscriptionState(next.configured && next.verified ? 'passed' : 'failed')
@@ -338,30 +339,38 @@ export function Onboarding({
       setTranscriptionState('failed')
       setTranscriptionError(cause instanceof Error
         ? cause.message
-        : t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsFailed' : 'onboarding.deepgramFailed'))
+        : t(provider === 'elevenlabs' ? 'onboarding.elevenLabsFailed' : 'onboarding.deepgramFailed'))
     }
   }
 
   const changeLocalModel = (model: LocalTranscriptionModelId) => {
     setTranscription((current) => ({
-      provider: 'local',
-      model,
-      language: current.language,
-      diarization: current.provider === 'local' && current.diarization !== 'none'
-        ? current.diarization
-        : defaultDiarizationModel,
+      ...current,
+      asr: { provider: 'local', model, language: current.asr.language },
     }))
     setTranscriptionError(null)
   }
 
   const changeDiarizationModel = (diarization: LocalDiarizationModelId) => {
     setTranscription((current) => ({
-      provider: 'local',
-      model: current.provider === 'local' ? current.model : defaultLocalModel,
-      language: current.language,
-      diarization,
+      ...current,
+      diarization: { provider: 'local', model: diarization },
     }))
     setTranscriptionError(null)
+  }
+
+  const changeDiarizationProvider = (provider: TranscriptionConfig['diarization']['provider']) => {
+    setApiKey('')
+    setTranscriptionError(null)
+    setTranscriptionState('idle')
+    setTranscription((current) => ({
+      ...current,
+      diarization: provider === 'deepgram'
+        ? { provider: 'deepgram', model: 'latest' }
+        : provider === 'local'
+          ? { provider: 'local', model: selectedDiarizationModel }
+          : { provider: 'none', model: null },
+    }))
   }
 
   const prepareLocalModel = async (target: LocalTranscriptionModelId | LocalDiarizationModelId) => {
@@ -369,9 +378,7 @@ export function Onboarding({
     setPreparingModel(target)
     setModelErrors((current) => ({ ...current, [target]: undefined }))
     try {
-      const next = target === selectedLocalModel
-        ? await onPrepareTranscriptionModel(selectedLocalModel)
-        : await onPrepareTranscriptionModel(selectedLocalModel, target as LocalDiarizationModelId)
+      const next = await onPrepareTranscriptionModel(target)
       setModelsOverride(next)
       const status = modelStatus(next, target)
       if (!status?.installed || status.phase !== 'ready') {
@@ -654,28 +661,27 @@ export function Onboarding({
                 <h2 id="onboarding-transcription-heading">{t('onboarding.chooseTranscription')}</h2>
                 <p className="onboarding-lede">{t('onboarding.transcriptionHelp')}</p>
                 <div className="onboarding-choice-list onboarding-transcription-choice">
-                  <label className={transcription.provider === 'deepgram' ? 'onboarding-choice-selected' : ''}>
-                    <input type="radio" name="transcription-provider" aria-label="Deepgram" checked={transcription.provider === 'deepgram'} onChange={() => changeProvider('deepgram')} />
+                  <label className={transcription.asr.provider === 'deepgram' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="transcription-provider" aria-label="Deepgram" checked={transcription.asr.provider === 'deepgram'} onChange={() => changeProvider('deepgram')} />
                     <Cloud size={19} /><span><strong>Deepgram</strong><small>{t('onboarding.deepgramHelp')}</small></span>
                   </label>
-                  <label className={transcription.provider === 'elevenlabs' ? 'onboarding-choice-selected' : ''}>
-                    <input type="radio" name="transcription-provider" aria-label="ElevenLabs" checked={transcription.provider === 'elevenlabs'} onChange={() => changeProvider('elevenlabs')} />
+                  <label className={transcription.asr.provider === 'elevenlabs' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="transcription-provider" aria-label="ElevenLabs" checked={transcription.asr.provider === 'elevenlabs'} onChange={() => changeProvider('elevenlabs')} />
                     <Cloud size={19} /><span><strong>ElevenLabs</strong><small>{t('onboarding.elevenLabsHelp')}</small></span>
                   </label>
-                  <label className={transcription.provider === 'local' ? 'onboarding-choice-selected' : ''}>
-                    <input type="radio" name="transcription-provider" aria-label={t('onboarding.onThisMac')} checked={transcription.provider === 'local'} onChange={() => changeProvider('local')} />
+                  <label className={transcription.asr.provider === 'local' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="transcription-provider" aria-label={t('onboarding.onThisMac')} checked={transcription.asr.provider === 'local'} onChange={() => changeProvider('local')} />
                     <HardDrive size={19} /><span><strong>{t('onboarding.onThisMac')}</strong><small>{t('onboarding.localHelp')}</small></span>
                   </label>
                 </div>
-                <label className="onboarding-language-field"><span>{t('settings.language')}</span><select value={transcription.language} onChange={(event) => changeLanguage(event.target.value as TranscriptionLanguage)}><option value="zh-CN">简体中文</option><option value="en-US">English</option><option value="auto">{t('common.automatic')}</option></select></label>
-                {transcription.provider !== 'local' ? (
+                <label className="onboarding-language-field"><span>{t('settings.language')}</span><select value={transcription.asr.language} onChange={(event) => changeLanguage(event.target.value as TranscriptionLanguage)}><option value="zh-CN">简体中文</option><option value="en-US">English</option><option value="auto">{t('common.automatic')}</option></select></label>
+                {transcription.asr.provider !== 'local' ? (
                   <div className="onboarding-transcription-action">
-                    {credential.configured && credential.verified ? (
-                      <span className="onboarding-ready-line"><Check size={15} /> {t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsReady' : 'onboarding.deepgramReady')}</span>
+                    {asrCredential.configured && asrCredential.verified ? (
+                      <span className="onboarding-ready-line"><Check size={15} /> {t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsReady' : 'onboarding.deepgramReady')}</span>
                     ) : (
-                      <><label><span>{t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')}</span><input type="password" aria-label={t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')} value={apiKey} placeholder={transcription.provider === 'elevenlabs' ? 'sk_…' : 'dg_…'} onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={saveCloudCredential} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
+                      <><label><span>{t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')}</span><input type="password" aria-label={t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')} value={apiKey} placeholder={transcription.asr.provider === 'elevenlabs' ? 'sk_…' : 'dg_…'} onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={() => saveCloudCredential(transcription.asr.provider === 'elevenlabs' ? 'elevenlabs' : 'deepgram')} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
                     )}
-                    {transcription.provider === 'elevenlabs' && <small className="onboarding-provider-capability">{t('onboarding.elevenLabsDiarization')}</small>}
                   </div>
                 ) : (
                   <div className="onboarding-local-models">
@@ -696,6 +702,27 @@ export function Onboarding({
                         </button>
                       )}
                     </div>
+                  </div>
+                )}
+
+                <h3>{t('settings.speakerSeparation')}</h3>
+                <div className="onboarding-choice-list onboarding-transcription-choice">
+                  <label className={transcription.diarization.provider === 'deepgram' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="diarization-provider" aria-label="Deepgram speaker separation" checked={transcription.diarization.provider === 'deepgram'} onChange={() => changeDiarizationProvider('deepgram')} />
+                    <Cloud size={19} /><span><strong>Deepgram</strong><small>{t('settings.deepgramNoLocalModel')}</small></span>
+                  </label>
+                  <label className={transcription.diarization.provider === 'local' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="diarization-provider" aria-label={t('onboarding.speakerModel')} checked={transcription.diarization.provider === 'local'} onChange={() => changeDiarizationProvider('local')} />
+                    <HardDrive size={19} /><span><strong>{t('onboarding.onThisMac')}</strong><small>{t('settings.sortformerDescription')}</small></span>
+                  </label>
+                  <label className={transcription.diarization.provider === 'none' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="diarization-provider" aria-label={t('common.off')} checked={transcription.diarization.provider === 'none'} onChange={() => changeDiarizationProvider('none')} />
+                    <span><strong>{t('common.off')}</strong><small>{t('settings.speakerOff')}</small></span>
+                  </label>
+                </div>
+
+                {transcription.diarization.provider === 'local' && (
+                  <div className="onboarding-local-models">
                     <div className="onboarding-model-setup-row">
                       <label>
                         <span>{t('onboarding.speakerModel')}</span>
@@ -708,13 +735,26 @@ export function Onboarding({
                       {modelReady(models, selectedDiarizationModel) ? (
                         <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.readyOnMac')}</span>
                       ) : (
-                        <button type="button" onClick={() => prepareLocalModel(selectedDiarizationModel)} disabled={Boolean(preparingModel) || modelBusy(selectedDiarizationStatus) || !modelReady(models, selectedLocalModel)}>
+                        <button type="button" onClick={() => prepareLocalModel(selectedDiarizationModel)} disabled={Boolean(preparingModel) || modelBusy(selectedDiarizationStatus)}>
                           <Download size={14} /> {modelActionLabel(selectedDiarizationModel, selectedDiarizationStatus, t('onboarding.downloadSpeakerModel'))}
                         </button>
                       )}
                     </div>
                   </div>
                 )}
+
+                {transcription.diarization.provider === 'deepgram'
+                  && transcription.asr.provider !== 'deepgram'
+                  && asrReady
+                  && (
+                    <div className="onboarding-transcription-action">
+                      {currentDeepgramCredential.configured && currentDeepgramCredential.verified ? (
+                        <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.deepgramReady')}</span>
+                      ) : (
+                        <><label><span>{t('onboarding.deepgramKey')}</span><input type="password" aria-label={t('onboarding.deepgramKey')} value={apiKey} placeholder="dg_…" onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={() => saveCloudCredential('deepgram')} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
+                      )}
+                    </div>
+                  )}
                 {transcriptionError && <p className="onboarding-inline-error" role="alert">{transcriptionError}</p>}
               </section>
             )}

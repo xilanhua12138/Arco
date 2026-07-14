@@ -8,9 +8,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
@@ -24,6 +26,12 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTION_TEST_TOKEN: &str = "ARCO_OK";
 const CONNECTION_TEST_PROMPT: &str = "Reply with exactly ARCO_OK and nothing else. Do not use tools or read files. Do not inspect the current directory, workspace, or home directory.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentStreamUpdate {
+    Phase(&'static str),
+    Answer(String),
+}
 
 #[derive(Clone, Debug)]
 pub struct AgentRunner {
@@ -218,6 +226,53 @@ impl AgentRunner {
         workspace: Option<&Path>,
         resume_session_id: Option<&str>,
     ) -> Result<AgentRunOutput, String> {
+        self.run_session_inner(
+            provider,
+            question,
+            meeting,
+            context_scope,
+            workspace,
+            resume_session_id,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_session_streamed<F>(
+        &self,
+        provider: &str,
+        question: &str,
+        meeting: &MeetingDetail,
+        context_scope: &str,
+        workspace: Option<&Path>,
+        resume_session_id: Option<&str>,
+        on_update: F,
+    ) -> Result<AgentRunOutput, String>
+    where
+        F: FnMut(AgentStreamUpdate) + Send + 'static,
+    {
+        self.run_session_inner(
+            provider,
+            question,
+            meeting,
+            context_scope,
+            workspace,
+            resume_session_id,
+            Some(Box::new(on_update)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_session_inner(
+        &self,
+        provider: &str,
+        question: &str,
+        meeting: &MeetingDetail,
+        context_scope: &str,
+        workspace: Option<&Path>,
+        resume_session_id: Option<&str>,
+        on_update: Option<Box<dyn FnMut(AgentStreamUpdate) + Send>>,
+    ) -> Result<AgentRunOutput, String> {
         validate_provider(provider)?;
         if let Some(session_id) = resume_session_id {
             validate_native_session_id(session_id)?;
@@ -268,14 +323,36 @@ impl AgentRunner {
         } else {
             None
         };
-        let output = run_process(
-            &binary,
-            &args,
-            Some(prompt.as_bytes()),
-            Some(&context.working_directory),
-            self.timeout,
-            codex_sandbox.as_ref(),
-        )?;
+        let output = if let Some(mut on_update) = on_update {
+            let provider = provider.to_string();
+            run_process_streamed(
+                &binary,
+                &args,
+                Some(prompt.as_bytes()),
+                Some(&context.working_directory),
+                self.timeout,
+                codex_sandbox.as_ref(),
+                MAX_AGENT_OUTPUT_BYTES,
+                move |line| {
+                    let update = match provider.as_str() {
+                        "codex" => parse_codex_stream_update(line).ok().flatten(),
+                        _ => None,
+                    };
+                    if let Some(update) = update {
+                        on_update(update);
+                    }
+                },
+            )?
+        } else {
+            run_process(
+                &binary,
+                &args,
+                Some(prompt.as_bytes()),
+                Some(&context.working_directory),
+                self.timeout,
+                codex_sandbox.as_ref(),
+            )?
+        };
         let parsed = parse_provider_output(provider, &output)?;
         if let Some(expected) = resume_session_id {
             if expected != parsed.provider_session_id {
@@ -483,6 +560,35 @@ fn parse_codex_jsonl(output: &str) -> Result<ParsedProviderOutput, String> {
             "Codex CLI JSONL did not include a completed agent message".to_string()
         })?,
     })
+}
+
+fn parse_codex_stream_update(line: &str) -> Result<Option<AgentStreamUpdate>, String> {
+    let event: serde_json::Value = serde_json::from_str(line)
+        .map_err(|_| "Codex CLI returned an invalid streaming event".to_string())?;
+    let event_type = event.get("type").and_then(serde_json::Value::as_str);
+    let item_type = event
+        .get("item")
+        .and_then(|item| item.get("type"))
+        .and_then(serde_json::Value::as_str);
+    let update = match (event_type, item_type) {
+        (Some("turn.started"), _) => Some(AgentStreamUpdate::Phase("analyzing")),
+        (Some("item.started"), Some("command_execution" | "mcp_tool_call" | "web_search")) => {
+            Some(AgentStreamUpdate::Phase("using-tools"))
+        }
+        (Some("item.started" | "item.updated"), Some("reasoning" | "todo_list")) => {
+            Some(AgentStreamUpdate::Phase("analyzing"))
+        }
+        (Some("item.completed"), Some("agent_message")) => event
+            .get("item")
+            .and_then(|item| item.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| AgentStreamUpdate::Answer(text.to_string())),
+        (Some("turn.completed"), _) => Some(AgentStreamUpdate::Phase("finalizing")),
+        _ => None,
+    };
+    Ok(update)
 }
 
 fn parse_claude_json(output: &str) -> Result<ParsedProviderOutput, String> {
@@ -1216,6 +1322,172 @@ fn run_process_limited(
     Ok(stdout)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_process_streamed<F>(
+    binary: &Path,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    codex_sandbox: Option<&RestrictedCodexSandbox>,
+    max_output_bytes: u64,
+    mut on_stdout_line: F,
+) -> Result<String, String>
+where
+    F: FnMut(&str) + Send + 'static,
+{
+    let mut stderr_file = NamedTempFile::new()
+        .map_err(|error| format!("could not create agent error buffer: {error}"))?;
+    let mut command = if let Some(sandbox) = codex_sandbox {
+        let mut command = Command::new(&sandbox.executable);
+        command
+            .arg("-f")
+            .arg(sandbox.profile.path())
+            .arg(&sandbox.launch_binary)
+            .args(args)
+            .env("PATH", &sandbox.path_environment)
+            .env("CODEX_HOME", &sandbox.codex_home);
+        command
+    } else {
+        let mut command = Command::new(binary);
+        command.args(args);
+        command
+    };
+    command
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr_file.reopen().map_err(|error| {
+            format!("could not open agent error buffer: {error}")
+        })?))
+        .env("NO_COLOR", "1");
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    configure_process_group(&mut command)
+        .map_err(|error| format!("could not isolate agent CLI process group: {error}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to start {}: {error}", binary.display()))?;
+
+    let stdin_writer = if let Some(input) = stdin {
+        child.stdin.take().map(|mut child_stdin| {
+            let input = input.to_vec();
+            std::thread::spawn(move || {
+                child_stdin
+                    .write_all(&input)
+                    .map_err(|error| format!("failed to send context to agent CLI: {error}"))
+            })
+        })
+    } else {
+        None
+    };
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "could not open agent output stream".to_string())?;
+    let stdout_bytes = Arc::new(AtomicU64::new(0));
+    let reader_bytes = Arc::clone(&stdout_bytes);
+    let stdout_reader = std::thread::spawn(move || -> Result<String, String> {
+        let mut reader = BufReader::new(stdout).take(max_output_bytes.saturating_add(1));
+        let mut output = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|error| format!("could not read agent output stream: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            output.extend_from_slice(&line);
+            reader_bytes.store(output.len() as u64, Ordering::Release);
+            if output.len() as u64 > max_output_bytes {
+                return Err(format!(
+                    "agent CLI output exceeded {} bytes",
+                    max_output_bytes
+                ));
+            }
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if !line.is_empty() {
+                on_stdout_line(line);
+            }
+        }
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        let output_size = stdout_bytes.load(Ordering::Acquire) + file_size(&stderr_file)?;
+        if output_size > max_output_bytes {
+            terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE).map_err(|error| {
+                format!("agent CLI output exceeded {max_output_bytes} bytes and its process group could not be terminated: {error}")
+            })?;
+            let _ = finish_stdin_writer(stdin_writer);
+            let _ = finish_stdout_reader(stdout_reader);
+            return Err(format!(
+                "agent CLI output exceeded {} bytes",
+                max_output_bytes
+            ));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE);
+                let _ = finish_stdin_writer(stdin_writer);
+                let _ = finish_stdout_reader(stdout_reader);
+                return Err(format!("could not wait for agent CLI: {error}"));
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE).map_err(|error| {
+                format!(
+                    "agent CLI timed out and its process group could not be terminated: {error}"
+                )
+            })?;
+            let _ = finish_stdin_writer(stdin_writer);
+            let _ = finish_stdout_reader(stdout_reader);
+            return Err(format!(
+                "agent CLI timed out after {:.1} seconds",
+                timeout.as_secs_f64()
+            ));
+        }
+        std::thread::sleep(PROCESS_POLL_INTERVAL);
+    };
+
+    terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE)
+        .map_err(|error| format!("could not clean up agent CLI process group: {error}"))?;
+    let stdin_error = finish_stdin_writer(stdin_writer)?;
+    let stdout = finish_stdout_reader(stdout_reader)?;
+    let stderr = read_limited(&mut stderr_file, max_output_bytes)?;
+    if !status.success() {
+        let code = status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "signal".into());
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("agent CLI exited with status {code}")
+        } else {
+            format!("agent CLI exited with status {code}: {detail}")
+        });
+    }
+    stdin_error?;
+    Ok(stdout)
+}
+
+fn finish_stdout_reader(reader: JoinHandle<Result<String, String>>) -> Result<String, String> {
+    reader
+        .join()
+        .map_err(|_| "agent CLI output reader panicked".to_string())?
+}
+
 fn file_size(file: &NamedTempFile) -> Result<u64, String> {
     file.as_file()
         .metadata()
@@ -1428,5 +1700,111 @@ mod tests {
             Some(vec![0, 144, 0, 4])
         );
         assert_eq!(parse_cli_version("not a version"), None);
+    }
+
+    #[test]
+    fn codex_jsonl_events_map_to_safe_stream_updates() {
+        assert_eq!(
+            parse_codex_stream_update(r#"{"type":"turn.started"}"#).unwrap(),
+            Some(AgentStreamUpdate::Phase("analyzing"))
+        );
+        assert_eq!(
+            parse_codex_stream_update(
+                r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"cat private.txt","status":"in_progress"}}"#,
+            )
+            .unwrap(),
+            Some(AgentStreamUpdate::Phase("using-tools"))
+        );
+        assert_eq!(
+            parse_codex_stream_update(
+                r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"**Decision:** ship the smaller scope."}}"#,
+            )
+            .unwrap(),
+            Some(AgentStreamUpdate::Answer(
+                "**Decision:** ship the smaller scope.".into()
+            ))
+        );
+        assert_eq!(
+            parse_codex_stream_update(r#"{"type":"turn.completed","usage":{}}"#).unwrap(),
+            Some(AgentStreamUpdate::Phase("finalizing"))
+        );
+    }
+
+    #[test]
+    fn codex_stream_update_rejects_malformed_json_without_leaking_raw_content() {
+        let error = parse_codex_stream_update("{not-json").unwrap_err();
+        assert_eq!(error, "Codex CLI returned an invalid streaming event");
+        assert!(!error.contains("not-json"));
+    }
+
+    #[test]
+    fn streamed_process_delivers_complete_lines_before_the_process_finishes() {
+        use std::sync::mpsc;
+
+        let (line_sender, line_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let args = [
+                OsString::from("-c"),
+                OsString::from("printf 'first\\n'; sleep 0.15; printf 'second\\n'"),
+            ];
+            let result = run_process_streamed(
+                Path::new("/bin/sh"),
+                &args,
+                None,
+                None,
+                Duration::from_secs(2),
+                None,
+                1_024,
+                move |line| {
+                    line_sender.send(line.to_string()).unwrap();
+                },
+            );
+            result_sender.send(result).unwrap();
+        });
+
+        assert_eq!(
+            line_receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "first"
+        );
+        assert!(result_receiver.try_recv().is_err());
+        assert_eq!(
+            line_receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "second"
+        );
+        assert_eq!(
+            result_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            "first\nsecond\n"
+        );
+    }
+
+    #[test]
+    fn streamed_process_bounds_an_unterminated_output_line() {
+        let started = Instant::now();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("while :; do printf '0123456789'; done"),
+        ];
+
+        let error = run_process_streamed(
+            Path::new("/bin/sh"),
+            &args,
+            None,
+            None,
+            Duration::from_secs(5),
+            None,
+            1_024,
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "agent CLI output exceeded 1024 bytes");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the output limit must stop a non-newline stream before the process timeout"
+        );
     }
 }

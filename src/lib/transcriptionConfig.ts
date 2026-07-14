@@ -1,5 +1,6 @@
 import type {
-  DiarizationMode,
+  DiarizationConfig,
+  DiarizationProviderId,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
   TranscriptionConfig,
@@ -82,12 +83,14 @@ export interface DiarizationModelDescriptor {
   label: string
   detailKey:
     | 'settings.sortformerDescription'
+    | 'settings.pyannoteStreamingDescription'
     | 'settings.lseendMeetingDescription'
     | 'settings.lseendGeneralDescription'
 }
 
 export const diarizationModels: DiarizationModelDescriptor[] = [
   { id: 'sortformer-streaming', label: 'Streaming Sortformer', detailKey: 'settings.sortformerDescription' },
+  { id: 'pyannote-wespeaker-streaming', label: 'Pyannote + WeSpeaker', detailKey: 'settings.pyannoteStreamingDescription' },
   { id: 'lseend-ami-streaming', label: 'LS-EEND Meeting', detailKey: 'settings.lseendMeetingDescription' },
   { id: 'lseend-dihard3-streaming', label: 'LS-EEND General', detailKey: 'settings.lseendGeneralDescription' },
 ]
@@ -96,40 +99,86 @@ const providers = new Set<TranscriptionProviderId>(['deepgram', 'elevenlabs', 'l
 const localModels = new Set<LocalTranscriptionModelId>(transcriptionModels.map((model) => model.id))
 const languages = new Set<TranscriptionLanguage>(['auto', 'zh-CN', 'en-US'])
 const localDiarizationModels = new Set<LocalDiarizationModelId>(diarizationModels.map((model) => model.id))
-const diarizationModes = new Set<DiarizationMode>(['provider', ...localDiarizationModels, 'none'])
+const diarizationProviders = new Set<DiarizationProviderId>(['deepgram', 'local', 'none'])
 
 export const defaultTranscriptionConfig = (): TranscriptionConfig => ({
-  provider: 'deepgram',
-  model: 'nova-3',
-  language: 'zh-CN',
-  diarization: 'provider',
+  asr: {
+    provider: 'deepgram',
+    model: 'nova-3',
+    language: 'zh-CN',
+  },
+  diarization: {
+    provider: 'deepgram',
+    model: 'latest',
+  },
 })
 
 export const isValidTranscriptionConfig = (value: unknown): value is TranscriptionConfig => {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<TranscriptionConfig>
-  if (!providers.has(candidate.provider as TranscriptionProviderId)) return false
-  if (!languages.has(candidate.language as TranscriptionLanguage)) return false
-  if (!diarizationModes.has(candidate.diarization as DiarizationMode)) return false
-  if (candidate.provider === 'deepgram') {
-    return candidate.model === 'nova-3' && candidate.diarization === 'provider'
+  if (!candidate.asr || typeof candidate.asr !== 'object') return false
+  if (!candidate.diarization || typeof candidate.diarization !== 'object') return false
+  const asr = candidate.asr
+  const diarization = candidate.diarization
+  if (!providers.has(asr.provider as TranscriptionProviderId)) return false
+  if (!languages.has(asr.language as TranscriptionLanguage)) return false
+  if (!diarizationProviders.has(diarization.provider as DiarizationProviderId)) return false
+  if (asr.provider === 'deepgram' && asr.model !== 'nova-3') return false
+  if (asr.provider === 'elevenlabs' && asr.model !== 'scribe-v2-realtime') return false
+  if (asr.provider === 'local' && !localModels.has(asr.model as LocalTranscriptionModelId)) return false
+
+  if (diarization.provider === 'deepgram') {
+    return diarization.model === 'latest'
   }
-  if (candidate.provider === 'elevenlabs') {
-    return candidate.model === 'scribe-v2-realtime' && candidate.diarization === 'none'
+  if (diarization.provider === 'local') {
+    return localDiarizationModels.has(diarization.model as LocalDiarizationModelId)
   }
-  return localModels.has(candidate.model as LocalTranscriptionModelId)
-    && (localDiarizationModels.has(candidate.diarization as LocalDiarizationModelId) || candidate.diarization === 'none')
+  return diarization.model === null
+}
+
+type LegacyTranscriptionConfig = {
+  provider?: unknown
+  model?: unknown
+  language?: unknown
+  diarization?: unknown
+}
+
+export const normalizeTranscriptionConfig = (value: unknown): TranscriptionConfig | null => {
+  if (isValidTranscriptionConfig(value)) return value
+  if (!value || typeof value !== 'object') return null
+  const legacy = value as LegacyTranscriptionConfig
+  if (!providers.has(legacy.provider as TranscriptionProviderId)) return null
+  if (!languages.has(legacy.language as TranscriptionLanguage)) return null
+
+  const rawDiarization = legacy.diarization === 'local-streaming'
+    ? 'sortformer-streaming'
+    : legacy.diarization
+  let diarization: DiarizationConfig
+  if (rawDiarization === 'provider' && legacy.provider === 'deepgram') {
+    diarization = { provider: 'deepgram', model: 'latest' }
+  } else if (localDiarizationModels.has(rawDiarization as LocalDiarizationModelId)) {
+    diarization = { provider: 'local', model: rawDiarization as LocalDiarizationModelId }
+  } else if (rawDiarization === 'none') {
+    diarization = { provider: 'none', model: null }
+  } else {
+    return null
+  }
+
+  const migrated = {
+    asr: {
+      provider: legacy.provider,
+      model: legacy.model,
+      language: legacy.language,
+    },
+    diarization,
+  }
+  return isValidTranscriptionConfig(migrated) ? migrated : null
 }
 
 export const loadTranscriptionConfig = (): TranscriptionConfig => {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? 'null')
-    const migrated = parsed && typeof parsed === 'object'
-      && (parsed as { provider?: unknown }).provider === 'local'
-      && (parsed as { diarization?: unknown }).diarization === 'local-streaming'
-      ? { ...parsed, diarization: 'sortformer-streaming' }
-      : parsed
-    return isValidTranscriptionConfig(migrated) ? migrated : defaultTranscriptionConfig()
+    return normalizeTranscriptionConfig(parsed) ?? defaultTranscriptionConfig()
   } catch {
     return defaultTranscriptionConfig()
   }
@@ -144,7 +193,7 @@ export const localModelDescriptor = (id: TranscriptionModelId) =>
   transcriptionModels.find((model) => model.id === id) ?? null
 
 export const recognitionSummary = (config: TranscriptionConfig) => {
-  if (config.provider === 'deepgram') return config.language === 'en-US' ? 'English' : 'Chinese'
-  if (config.provider === 'elevenlabs') return config.language === 'auto' ? 'Automatic' : config.language === 'en-US' ? 'English' : 'Chinese'
-  return localModelDescriptor(config.model)?.label ?? 'On-device'
+  if (config.asr.provider === 'deepgram') return config.asr.language === 'en-US' ? 'English' : 'Chinese'
+  if (config.asr.provider === 'elevenlabs') return config.asr.language === 'auto' ? 'Automatic' : config.asr.language === 'en-US' ? 'English' : 'Chinese'
+  return localModelDescriptor(config.asr.model)?.label ?? 'On-device'
 }

@@ -13,12 +13,13 @@ public enum LocalModelID: String, CaseIterable, Codable, Sendable {
     case whisperMedium = "whisper-medium"
     case whisperLarge = "whisper-large"
     case sortformer = "sortformer-streaming"
+    case pyannoteWeSpeaker = "pyannote-wespeaker-streaming"
     case lseendAmi = "lseend-ami-streaming"
     case lseendDihard3 = "lseend-dihard3-streaming"
 
     public var isDiarizer: Bool {
         switch self {
-        case .sortformer, .lseendAmi, .lseendDihard3: true
+        case .sortformer, .pyannoteWeSpeaker, .lseendAmi, .lseendDihard3: true
         default: false
         }
     }
@@ -76,6 +77,9 @@ public struct ModelDirectories: Sendable {
     public var nemotron: URL { root.appendingPathComponent("nemotron", isDirectory: true) }
     public var whisper: URL { root.appendingPathComponent("whisper", isDirectory: true) }
     public var sortformer: URL { root.appendingPathComponent("sortformer", isDirectory: true) }
+    public var pyannoteWeSpeaker: URL {
+        root.appendingPathComponent("speaker-diarization", isDirectory: true)
+    }
     public var lseend: URL { root.appendingPathComponent("lseend", isDirectory: true) }
 
     public init(root: URL? = nil) {
@@ -96,6 +100,7 @@ public struct ModelDirectories: Sendable {
     public func cacheDirectory(for model: LocalModelID) -> URL {
         switch model {
         case .sortformer: sortformer
+        case .pyannoteWeSpeaker: pyannoteWeSpeaker
         case .lseendAmi, .lseendDihard3: lseend
         default: root
         }
@@ -104,6 +109,7 @@ public struct ModelDirectories: Sendable {
     public func installedDirectory(for model: LocalModelID) -> URL? {
         switch model {
         case .sortformer: sortformer
+        case .pyannoteWeSpeaker: pyannoteWeSpeaker
         case .lseendAmi: lseend.appendingPathComponent("ls-eend/ami", isDirectory: true)
         case .lseendDihard3: lseend.appendingPathComponent("ls-eend/dih3", isDirectory: true)
         default: nil
@@ -127,10 +133,19 @@ public actor LocalModelManager {
         switch model {
         case .nemotron:
             path = readMarker(model).map(URL.init(fileURLWithPath:))
-        case .sortformer, .lseendAmi, .lseendDihard3:
+        case .sortformer, .pyannoteWeSpeaker, .lseendAmi, .lseendDihard3:
             let installedDirectory = directories.installedDirectory(for: model)
+            let hasModels = installedDirectory.map { directory in
+                model == .pyannoteWeSpeaker
+                    ? DiarizerModels.requiredModelNames.allSatisfy {
+                        FileManager.default.fileExists(
+                            atPath: directory.appendingPathComponent($0, isDirectory: true).path
+                        )
+                    }
+                    : directoryHasContents(directory)
+            } == true
             path = FileManager.default.fileExists(atPath: directories.marker(for: model).path)
-                && installedDirectory.map(directoryHasContents) == true
+                && hasModels
                 ? installedDirectory : nil
         default:
             path = model.whisperFilename.map { directories.whisper.appendingPathComponent($0) }
@@ -188,6 +203,22 @@ public actor LocalModelManager {
                 ))
             }
             try writeMarker(model, value: directories.sortformer.path)
+        case .pyannoteWeSpeaker:
+            try FileManager.default.createDirectory(at: directories.root, withIntermediateDirectories: true)
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .cpuAndNeuralEngine
+            _ = try await DiarizerModels.downloadIfNeeded(
+                to: directories.pyannoteWeSpeaker,
+                configuration: configuration
+            ) { snapshot in
+                progress(LocalModelStatus(
+                    id: model.rawValue,
+                    installed: false,
+                    phase: Self.phase(snapshot.phase),
+                    progress: snapshot.fractionCompleted
+                ))
+            }
+            try writeMarker(model, value: directories.pyannoteWeSpeaker.path)
         case .lseendAmi, .lseendDihard3:
             try FileManager.default.createDirectory(at: directories.lseend, withIntermediateDirectories: true)
             progress(LocalModelStatus(
@@ -229,7 +260,7 @@ public actor LocalModelManager {
         switch model {
         case .nemotron:
             try? FileManager.default.removeItem(at: directories.nemotron)
-        case .sortformer, .lseendAmi, .lseendDihard3:
+        case .sortformer, .pyannoteWeSpeaker, .lseendAmi, .lseendDihard3:
             if let directory = directories.installedDirectory(for: model) {
                 try? FileManager.default.removeItem(at: directory)
             }

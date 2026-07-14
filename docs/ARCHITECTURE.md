@@ -21,7 +21,7 @@ React UI
 Rust application core
   ├─ MeetingStore ── reads new App Support files + legacy Markdown (read-only)
   ├─ MeetingStateStore ── native-session bindings + UI cache + saved-note sidecars
-  ├─ CaptureManager ── provider registry + exact recorder/transcriber child PIDs
+  ├─ CaptureManager ── ASR/diarization registries + exact child PIDs + PCM fan-out
   ├─ LocalTranscriptionRuntime ── model status/download/remove lifecycle
   ├─ Overlay coordinator ── owns one HUD + one Agent utility window
   └─ AgentRunner ── resolves Codex/Claude and passes prompt via stdin/argv
@@ -32,22 +32,18 @@ Rust application core
 Bundled Swift recorder stdout (16kHz Int16LE stereo PCM)
   ├─ channel 0: system output
   ├─ channel 1: local microphone
-  └─ selected TranscriberDefinition
-       ├─ Rust Deepgram sidecar ── cloud ASR + live cloud diarization
-       ├─ Rust ElevenLabs sidecar ── realtime ASR + source lanes only
-       └─ bundled Swift sidecar
-            ├─ LocalTranscriptionProvider
-            │    ├─ Nemotron Speech 3.5 (FluidAudio/Core ML)
-            │    └─ Whisper Tiny…Large (SwiftWhisper/whisper.cpp)
-            └─ optional Streaming Sortformer (FluidAudio/Core ML)
-                         └─ final utterances → shared Markdown adapter
+  └─ resolved provider pipeline
+       ├─ ASR worker ── Deepgram | ElevenLabs | local Nemotron/Whisper
+       ├─ optional streaming diarization worker ── Deepgram | local Sortformer/Pyannote/LS-EEND
+       └─ shared versioned speaker timeline
+              └─ finalized ASR segments → overlap attribution → Markdown adapter
 ```
 
 The desktop app does not invoke the legacy global `start.sh` / `stop.sh`, touch a shared `.stop` flag, or use `pkill -f`.
 
-`CaptureManager` resolves a validated `TranscriptionConfig` through the registry, then starts the recorder and selected transcriber in separate owned process groups. A provider-specific ready-file handshake gates the visible recording state: the bundled Rust Deepgram sidecar signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted; the local sidecar signals after the selected ASR and optional diarizer models are loaded. Stop/error/drop targets only those exact process trees, and an app shutdown finalizes an active Markdown transcript as `interrupted`.
+`CaptureManager` independently resolves the validated ASR and diarization selections, then starts the recorder and resolved workers in separate owned process groups. Matching Deepgram or local selections are fused. Cross-provider selections receive identical PCM through a bounded fan-out and exchange an atomic streaming speaker timeline. A provider-specific ready-file handshake gates the visible recording state: Deepgram signals after its WebSocket is accepted; ElevenLabs after every active source connection is accepted; each local worker after its model is loaded. Stop/error/drop targets only those exact process trees, and an app shutdown finalizes an active Markdown transcript as `interrupted`.
 
-Provider discovery, capture routing, model management, and inference are separate boundaries. Rust owns policy and lifecycle; the Swift sidecar owns local inference; every transcriber consumes the same PCM stream and writes the same transcript adapter. Adding another engine therefore means registering a definition and implementing its sidecar contract rather than branching through the UI, meeting store, and process lifecycle.
+Provider discovery, capture routing, model management, and inference are separate boundaries. Rust owns policy and lifecycle; the Swift sidecar owns local inference. Only the ASR worker writes the transcript; a separate diarization worker publishes channel-local intervals. Adding another engine therefore means registering either provider role and implementing its streaming sidecar contract rather than branching through the UI, meeting store, and process lifecycle.
 
 ## Native overlay contract
 
@@ -74,7 +70,7 @@ type TranscriptLine = {
 }
 ```
 
-Speaker identity is always the composite `(channel, speaker)`: channel 0 becomes `Remote 1/2/3`; channel 1 becomes `In room 1/2/3`. Deepgram supplies live word-level speaker changes. ElevenLabs realtime supplies no speaker identity, so Arco uses one location label per active source and never promotes it as diarization. The local pipeline runs an independent diarizer timeline for each channel and assigns each finalized ASR segment to the speaker with the greatest temporal overlap. All output slots are anonymous and source-local. The mic channel is never assumed to be the user because one room microphone can hear several local participants. A later explicit personal-mic mode, manual rename, or voice enrollment may map one composite identity to `You`. The next storage revision will add `sessionId`, audio-relative start/end offsets, `source` (`mic` or `system`), confidence, and `isFinal`, then persist to SQLite while continuing to export the Markdown adapter.
+Speaker identity is always the composite `(channel, speaker)`: channel 0 becomes `Remote 1/2/3`; channel 1 becomes `In room 1/2/3`. Deepgram can supply live word-level speaker changes; local Sortformer, Pyannote + WeSpeaker, and LS-EEND supply incremental per-channel intervals. In a mixed pipeline, the diarization worker atomically updates the shared timeline and the ASR worker assigns each finalized segment to the greatest temporal overlap, waiting only briefly for streaming coverage. ElevenLabs itself supplies no identity, but its ASR can consume either diarization provider. With diarization off, Arco uses one location label per active source and never promotes it as diarization. All output slots are anonymous and source-local. The mic channel is never assumed to be the user because one room microphone can hear several local participants. A later explicit personal-mic mode, manual rename, or voice enrollment may map one composite identity to `You`. The next storage revision will add `sessionId`, audio-relative start/end offsets, `source` (`mic` or `system`), confidence, and `isFinal`, then persist to SQLite while continuing to export the Markdown adapter.
 
 The frontend keeps `activeMeetingId` and the reviewed meeting ID separate. Capture polling always reads the active ID; History selection changes the reviewed snapshot only after its transcript loads successfully. A stop forces one final transcript read after the native pipeline has drained.
 

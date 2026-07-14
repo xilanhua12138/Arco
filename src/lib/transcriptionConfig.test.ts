@@ -5,17 +5,50 @@ import {
   saveTranscriptionConfig,
   transcriptionModels,
 } from './transcriptionConfig'
+import type { TranscriptionConfig } from '../types'
 
 describe('transcription configuration', () => {
   beforeEach(() => window.localStorage.clear())
 
   it('keeps Deepgram as the migration-safe default', () => {
     expect(defaultTranscriptionConfig()).toEqual({
-      provider: 'deepgram',
-      model: 'nova-3',
-      language: 'zh-CN',
-      diarization: 'provider',
+      asr: {
+        provider: 'deepgram',
+        model: 'nova-3',
+        language: 'zh-CN',
+      },
+      diarization: {
+        provider: 'deepgram',
+        model: 'latest',
+      },
     })
+  })
+
+  it.each([
+    {
+      name: 'remote ASR with local streaming diarization',
+      config: {
+        asr: { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'auto' },
+        diarization: { provider: 'local', model: 'sortformer-streaming' },
+      },
+    },
+    {
+      name: 'local ASR with remote streaming diarization',
+      config: {
+        asr: { provider: 'local', model: 'whisper-small', language: 'zh-CN' },
+        diarization: { provider: 'deepgram', model: 'latest' },
+      },
+    },
+    {
+      name: 'local ASR with speaker separation disabled',
+      config: {
+        asr: { provider: 'local', model: 'nemotron-speech-3.5-streaming', language: 'en-US' },
+        diarization: { provider: 'none', model: null },
+      },
+    },
+  ] satisfies Array<{ name: string; config: TranscriptionConfig }>)('persists $name', ({ config }) => {
+    saveTranscriptionConfig(config)
+    expect(loadTranscriptionConfig()).toEqual(config)
   })
 
   it('publishes Nemotron and every requested Whisper size as local models', () => {
@@ -36,14 +69,20 @@ describe('transcription configuration', () => {
 
   it.each([
     'sortformer-streaming',
+    'pyannote-wespeaker-streaming',
     'lseend-ami-streaming',
     'lseend-dihard3-streaming',
   ] as const)('persists the %s local diarization backend', (diarization) => {
     const config = {
-      provider: 'local' as const,
-      model: 'whisper-small' as const,
-      language: 'auto' as const,
-      diarization,
+      asr: {
+        provider: 'local' as const,
+        model: 'whisper-small' as const,
+        language: 'auto' as const,
+      },
+      diarization: {
+        provider: 'local' as const,
+        model: diarization,
+      },
     }
 
     saveTranscriptionConfig(config)
@@ -53,10 +92,15 @@ describe('transcription configuration', () => {
 
   it('persists ElevenLabs as a distinct realtime provider without speaker diarization', () => {
     const config = {
-      provider: 'elevenlabs' as const,
-      model: 'scribe-v2-realtime' as const,
-      language: 'auto' as const,
-      diarization: 'none' as const,
+      asr: {
+        provider: 'elevenlabs' as const,
+        model: 'scribe-v2-realtime' as const,
+        language: 'auto' as const,
+      },
+      diarization: {
+        provider: 'none' as const,
+        model: null,
+      },
     }
 
     saveTranscriptionConfig(config)
@@ -64,12 +108,10 @@ describe('transcription configuration', () => {
     expect(loadTranscriptionConfig()).toEqual(config)
   })
 
-  it('rejects ElevenLabs configurations that claim provider or local diarization', () => {
+  it('rejects provider/model mismatches without rejecting local and remote mixing', () => {
     window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
-      provider: 'elevenlabs',
-      model: 'scribe-v2-realtime',
-      language: 'zh-CN',
-      diarization: 'provider',
+      asr: { provider: 'elevenlabs', model: 'nova-3', language: 'zh-CN' },
+      diarization: { provider: 'deepgram', model: 'sortformer-streaming' },
     }))
 
     expect(loadTranscriptionConfig()).toEqual(defaultTranscriptionConfig())
@@ -84,10 +126,39 @@ describe('transcription configuration', () => {
     }))
 
     expect(loadTranscriptionConfig()).toEqual({
-      provider: 'local',
-      model: 'whisper-small',
+      asr: {
+        provider: 'local',
+        model: 'whisper-small',
+        language: 'auto',
+      },
+      diarization: {
+        provider: 'local',
+        model: 'sortformer-streaming',
+      },
+    })
+  })
+
+  it('migrates provider-coupled Deepgram and ElevenLabs settings into independent providers', () => {
+    window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
+      provider: 'deepgram',
+      model: 'nova-3',
+      language: 'zh-CN',
+      diarization: 'provider',
+    }))
+    expect(loadTranscriptionConfig()).toEqual({
+      asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' },
+      diarization: { provider: 'deepgram', model: 'latest' },
+    })
+
+    window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
+      provider: 'elevenlabs',
+      model: 'scribe-v2-realtime',
       language: 'auto',
-      diarization: 'sortformer-streaming',
+      diarization: 'none',
+    }))
+    expect(loadTranscriptionConfig()).toEqual({
+      asr: { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'auto' },
+      diarization: { provider: 'none', model: null },
     })
   })
 

@@ -5,7 +5,7 @@ import {
   isValidListeningShortcut,
   type ListeningShortcut,
 } from './listeningShortcut'
-import { isValidTranscriptionConfig } from './transcriptionConfig'
+import { isValidTranscriptionConfig, normalizeTranscriptionConfig } from './transcriptionConfig'
 
 export const ONBOARDING_STORAGE_KEY = 'arco.onboarding.v1'
 export const ONBOARDING_DRAFT_STORAGE_KEY = 'arco.onboarding.draft.v1'
@@ -93,8 +93,14 @@ export const loadOnboardingDraft = (): OnboardingDraft | null => {
       && (parsed as Partial<OnboardingDraft>).listeningShortcut === LEGACY_FN_LISTENING_SHORTCUT
     ) {
       parsed = { ...parsed, listeningShortcut: DEFAULT_LISTENING_SHORTCUT }
-      window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify(parsed))
     }
+    if (parsed && typeof parsed === 'object') {
+      const transcriptionConfig = normalizeTranscriptionConfig(
+        (parsed as Partial<OnboardingDraft>).transcriptionConfig,
+      )
+      if (transcriptionConfig) parsed = { ...parsed, transcriptionConfig }
+    }
+    window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify(parsed))
     if (isOnboardingDraft(parsed)) return parsed
   } catch {
     // Invalid partial writes must never trap the user in onboarding.

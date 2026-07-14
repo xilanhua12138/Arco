@@ -146,10 +146,8 @@ describe('TopBar progressive disclosure', () => {
         capture={{
           ...demoCapture,
           transcription: {
-            provider: 'elevenlabs',
-            model: 'scribe-v2-realtime',
-            language: 'zh-CN',
-            diarization: 'none',
+            asr: { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'zh-CN' },
+            diarization: { provider: 'none', model: null },
           },
         }}
         onRenameMeeting={renameMeeting}

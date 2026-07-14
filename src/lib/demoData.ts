@@ -105,10 +105,8 @@ export const demoCapture: CaptureState = {
   startedAt: '2026-07-10T14:02:00+08:00',
   message: null,
   transcription: {
-    provider: 'deepgram',
-    model: 'nova-3',
-    language: 'zh-CN',
-    diarization: 'provider',
+    asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' },
+    diarization: { provider: 'deepgram', model: 'latest' },
   },
 }
 

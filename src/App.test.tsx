@@ -228,7 +228,10 @@ describe('Arco consumer conversation workspace', () => {
 
     expect(await within(agent).findByText('Codex is unavailable. Using Claude.')).toBeVisible()
     await user.click(await within(agent).findByRole('button', { name: 'Answer what was asked' }))
-    await waitFor(() => expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({ provider: 'claude' })))
+    await waitFor(() => expect(runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude' }),
+      expect.any(Function),
+    ))
   })
 
   it('opens on Current with transcript primary and Agent visible alongside it', async () => {
@@ -376,11 +379,14 @@ describe('Arco consumer conversation workspace', () => {
     expect(screen.queryByText(/Sent through your Codex CLI/)).not.toBeInTheDocument()
     await user.click(send)
 
-    await waitFor(() => expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({
-      contextScope: 'workspace',
-      workspace: '/Users/example/Work/Arco',
-      question: 'Connect this decision to the implementation plan.',
-    })))
+    await waitFor(() => expect(runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: 'workspace',
+        workspace: '/Users/example/Work/Arco',
+        question: 'Connect this decision to the implementation plan.',
+      }),
+      expect.any(Function),
+    ))
     expect(chooseWorkspace).toHaveBeenCalledTimes(1)
   })
 
@@ -462,6 +468,11 @@ describe('Arco consumer conversation workspace', () => {
     expect(screen.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(savedTurn.answer)
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
 
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 250))
+    })
+    expect(listNotes).toHaveBeenCalledTimes(1)
+
     await user.type(screen.getByRole('textbox', { name: 'Search notes' }), 'release')
     await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith('release'))
 
@@ -527,7 +538,7 @@ describe('Arco consumer conversation workspace', () => {
     await user.click(screen.getByRole('button', { name: /Audio & speakers/i }))
     expect(screen.getByRole('dialog', { name: 'Audio & speakers' })).toBeVisible()
     expect(screen.getByText('Recognition')).toBeVisible()
-    expect(screen.getByText('Deepgram · Chinese')).toBeVisible()
+    expect(screen.getByText('Deepgram · Chinese · Deepgram streaming')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: /Agent runtime/i }))
     const agentSettings = screen.getByRole('dialog', { name: 'Agent runtime' })

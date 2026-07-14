@@ -98,6 +98,24 @@ export interface AgentReply {
   contextScope?: ContextScope
 }
 
+export type AgentStreamPhase = 'starting' | 'analyzing' | 'using-tools' | 'finalizing'
+
+export interface AgentStreamEvent {
+  type: 'status' | 'answer'
+  requestId: string
+  meetingId: string
+  phase?: AgentStreamPhase
+  answer?: string
+}
+
+export interface AgentStreamingTurn {
+  requestId: string
+  meetingId: string
+  question: string
+  phase: AgentStreamPhase
+  answer: string
+}
+
 export interface PersistedAgentTurn extends AgentReply {
   id: string
   meetingId: string
@@ -145,6 +163,7 @@ export interface AskAgentInput {
   meetingId: string
   workspace?: string
   contextScope: ContextScope
+  requestId?: string
 }
 
 export type AudioMode = 'both' | 'system' | 'mic'
@@ -179,16 +198,28 @@ export type TranscriptionLanguage = 'auto' | 'zh-CN' | 'en-US'
 
 export type LocalDiarizationModelId =
   | 'sortformer-streaming'
+  | 'pyannote-wespeaker-streaming'
   | 'lseend-ami-streaming'
   | 'lseend-dihard3-streaming'
 
-export type DiarizationMode = 'provider' | LocalDiarizationModelId | 'none'
+export type DiarizationProviderId = 'deepgram' | 'local' | 'none'
+export type RemoteDiarizationModelId = 'latest'
+export type DiarizationModelId = RemoteDiarizationModelId | LocalDiarizationModelId
 
-export interface TranscriptionConfig {
+export interface AsrConfig {
   provider: TranscriptionProviderId
   model: TranscriptionModelId
   language: TranscriptionLanguage
-  diarization: DiarizationMode
+}
+
+export interface DiarizationConfig {
+  provider: DiarizationProviderId
+  model: DiarizationModelId | null
+}
+
+export interface TranscriptionConfig {
+  asr: AsrConfig
+  diarization: DiarizationConfig
 }
 
 export type TranscriptionModelPhase =

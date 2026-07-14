@@ -46,7 +46,9 @@ describe('SettingsSheet audio scenarios', () => {
       />,
     )
 
-    expect(screen.queryAllByRole('radio')).toHaveLength(0)
+    expect(screen.queryByRole('radio', { name: /Hybrid meeting/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Online meeting/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /In-person meeting/i })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Current meeting audio' })).toHaveTextContent('In-person meeting')
     expect(screen.getByText('Locked until this meeting ends')).toBeVisible()
     expect(screen.queryByText('Hybrid meeting')).not.toBeInTheDocument()
@@ -66,14 +68,14 @@ describe('SettingsSheet audio scenarios', () => {
 
     const recognitionDetails = screen.getByText('Recognition').closest('details')
     expect(recognitionDetails).not.toHaveAttribute('open')
-    expect(screen.getByText('Deepgram · Chinese')).toBeVisible()
+    expect(screen.getByText('Deepgram · Chinese · Deepgram streaming')).toBeVisible()
     expect(screen.queryByText('Remote 1… · In room 1…')).not.toBeInTheDocument()
     expect(screen.getByText(/Deepgram separates multiple speakers/i)).not.toBeVisible()
 
     await user.click(screen.getByText('Recognition'))
     expect(recognitionDetails).toHaveAttribute('open')
     expect(screen.getByText(/Deepgram separates multiple speakers/i)).toBeVisible()
-    expect(screen.getByText('Deepgram · multichannel diarization')).toBeVisible()
+    expect(screen.getAllByText('Deepgram streaming').length).toBeGreaterThan(0)
     expect(screen.getByText('System audio')).toBeVisible()
     expect(screen.getByText('Room microphone')).toBeVisible()
   })

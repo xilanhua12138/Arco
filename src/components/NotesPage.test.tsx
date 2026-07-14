@@ -133,4 +133,12 @@ describe('NotesPage', () => {
     rerender(<NotesPage {...baseProps} notes={[]} query="missing phrase" />)
     expect(screen.getByText('No matching notes')).toBeVisible()
   })
+
+  it('keeps cached note rows visible during a background refresh', () => {
+    render(<NotesPage {...baseProps} notes={notes} loading />)
+
+    expect(screen.getByRole('button', { name: /Roadmap follow-ups/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Decisions/ })).toBeVisible()
+    expect(screen.queryByRole('status', { name: 'Loading notes' })).not.toBeInTheDocument()
+  })
 })

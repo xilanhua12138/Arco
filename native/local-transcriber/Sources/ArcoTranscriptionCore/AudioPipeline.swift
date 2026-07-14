@@ -117,7 +117,7 @@ public struct StreamingEndpointDetector: Sendable {
     }
 }
 
-public struct SpeakerInterval: Sendable, Equatable {
+public struct SpeakerInterval: Sendable, Equatable, Codable {
     public let speaker: Int
     public let start: Double
     public let end: Double

@@ -7,7 +7,7 @@ struct ArcoLocalTranscriberMain {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else {
-                throw RuntimeError("Expected models, prepare, remove, or stream.")
+                throw RuntimeError("Expected models, prepare, remove, stream, or diarize.")
             }
             switch command {
             case "models":
@@ -18,6 +18,8 @@ struct ArcoLocalTranscriberMain {
                 try await remove(arguments: Array(arguments.dropFirst()))
             case "stream":
                 try await stream(arguments: Array(arguments.dropFirst()))
+            case "diarize":
+                try await diarize(arguments: Array(arguments.dropFirst()))
             default:
                 throw RuntimeError("Unknown local transcriber command: \(command)")
             }
@@ -122,11 +124,46 @@ struct ArcoLocalTranscriberMain {
             path: URL(fileURLWithPath: transcriptPath),
             sessionStartedAt: startedAt
         )
+        let timelineReader = ProcessInfo.processInfo.environment["ARCO_SPEAKER_TIMELINE_FILE"]
+            .map { SpeakerTimelineReader(path: URL(fileURLWithPath: $0)) }
         let runner = LocalStreamRunner(
             provider: provider,
             diarizer: localDiarizer,
+            timelineReader: timelineReader,
             writer: writer,
             language: language
+        )
+        try signalReady()
+
+        while let data = try FileHandle.standardInput.read(upToCount: 6_400), !data.isEmpty {
+            try await runner.consume(data)
+        }
+        try await runner.finish()
+    }
+
+    private static func diarize(arguments: [String]) async throws {
+        guard
+            let rawModel = option("--model", in: arguments),
+            let model = LocalModelID(rawValue: rawModel),
+            model.isDiarizer,
+            let backend = StreamingDiarizationBackend(rawValue: rawModel),
+            let timelinePath = ProcessInfo.processInfo.environment["ARCO_SPEAKER_TIMELINE_FILE"],
+            !timelinePath.isEmpty
+        else {
+            throw RuntimeError("diarize requires a streaming --model and ARCO_SPEAKER_TIMELINE_FILE.")
+        }
+        let manager = LocalModelManager()
+        guard await manager.status(model).installed else {
+            throw RuntimeError("\(model.rawValue) is not installed.")
+        }
+        let directories = await manager.directories
+        let diarizer = try await StreamingSpeakerDiarizer(
+            cacheDirectory: directories.cacheDirectory(for: model),
+            backend: backend
+        )
+        let runner = DiarizationStreamRunner(
+            diarizer: diarizer,
+            writer: SpeakerTimelineWriter(path: URL(fileURLWithPath: timelinePath))
         )
         try signalReady()
 
