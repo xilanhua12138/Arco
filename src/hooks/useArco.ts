@@ -387,7 +387,11 @@ export function useArco() {
         }
         return next
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : t('error.captureFailed')
+        const message = typeof cause === 'string' && cause.trim()
+          ? cause
+          : cause instanceof Error && cause.message.trim()
+            ? cause.message
+            : t('error.captureFailed')
         setCapture((current) => ({ ...current, phase: 'error', message }))
         setError(message)
         return null

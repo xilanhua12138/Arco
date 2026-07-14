@@ -291,6 +291,30 @@ describe('useArco automatic meeting output', () => {
     expect(listMeetings.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('preserves a native string error when a selected local model is not installed', async () => {
+    const meeting = meetingWith(0, { isLive: false })
+    mockMeetingBackend(meeting, {
+      phase: 'idle', activeMeetingId: null, startedAt: null, message: null,
+    })
+    const nativeError = 'Streaming Sortformer is selected but not installed. Open Arco Settings → Audio & speakers → Recognition, then choose Download & use.'
+    vi.spyOn(arcoBridge, 'startCapture').mockRejectedValue(nativeError)
+
+    const { result } = renderHook(() => useArco())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    let started: unknown
+    await act(async () => {
+      started = await result.current.toggleCapture('both', {
+        asr: { provider: 'local', model: 'nemotron-speech-3.5-streaming', language: 'zh-CN' },
+        diarization: { provider: 'local', model: 'sortformer-streaming' },
+      })
+    })
+
+    expect(started).toBeNull()
+    expect(result.current.capture).toMatchObject({ phase: 'error', message: nativeError })
+    expect(result.current.error).toBe(nativeError)
+  })
+
   it('refreshes list and selected meeting on output events without reloading Agent turns', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
     const pending = meetingWith(5)
