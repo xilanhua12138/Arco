@@ -24,6 +24,9 @@
   --surface-glass: rgb(241 248 252 / 30%);
   --surface-glass-strong: rgb(255 255 255 / 54%);
   --surface-glass-control: rgb(255 255 255 / 30%);
+  --surface-settings-shell: rgb(248 250 252 / 99%);
+  --surface-settings-navigation: rgb(244 248 251 / 98%);
+  --surface-settings-content: rgb(255 255 255 / 99%);
   --ink-strong: #111;
   --ink: rgb(17 17 17 / 75%);
   --ink-muted: rgb(17 17 17 / 50%);

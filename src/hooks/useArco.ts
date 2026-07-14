@@ -53,6 +53,7 @@ export function useArco() {
   const meetingRef = useRef<MeetingDetail | null>(null)
   const meetingQueryRef = useRef('')
   const noteQueryRef = useRef('')
+  const noteRequestRef = useRef(0)
   const generationClaimsRef = useRef(new Map<string, Promise<void>>())
   const selectionRequestRef = useRef(0)
 
@@ -133,17 +134,20 @@ export function useArco() {
   }, [t])
 
   const refreshSavedNotes = useCallback(async (query = '') => {
+    const request = ++noteRequestRef.current
     noteQueryRef.current = query
     setNotesLoading(true)
     try {
       const notes = await arcoBridge.listNotes(query)
-      setSavedNotes(notes)
+      if (noteRequestRef.current === request) setSavedNotes(notes)
       return notes
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.loadSavedNotes'))
+      if (noteRequestRef.current === request) {
+        setError(cause instanceof Error ? cause.message : t('error.loadSavedNotes'))
+      }
       return []
     } finally {
-      setNotesLoading(false)
+      if (noteRequestRef.current === request) setNotesLoading(false)
     }
   }, [t])
 

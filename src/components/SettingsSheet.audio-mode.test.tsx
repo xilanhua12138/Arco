@@ -56,8 +56,7 @@ describe('SettingsSheet audio scenarios', () => {
     expect(onChangeAudioMode).not.toHaveBeenCalled()
   })
 
-  it('keeps speaker and transcription internals behind concise disclosure rows', async () => {
-    const user = userEvent.setup()
+  it('opens recognition settings by default so provider choices are immediately visible', () => {
     render(
       <SettingsSheet
         {...baseProps}
@@ -67,17 +66,16 @@ describe('SettingsSheet audio scenarios', () => {
     )
 
     const recognitionDetails = screen.getByText('Recognition').closest('details')
-    expect(recognitionDetails).not.toHaveAttribute('open')
-    expect(screen.getByText('Deepgram · Chinese · Deepgram streaming')).toBeVisible()
-    expect(screen.queryByText('Remote 1… · In room 1…')).not.toBeInTheDocument()
-    expect(screen.getByText(/Deepgram separates multiple speakers/i)).not.toBeVisible()
-
-    await user.click(screen.getByText('Recognition'))
     expect(recognitionDetails).toHaveAttribute('open')
-    expect(screen.getByText(/Deepgram separates multiple speakers/i)).toBeVisible()
+    expect(screen.getByText('Deepgram · Chinese · Deepgram streaming')).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Speech recognition provider' })).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Speaker separation provider' })).toBeVisible()
+    expect(screen.queryByText('Remote 1… · In room 1…')).not.toBeInTheDocument()
     expect(screen.getAllByText('Deepgram streaming').length).toBeGreaterThan(0)
-    expect(screen.getByText('System audio')).toBeVisible()
-    expect(screen.getByText('Room microphone')).toBeVisible()
+    expect(screen.queryByText('Speaker labels')).not.toBeInTheDocument()
+    expect(screen.queryByText('System audio')).not.toBeInTheDocument()
+    expect(screen.queryByText('Room microphone')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Labels describe where a voice came from/i)).not.toBeInTheDocument()
   })
 
   it('keeps provider routing concise while retaining native storage disclosure', async () => {

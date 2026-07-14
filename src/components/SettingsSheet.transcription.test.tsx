@@ -28,6 +28,11 @@ const statuses: TranscriptionModelStatus[] = [
   },
 ]
 
+const ensureRecognitionOpen = async () => {
+  const details = screen.getByText('Recognition').closest('details')
+  if (!details?.hasAttribute('open')) await userEvent.click(screen.getByText('Recognition'))
+}
+
 describe('SettingsSheet local transcription', () => {
   it('warns in the collapsed summary and names every missing model in the local pipeline', () => {
     const { container } = render(
@@ -117,7 +122,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('shows the unified engine, model, language, and diarization contract', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -132,8 +136,8 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
-    const recognition = screen.getByRole('group', { name: 'Where transcription runs' })
+    await ensureRecognitionOpen()
+    const recognition = screen.getByRole('group', { name: 'Speech recognition provider' })
     expect(within(recognition).getByRole('radio', { name: /This Mac/i })).toBeChecked()
     expect(within(recognition).getByText(/Nemotron or Whisper · audio stays on device/i)).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'On-device model' })).toHaveValue('nemotron-speech-3.5-streaming')
@@ -143,7 +147,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('discloses the cloud audio boundary when local ASR uses Deepgram diarization', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -156,7 +159,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
 
     expect(screen.getByText(/Speech recognition runs on this Mac/i)).toBeVisible()
     expect(screen.getByText(/Audio is also sent to Deepgram for speaker separation/i)).toBeVisible()
@@ -164,7 +167,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('offers four independent on-device diarization models', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -177,7 +179,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
 
     expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
     expect(screen.getByRole('radio', { name: /Pyannote \+ WeSpeaker/i })).not.toBeChecked()
@@ -212,7 +214,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     const download = screen.getByRole('button', { name: 'Download LS-EEND Meeting' })
     await user.click(download)
 
@@ -245,7 +247,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     expect(screen.getByText('Experimental · Pyannote + WeSpeaker · 5-second rolling window')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Download Pyannote + WeSpeaker' }))
 
@@ -253,7 +255,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('lets a cloud ASR select a different streaming diarization provider', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -266,7 +267,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
 
     expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeChecked()
@@ -291,8 +292,8 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
-    const providers = screen.getByRole('group', { name: 'Online provider' })
+    await ensureRecognitionOpen()
+    const providers = screen.getByRole('group', { name: 'Speech recognition provider' })
     await user.click(within(providers).getByRole('radio', { name: /ElevenLabs/i }))
 
     expect(changeConfig).toHaveBeenCalledWith({
@@ -319,7 +320,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     expect(screen.getByText('ElevenLabs ASR')).toBeVisible()
     expect(screen.getByRole('radio', { name: /Deepgram.*no local model/i })).toBeVisible()
     expect(screen.getByRole('radio', { name: /Streaming Sortformer/i })).toBeVisible()
@@ -338,7 +339,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('downloads a missing model and disables runtime changes during capture', async () => {
-    const user = userEvent.setup()
     const prepare = vi.fn()
     render(
       <SettingsSheet
@@ -355,7 +355,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     expect(screen.getByRole('combobox', { name: 'On-device model' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Download and use Whisper Base' })).toBeDisabled()
     expect(prepare).not.toHaveBeenCalled()
@@ -378,7 +378,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     await user.click(screen.getByRole('button', { name: 'Download and use Whisper Base' }))
 
     expect(prepare).toHaveBeenCalledOnce()
@@ -412,7 +412,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     const download = screen.getByRole('button', { name: 'Download Streaming Sortformer' })
     expect(download).toBeEnabled()
     await user.click(download)
@@ -422,7 +422,6 @@ describe('SettingsSheet local transcription', () => {
   })
 
   it('shows Sortformer download progress without pretending the model is ready', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -447,14 +446,13 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     expect(screen.getByRole('button', { name: 'Download Streaming Sortformer' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Download Streaming Sortformer' })).toHaveTextContent('37%')
     expect(screen.queryByText(/^Ready$/)).not.toBeInTheDocument()
   })
 
   it('describes cloud and local processing truthfully instead of presenting one vendor as the engine list', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -467,15 +465,13 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
-    const recognition = screen.getByRole('group', { name: 'Where transcription runs' })
-    expect(within(recognition).getByRole('radio', { name: /Cloud/i })).toBeChecked()
-    expect(within(recognition).getByText(/Deepgram or ElevenLabs · audio sent to the selected provider/i)).toBeVisible()
+    await ensureRecognitionOpen()
+    const recognition = screen.getByRole('group', { name: 'Speech recognition provider' })
+    expect(within(recognition).getByRole('radio', { name: /Deepgram/i })).toBeChecked()
     expect(within(recognition).getByRole('radio', { name: /This Mac/i })).not.toBeChecked()
   })
 
   it('keeps the download action disabled while showing model progress', async () => {
-    const user = userEvent.setup()
     render(
       <SettingsSheet
         open
@@ -492,7 +488,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     const progress = screen.getByRole('button', { name: 'Download and use Whisper Base' })
     expect(progress).toBeDisabled()
     expect(progress).toHaveTextContent('42%')
@@ -522,7 +518,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     const keyInput = screen.getByLabelText('Deepgram API key')
     await user.type(keyInput, '0123456789abcdef0123456789abcdef')
     await user.click(screen.getByRole('button', { name: 'Verify & save' }))
@@ -553,7 +549,7 @@ describe('SettingsSheet local transcription', () => {
       />,
     )
 
-    await user.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     await user.click(screen.getByRole('link', { name: 'Get a Deepgram key' }))
 
     expect(screen.getByRole('alert')).toHaveTextContent('Could not open the Deepgram console.')
@@ -572,7 +568,7 @@ describe('SettingsSheet local transcription', () => {
         onClose={vi.fn()}
       />,
     )
-    await userEvent.click(screen.getByText('Recognition'))
+    await ensureRecognitionOpen()
     expect(screen.getByText('Deepgram is ready')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Remove key' })).toBeVisible()
     expect(screen.queryByLabelText('Deepgram API key')).not.toBeInTheDocument()

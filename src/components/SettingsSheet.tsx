@@ -8,9 +8,7 @@ import {
   HardDrive,
   Headphones,
   Mic2,
-  Cloud,
   Download,
-  Laptop,
   Keyboard,
   Languages,
   SlidersHorizontal,
@@ -438,7 +436,7 @@ export function SettingsSheet({
                 )}
 
                 <div className="settings-disclosure-list">
-                  <details className="settings-disclosure">
+                  <details className="settings-disclosure" open>
                     <summary>
                       <span className="settings-disclosure-title">{t('settings.recognition')}</span>
                       <span className="settings-disclosure-value" title={recognitionLabel}>
@@ -456,65 +454,43 @@ export function SettingsSheet({
                       <ChevronRight className="settings-disclosure-chevron" size={15} aria-hidden="true" />
                     </summary>
                     <div className="settings-disclosure-content">
-                      {audioModeLocked ? (
-                        <div className="recognition-engine-locked" aria-label={t('settings.currentRecognition')}>
-                          {transcriptionConfig.asr.provider === 'local' ? <Laptop size={16} /> : <Cloud size={16} />}
-                          <span>
-                            <strong>{transcriptionConfig.asr.provider === 'local' ? t('settings.onDevice') : transcriptionConfig.asr.provider === 'deepgram' ? 'Deepgram' : 'ElevenLabs'}</strong>
-                            <small>{t('settings.recognitionLocked')}</small>
-                          </span>
-                        </div>
-                      ) : (
-                        <fieldset className="recognition-engine">
-                          <legend>{t('settings.recognitionEngine')}</legend>
-                          <label className={transcriptionConfig.asr.provider !== 'local' ? 'recognition-engine-selected' : ''}>
-                            <input
-                              type="radio"
-                              name="recognition-engine"
-                              checked={transcriptionConfig.asr.provider !== 'local'}
-                              onChange={() => changeEngine(transcriptionConfig.asr.provider === 'local' ? 'deepgram' : transcriptionConfig.asr.provider)}
-                            />
-                            <Cloud size={16} aria-hidden="true" />
-                            <span><strong>{t('settings.cloud')}</strong><small>{t('settings.cloudDescription')}</small></span>
-                          </label>
-                          <label className={transcriptionConfig.asr.provider === 'local' ? 'recognition-engine-selected' : ''}>
-                            <input
-                              type="radio"
-                              name="recognition-engine"
-                              checked={transcriptionConfig.asr.provider === 'local'}
-                              onChange={() => changeEngine('local')}
-                            />
-                            <Laptop size={16} aria-hidden="true" />
-                            <span><strong>{t('settings.onDevice')}</strong><small>{t('settings.onDeviceDescription')}</small></span>
-                          </label>
-                        </fieldset>
-                      )}
-
-                      {!audioModeLocked && transcriptionConfig.asr.provider !== 'local' && (
-                        <fieldset className="cloud-provider-options" aria-label={t('settings.onlineProvider')}>
-                          <legend>{t('settings.onlineProvider')}</legend>
-                          <label className={transcriptionConfig.asr.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
-                            <input
-                              type="radio"
-                              name="cloud-transcription-provider"
-                              checked={transcriptionConfig.asr.provider === 'deepgram'}
-                              onChange={() => changeEngine('deepgram')}
-                            />
-                            <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
-                            {transcriptionConfig.asr.provider === 'deepgram' && <Check size={14} aria-hidden="true" />}
-                          </label>
-                          <label className={transcriptionConfig.asr.provider === 'elevenlabs' ? 'cloud-provider-selected' : ''}>
-                            <input
-                              type="radio"
-                              name="cloud-transcription-provider"
-                              checked={transcriptionConfig.asr.provider === 'elevenlabs'}
-                              onChange={() => changeEngine('elevenlabs')}
-                            />
-                            <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
-                            {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
-                          </label>
-                        </fieldset>
-                      )}
+                      <fieldset
+                        className="cloud-provider-options provider-choice-options"
+                        aria-label={t('settings.asrProvider')}
+                        disabled={audioModeLocked}
+                      >
+                        <legend>{t('settings.asrProvider')}</legend>
+                        <label className={transcriptionConfig.asr.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
+                          <input
+                            type="radio"
+                            name="transcription-provider"
+                            checked={transcriptionConfig.asr.provider === 'deepgram'}
+                            onChange={() => changeEngine('deepgram')}
+                          />
+                          <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
+                          {transcriptionConfig.asr.provider === 'deepgram' && <Check size={14} aria-hidden="true" />}
+                        </label>
+                        <label className={transcriptionConfig.asr.provider === 'elevenlabs' ? 'cloud-provider-selected' : ''}>
+                          <input
+                            type="radio"
+                            name="transcription-provider"
+                            checked={transcriptionConfig.asr.provider === 'elevenlabs'}
+                            onChange={() => changeEngine('elevenlabs')}
+                          />
+                          <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
+                          {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
+                        </label>
+                        <label className={transcriptionConfig.asr.provider === 'local' ? 'cloud-provider-selected' : ''}>
+                          <input
+                            type="radio"
+                            name="transcription-provider"
+                            checked={transcriptionConfig.asr.provider === 'local'}
+                            onChange={() => changeEngine('local')}
+                          />
+                          <span><strong>{t('settings.onDevice')}</strong><small>{t('settings.onDeviceDescription')}</small></span>
+                          {transcriptionConfig.asr.provider === 'local' && <Check size={14} aria-hidden="true" />}
+                        </label>
+                      </fieldset>
 
                       {transcriptionConfig.asr.provider === 'local' && (
                         <div className="local-recognition-settings">
@@ -592,7 +568,8 @@ export function SettingsSheet({
                         </div>
                       )}
 
-                      <fieldset className="diarization-models" aria-label={t('settings.speakerSeparation')}>
+                      <fieldset className="diarization-models" aria-label={t('settings.diarizationProvider')}>
+                        <legend>{t('settings.diarizationProvider')}</legend>
                         <div className="diarization-choice">
                           <input
                             id="deepgram-streaming-diarization"
@@ -778,38 +755,6 @@ export function SettingsSheet({
                         </div>
                       )}
 
-                      <h3>{t('settings.speakerLabels')}</h3>
-                      <p className="settings-disclosure-note">
-                        {transcriptionConfig.diarization.provider === 'deepgram'
-                          ? t('settings.speakerDeepgram')
-                          : transcriptionConfig.diarization.provider === 'local' && selectedDiarizationModel
-                            ? t('settings.speakerLocal', { model: selectedDiarizationModel.label })
-                            : t('settings.speakerOff')}
-                      </p>
-                      <div
-                        className={`capture-lanes ${audioMode === 'both' ? '' : 'capture-lanes-single'}`}
-                        aria-label={t('settings.audioSourceNaming')}
-                      >
-                        {audioMode !== 'mic' && (
-                          <div>
-                            <Headphones size={17} aria-hidden="true" />
-                            <span><strong>{t('settings.systemAudio')}</strong><small>{t('settings.systemAudioHelp')}</small></span>
-                            <code>{t('settings.remoteExample')}</code>
-                          </div>
-                        )}
-                        {audioMode !== 'system' && (
-                          <div>
-                            <Mic2 size={17} aria-hidden="true" />
-                            <span><strong>{t('settings.roomMicrophone')}</strong><small>{t('settings.roomMicrophoneHelp')}</small></span>
-                            <code>{t('settings.roomExample')}</code>
-                          </div>
-                        )}
-                      </div>
-                      <p className="speaker-policy">{t('settings.locationPolicy')}</p>
-                      <dl className="settings-facts settings-disclosure-facts">
-                        <div><dt>{t('settings.engine')}</dt><dd>{transcriptionConfig.asr.provider === 'deepgram' ? 'Deepgram' : transcriptionConfig.asr.provider === 'elevenlabs' ? 'ElevenLabs' : selectedModel?.label}</dd></div>
-                        <div><dt>{t('settings.speakerSeparation')}</dt><dd>{diarizationSummary}</dd></div>
-                      </dl>
                     </div>
                   </details>
                 </div>

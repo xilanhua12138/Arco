@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SUMMARY_PROMPT, DEFAULT_TITLE_PROMPT } from '../lib/generationSettings'
 import { demoAgentReply, demoCapture, demoMeetingDetails, demoMeetings, demoRuntimes } from '../lib/demoData'
 import { arcoBridge } from '../lib/bridge'
-import type { MeetingDetail, MeetingSummary } from '../types'
+import type { MeetingDetail, MeetingSummary, NoteDocument } from '../types'
 import { useArco } from './useArco'
 
 const eventListeners = vi.hoisted(() => new Map<string, (event: { payload: string }) => void>())
@@ -359,6 +359,59 @@ describe('useArco cross-window capture synchronization', () => {
     expect(readMeeting).toHaveBeenCalledTimes(2)
     expect(result.current.meeting?.lines).toHaveLength(2)
     expect(result.current.capture.phase).toBe('idle')
+  })
+})
+
+describe('useArco saved note refreshes', () => {
+  it('keeps the newest query result when an older request resolves last', async () => {
+    const detail = meetingWith(2)
+    mockMeetingBackend(detail)
+    const note = (id: string, title: string): NoteDocument => ({
+      id,
+      title,
+      body: `${title} body`,
+      source: 'manual',
+      createdAt: '2026-07-14T10:00:00+08:00',
+      updatedAt: '2026-07-14T10:00:00+08:00',
+      path: `/tmp/${id}.md`,
+      meetingId: null,
+      meetingTitle: null,
+      agentTurnId: null,
+    })
+    let resolveOld!: (notes: NoteDocument[]) => void
+    let resolveNew!: (notes: NoteDocument[]) => void
+    const oldRequest = new Promise<NoteDocument[]>((resolve) => { resolveOld = resolve })
+    const newRequest = new Promise<NoteDocument[]>((resolve) => { resolveNew = resolve })
+    vi.spyOn(arcoBridge, 'listNotes').mockImplementation(async (query) => {
+      if (query === 'old') return oldRequest
+      if (query === 'new') return newRequest
+      return []
+    })
+
+    const { result } = renderHook(() => useArco())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    let oldRefresh!: Promise<NoteDocument[]>
+    let newRefresh!: Promise<NoteDocument[]>
+    act(() => {
+      oldRefresh = result.current.refreshSavedNotes('old')
+      newRefresh = result.current.refreshSavedNotes('new')
+    })
+    expect(result.current.notesLoading).toBe(true)
+
+    await act(async () => {
+      resolveNew([note('new-note', 'Newest result')])
+      await newRefresh
+    })
+    expect(result.current.savedNotes.map((item) => item.id)).toEqual(['new-note'])
+    expect(result.current.notesLoading).toBe(false)
+
+    await act(async () => {
+      resolveOld([note('old-note', 'Stale result')])
+      await oldRefresh
+    })
+    expect(result.current.savedNotes.map((item) => item.id)).toEqual(['new-note'])
+    expect(result.current.notesLoading).toBe(false)
   })
 })
 
