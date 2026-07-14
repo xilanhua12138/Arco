@@ -327,6 +327,12 @@ describe('SettingsSheet local transcription', () => {
     )
 
     await ensureRecognitionOpen()
+    const providers = screen.getByRole('group', { name: 'Speech recognition provider' })
+    const elevenLabsSetup = screen.getByRole('group', { name: 'ElevenLabs setup' })
+    const speakerSeparation = screen.getByRole('group', { name: 'Speaker separation location' })
+
+    expect(providers.nextElementSibling).toBe(elevenLabsSetup)
+    expect(elevenLabsSetup.compareDocumentPosition(speakerSeparation) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     expect(screen.getByText('ElevenLabs ASR')).toBeVisible()
     expect(within(screen.getByRole('group', { name: 'Speaker separation location' })).getByRole('radio', { name: /Off/i })).toBeChecked()
     expect(screen.queryByRole('group', { name: 'Speaker separation provider' })).not.toBeInTheDocument()

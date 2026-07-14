@@ -989,9 +989,16 @@ test('Recognition configures ASR and streaming diarization providers independent
   await page.screenshot({ path: 'test-results/arco-deepgram-setup.png', fullPage: true })
 
   const onlineProviders = settings.getByRole('group', { name: 'Speech recognition provider' })
+  await settings.locator('.settings-content').evaluate((content) => { content.scrollTop = 0 })
   await onlineProviders.getByRole('radio', { name: /ElevenLabs/i }).click()
   await expect(onlineProviders.getByRole('radio', { name: /ElevenLabs/i })).toBeChecked()
   const elevenLabsSetup = settings.getByRole('group', { name: 'ElevenLabs setup' })
+  const settingsContentBox = await settings.locator('.settings-content').boundingBox()
+  const elevenLabsKeyBox = await elevenLabsSetup.getByLabel('ElevenLabs API key').boundingBox()
+  expect(settingsContentBox).not.toBeNull()
+  expect(elevenLabsKeyBox).not.toBeNull()
+  expect(elevenLabsKeyBox!.y).toBeGreaterThanOrEqual(settingsContentBox!.y)
+  expect(elevenLabsKeyBox!.y + elevenLabsKeyBox!.height).toBeLessThanOrEqual(settingsContentBox!.y + settingsContentBox!.height)
   await expect(elevenLabsSetup.getByRole('link', { name: 'Get an ElevenLabs key' })).toHaveAttribute(
     'href',
     'https://elevenlabs.io/app/developers/api-keys',
@@ -1064,6 +1071,12 @@ test('Recognition configures ASR and streaming diarization providers independent
   await expect(reopened.getByRole('group', { name: 'Local speaker separation model' })).toBeVisible()
   await expect(reopened.getByRole('combobox', { name: 'On-device model' })).toHaveValue('whisper-small')
   await expect(reopened.getByRole('combobox', { name: 'Recognition language' })).toHaveValue('en-US')
+
+  await page.setViewportSize({ width: 760, height: 700 })
+  const meetingTypeColumns = await reopened.locator('.audio-mode-options').evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+  const speakerSeparationColumns = await reopened.locator('.recognition-engine-three').evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+  expect(meetingTypeColumns.trim().split(/\s+/)).toHaveLength(1)
+  expect(speakerSeparationColumns.trim().split(/\s+/)).toHaveLength(1)
 })
 
 test('Meeting output reveals prompt editing only on demand and persists each rule', async ({ page }) => {

@@ -104,6 +104,106 @@ const cliLabel: Record<ProviderId, string> = {
   claude: 'Claude Code',
 }
 
+interface ProviderCredentialSetupProps {
+  ariaLabel: string
+  configured: boolean
+  busy: boolean
+  disabled: boolean
+  readyLabel: string
+  keychainLabel: string
+  removeLabel: string
+  pasteLabel: string
+  pasteHelp: string
+  getKeyLabel: string
+  apiKeyLabel: string
+  keyPlaceholder: string
+  privacyLabel: string
+  verifyLabel: string
+  verifyingLabel: string
+  href: string
+  value: string
+  error: string | null
+  onChange: (value: string) => void
+  onOpenConsole: () => void
+  onRemove: () => void
+  onSubmit: () => void
+}
+
+function ProviderCredentialSetup({
+  ariaLabel,
+  configured,
+  busy,
+  disabled,
+  readyLabel,
+  keychainLabel,
+  removeLabel,
+  pasteLabel,
+  pasteHelp,
+  getKeyLabel,
+  apiKeyLabel,
+  keyPlaceholder,
+  privacyLabel,
+  verifyLabel,
+  verifyingLabel,
+  href,
+  value,
+  error,
+  onChange,
+  onOpenConsole,
+  onRemove,
+  onSubmit,
+}: ProviderCredentialSetupProps) {
+  return (
+    <div className="provider-key-setup" role="group" aria-label={ariaLabel}>
+      {configured ? (
+        <div className="provider-key-ready" aria-live="polite">
+          <span className="provider-key-status">
+            <Check size={15} aria-hidden="true" />
+            <span><strong>{readyLabel}</strong><small>{keychainLabel}</small></span>
+          </span>
+          <button type="button" className="model-action model-action-remove" disabled={disabled || busy} onClick={onRemove}>
+            {removeLabel}
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+          <div className="provider-key-heading">
+            <span><strong>{pasteLabel}</strong><small>{pasteHelp}</small></span>
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                event.preventDefault()
+                onOpenConsole()
+              }}
+            >
+              {getKeyLabel}
+            </a>
+          </div>
+          <div className="provider-key-entry">
+            <input
+              type="password"
+              aria-label={apiKeyLabel}
+              autoComplete="off"
+              spellCheck={false}
+              value={value}
+              disabled={disabled || busy}
+              placeholder={keyPlaceholder}
+              onChange={(event) => onChange(event.target.value)}
+            />
+            <button type="submit" className="model-action" disabled={disabled || busy || !value.trim()}>
+              {busy ? verifyingLabel : verifyLabel}
+            </button>
+          </div>
+          {error && <p className="provider-key-error" role="alert">{error}</p>}
+          <p className="provider-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {privacyLabel}</p>
+        </form>
+      )}
+    </div>
+  )
+}
+
 export function SettingsSheet({
   open,
   runtimes,
@@ -480,8 +580,13 @@ export function SettingsSheet({
                       <ChevronRight className="settings-disclosure-chevron" size={15} aria-hidden="true" />
                     </summary>
                     <div className="settings-disclosure-content">
+                      <section className="recognition-group" aria-labelledby="speech-recognition-heading">
+                        <div className="recognition-group-heading">
+                          <h3 id="speech-recognition-heading">{t('settings.speechRecognition')}</h3>
+                          <span>{asrSummary}</span>
+                      </div>
                       <fieldset className="recognition-engine" aria-label={t('settings.asrLocation')} disabled={audioModeLocked}>
-                        <legend>{t('settings.asrLocation')}</legend>
+                        <legend className="sr-only">{t('settings.asrLocation')}</legend>
                         <label className={transcriptionConfig.asr.provider !== 'local' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
@@ -532,6 +637,60 @@ export function SettingsSheet({
                             {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
                           </label>
                         </fieldset>
+                      )}
+
+                      {transcriptionConfig.asr.provider === 'deepgram' && (
+                        <ProviderCredentialSetup
+                          ariaLabel={t('settings.deepgramSetupAria')}
+                          configured={deepgramCredential.configured}
+                          busy={deepgramCredentialBusy}
+                          disabled={audioModeLocked}
+                          readyLabel={t('settings.deepgramReady')}
+                          keychainLabel={t('settings.deepgramKeychain')}
+                          removeLabel={t('settings.removeDeepgramKey')}
+                          pasteLabel={t('settings.deepgramPasteKey')}
+                          pasteHelp={t('settings.deepgramPasteKeyHelp')}
+                          getKeyLabel={t('settings.deepgramGetKey')}
+                          apiKeyLabel={t('settings.deepgramApiKey')}
+                          keyPlaceholder={t('settings.deepgramKeyPlaceholder')}
+                          privacyLabel={t('settings.deepgramPrivacy')}
+                          verifyLabel={t('settings.verifyAndSave')}
+                          verifyingLabel={t('settings.verifying')}
+                          href="https://console.deepgram.com/"
+                          value={deepgramApiKey}
+                          error={deepgramError}
+                          onChange={setDeepgramApiKey}
+                          onOpenConsole={() => { void openDeepgramConsole() }}
+                          onRemove={() => { void onRemoveDeepgramApiKey() }}
+                          onSubmit={() => { void saveDeepgramKey() }}
+                        />
+                      )}
+
+                      {transcriptionConfig.asr.provider === 'elevenlabs' && (
+                        <ProviderCredentialSetup
+                          ariaLabel={t('settings.elevenLabsSetupAria')}
+                          configured={elevenLabsCredential.configured}
+                          busy={elevenLabsCredentialBusy}
+                          disabled={audioModeLocked}
+                          readyLabel={t('settings.elevenLabsReady')}
+                          keychainLabel={t('settings.elevenLabsKeychain')}
+                          removeLabel={t('settings.removeElevenLabsKey')}
+                          pasteLabel={t('settings.elevenLabsPasteKey')}
+                          pasteHelp={t('settings.elevenLabsPasteKeyHelp')}
+                          getKeyLabel={t('settings.elevenLabsGetKey')}
+                          apiKeyLabel={t('settings.elevenLabsApiKey')}
+                          keyPlaceholder={t('settings.elevenLabsKeyPlaceholder')}
+                          privacyLabel={t('settings.elevenLabsPrivacy')}
+                          verifyLabel={t('settings.verifyAndSave')}
+                          verifyingLabel={t('settings.verifying')}
+                          href="https://elevenlabs.io/app/developers/api-keys"
+                          value={elevenLabsApiKey}
+                          error={elevenLabsError}
+                          onChange={setElevenLabsApiKey}
+                          onOpenConsole={() => { void openElevenLabsConsole() }}
+                          onRemove={() => { void onRemoveElevenLabsApiKey() }}
+                          onSubmit={() => { void saveElevenLabsKey() }}
+                        />
                       )}
 
                       {transcriptionConfig.asr.provider === 'local' && (
@@ -610,12 +769,27 @@ export function SettingsSheet({
                         </div>
                       )}
 
+                      </section>
+
+                      <section className="recognition-group recognition-group-speakers" aria-labelledby="speaker-separation-heading">
+                        <div className="recognition-group-heading">
+                          <h3 id="speaker-separation-heading">{t('settings.speakerSeparation')}</h3>
+                          <span>{diarizationSummary}</span>
+                        </div>
+
+                      {transcriptionConfig.asr.provider === 'elevenlabs' && (
+                        <div className="provider-diarization-receipt provider-context-receipt">
+                          <AlertTriangle size={15} aria-hidden="true" />
+                          <span><strong>{t('settings.elevenLabsBuiltIn')}</strong><small>{t('settings.elevenLabsDiarizationTiming')}</small></span>
+                        </div>
+                      )}
+
                       <fieldset
                         className="recognition-engine recognition-engine-three diarization-location"
                         aria-label={t('settings.diarizationLocation')}
                         disabled={audioModeLocked}
                       >
-                        <legend>{t('settings.diarizationLocation')}</legend>
+                        <legend className="sr-only">{t('settings.diarizationLocation')}</legend>
                         <label className={transcriptionConfig.diarization.provider === 'deepgram' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
@@ -718,113 +892,43 @@ export function SettingsSheet({
                       )}
 
                       {(transcriptionConfig.asr.provider === 'deepgram' || transcriptionConfig.diarization.provider === 'deepgram') && (
-                        <div className="deepgram-provider-panel">
-                          <div className="provider-diarization-receipt">
-                            <Check size={15} aria-hidden="true" />
-                            <span>
-                              <strong>{t(transcriptionConfig.diarization.provider === 'deepgram' ? 'settings.deepgramBuiltIn' : 'settings.deepgramAsr')}</strong>
-                              <small>{t(transcriptionConfig.diarization.provider === 'deepgram' ? 'settings.deepgramNoLocalModel' : 'settings.deepgramAsrHelp')}</small>
-                            </span>
-                          </div>
-                          <div className="deepgram-key-panel" role="group" aria-label={t('settings.deepgramSetupAria')}>
-                          {deepgramCredential.configured ? (
-                            <div className="deepgram-key-ready" aria-live="polite">
-                              <span className="deepgram-key-status"><Check size={15} aria-hidden="true" /><span><strong>{t('settings.deepgramReady')}</strong><small>{t('settings.deepgramKeychain')}</small></span></span>
-                              <button type="button" className="model-action model-action-remove" disabled={audioModeLocked || deepgramCredentialBusy} onClick={() => void onRemoveDeepgramApiKey()}>
-                                {t('settings.removeDeepgramKey')}
-                              </button>
-                            </div>
-                          ) : (
-                            <form onSubmit={(event) => { event.preventDefault(); void saveDeepgramKey() }}>
-                              <div className="deepgram-key-heading">
-                                <span><strong>{t('settings.deepgramPasteKey')}</strong><small>{t('settings.deepgramPasteKeyHelp')}</small></span>
-                                <a
-                                  href="https://console.deepgram.com/"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  onClick={(event) => {
-                                    event.preventDefault()
-                                    void openDeepgramConsole()
-                                  }}
-                                >
-                                  {t('settings.deepgramGetKey')}
-                                </a>
-                              </div>
-                              <div className="deepgram-key-entry">
-                                <input
-                                  type="password"
-                                  aria-label={t('settings.deepgramApiKey')}
-                                  autoComplete="off"
-                                  spellCheck={false}
-                                  value={deepgramApiKey}
-                                  disabled={audioModeLocked || deepgramCredentialBusy}
-                                  placeholder={t('settings.deepgramKeyPlaceholder')}
-                                  onChange={(event) => setDeepgramApiKey(event.target.value)}
-                                />
-                                <button type="submit" className="model-action" disabled={audioModeLocked || deepgramCredentialBusy || !deepgramApiKey.trim()}>
-                                  {deepgramCredentialBusy ? t('settings.verifying') : t('settings.verifyAndSave')}
-                                </button>
-                              </div>
-                              {deepgramError && <p className="deepgram-key-error" role="alert">{deepgramError}</p>}
-                              <p className="deepgram-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.deepgramPrivacy')}</p>
-                            </form>
-                          )}
-                          </div>
+                        <div className="provider-diarization-receipt">
+                          <Check size={15} aria-hidden="true" />
+                          <span>
+                            <strong>{t(transcriptionConfig.diarization.provider === 'deepgram' ? 'settings.deepgramBuiltIn' : 'settings.deepgramAsr')}</strong>
+                            <small>{t(transcriptionConfig.diarization.provider === 'deepgram' ? 'settings.deepgramNoLocalModel' : 'settings.deepgramAsrHelp')}</small>
+                          </span>
                         </div>
                       )}
 
-                      {transcriptionConfig.asr.provider === 'elevenlabs' && (
-                        <div className="deepgram-provider-panel">
-                          <div className="provider-diarization-receipt">
-                            <AlertTriangle size={15} aria-hidden="true" />
-                            <span><strong>{t('settings.elevenLabsBuiltIn')}</strong><small>{t('settings.elevenLabsDiarizationTiming')}</small></span>
-                          </div>
-                          <div className="deepgram-key-panel" role="group" aria-label={t('settings.elevenLabsSetupAria')}>
-                          {elevenLabsCredential.configured ? (
-                            <div className="deepgram-key-ready" aria-live="polite">
-                              <span className="deepgram-key-status"><Check size={15} aria-hidden="true" /><span><strong>{t('settings.elevenLabsReady')}</strong><small>{t('settings.elevenLabsKeychain')}</small></span></span>
-                              <button type="button" className="model-action model-action-remove" disabled={audioModeLocked || elevenLabsCredentialBusy} onClick={() => void onRemoveElevenLabsApiKey()}>
-                                {t('settings.removeElevenLabsKey')}
-                              </button>
-                            </div>
-                          ) : (
-                            <form onSubmit={(event) => { event.preventDefault(); void saveElevenLabsKey() }}>
-                              <div className="deepgram-key-heading">
-                                <span><strong>{t('settings.elevenLabsPasteKey')}</strong><small>{t('settings.elevenLabsPasteKeyHelp')}</small></span>
-                                <a
-                                  href="https://elevenlabs.io/app/developers/api-keys"
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  onClick={(event) => {
-                                    event.preventDefault()
-                                    void openElevenLabsConsole()
-                                  }}
-                                >
-                                  {t('settings.elevenLabsGetKey')}
-                                </a>
-                              </div>
-                              <div className="deepgram-key-entry">
-                                <input
-                                  type="password"
-                                  aria-label={t('settings.elevenLabsApiKey')}
-                                  autoComplete="off"
-                                  spellCheck={false}
-                                  value={elevenLabsApiKey}
-                                  disabled={audioModeLocked || elevenLabsCredentialBusy}
-                                  placeholder={t('settings.elevenLabsKeyPlaceholder')}
-                                  onChange={(event) => setElevenLabsApiKey(event.target.value)}
-                                />
-                                <button type="submit" className="model-action" disabled={audioModeLocked || elevenLabsCredentialBusy || !elevenLabsApiKey.trim()}>
-                                  {elevenLabsCredentialBusy ? t('settings.verifying') : t('settings.verifyAndSave')}
-                                </button>
-                              </div>
-                              {elevenLabsError && <p className="deepgram-key-error" role="alert">{elevenLabsError}</p>}
-                              <p className="deepgram-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.elevenLabsPrivacy')}</p>
-                            </form>
-                          )}
-                          </div>
-                        </div>
+                      {transcriptionConfig.asr.provider !== 'deepgram' && transcriptionConfig.diarization.provider === 'deepgram' && (
+                        <ProviderCredentialSetup
+                          ariaLabel={t('settings.deepgramSetupAria')}
+                          configured={deepgramCredential.configured}
+                          busy={deepgramCredentialBusy}
+                          disabled={audioModeLocked}
+                          readyLabel={t('settings.deepgramReady')}
+                          keychainLabel={t('settings.deepgramKeychain')}
+                          removeLabel={t('settings.removeDeepgramKey')}
+                          pasteLabel={t('settings.deepgramPasteKey')}
+                          pasteHelp={t('settings.deepgramPasteKeyHelp')}
+                          getKeyLabel={t('settings.deepgramGetKey')}
+                          apiKeyLabel={t('settings.deepgramApiKey')}
+                          keyPlaceholder={t('settings.deepgramKeyPlaceholder')}
+                          privacyLabel={t('settings.deepgramPrivacy')}
+                          verifyLabel={t('settings.verifyAndSave')}
+                          verifyingLabel={t('settings.verifying')}
+                          href="https://console.deepgram.com/"
+                          value={deepgramApiKey}
+                          error={deepgramError}
+                          onChange={setDeepgramApiKey}
+                          onOpenConsole={() => { void openDeepgramConsole() }}
+                          onRemove={() => { void onRemoveDeepgramApiKey() }}
+                          onSubmit={() => { void saveDeepgramKey() }}
+                        />
                       )}
+
+                      </section>
 
                     </div>
                   </details>
