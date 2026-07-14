@@ -40,7 +40,7 @@ Arco keeps the transcript as the evidence layer and the Agent at its right. Syst
 Use the transcript alone or attach one project workspace through the native macOS folder picker. Arco reuses that workspace for later questions and sends each request through the local Codex or Claude CLI already signed in on your Mac. While Arco is listening, the always-on-top recording control and Agent stay available across apps and macOS Spaces, so you can ask, stop, or return to the evidence without leaving the conversation.
 
 <p align="center">
-  <img src="docs/images/arco-agent-overlay.png" alt="Ask Arco floating Agent and recording controls over the current desktop" width="900">
+  <img src="docs/images/arco-in-meeting.png" alt="Ask Arco floating Agent and recording controls over the current desktop" width="900">
 </p>
 
 ## A useful local meeting history

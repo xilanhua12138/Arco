@@ -108,11 +108,51 @@ test('capture the global Agent and recording HUD in one live desktop scene', asy
     hud.style.zIndex = '10'
     document.body.append(hud)
   }, hudMarkup)
+  await page.addStyleTag({
+    content: `
+      .agent-overlay-surface {
+        background-color: rgb(242 249 253);
+      }
+      .agent-overlay-shared-header {
+        background-color: rgb(248 251 253);
+      }
+      .agent-overlay-agent-slot .agent-workspace {
+        background-color: rgb(255 255 255);
+      }
+      .agent-overlay-evidence-slot {
+        background-color: rgb(248 250 252);
+      }
+      .recording-hud {
+        background-color: rgb(244 247 249);
+      }
+    `,
+  })
   await expect(page.getByRole('region', { name: 'Arco recording controls' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Ask Arco' })).toBeVisible()
+  const material = await page.evaluate(() => {
+    const background = (selector: string) => {
+      const element = document.querySelector(selector)
+      if (!(element instanceof HTMLElement)) throw new Error(`Missing ${selector}`)
+      return getComputedStyle(element).backgroundColor
+    }
+    return {
+      overlay: background('.agent-overlay-surface'),
+      header: background('.agent-overlay-shared-header'),
+      agent: background('.agent-overlay-agent-slot .agent-workspace'),
+      transcript: background('.agent-overlay-evidence-slot'),
+      hud: background('.recording-hud'),
+    }
+  })
+  expect(material).toEqual({
+    overlay: 'rgb(242, 249, 253)',
+    header: 'rgb(248, 251, 253)',
+    agent: 'rgb(255, 255, 255)',
+    transcript: 'rgb(248, 250, 252)',
+    hud: 'rgb(244, 247, 249)',
+  })
   await page.screenshot({
-    path: 'docs/images/arco-agent-overlay.png',
+    path: 'docs/images/arco-in-meeting.png',
     fullPage: true,
     animations: 'disabled',
   })
@@ -128,7 +168,8 @@ test('README presents the in-meeting interaction once and thanks FluidVoice', as
   expect(english).not.toContain('## Stay in the conversation')
   expect(chinese).toContain('## 不离开当前对话，直接提问')
   for (const readme of [english, chinese]) {
-    expect(readme.match(/docs\/images\/arco-agent-overlay\.png/g)).toHaveLength(1)
+    expect(readme.match(/docs\/images\/arco-in-meeting\.png/g)).toHaveLength(1)
+    expect(readme).not.toContain('docs/images/arco-agent-overlay.png')
     expect(readme).not.toContain('docs/images/arco-recording-hud.png')
     expect(readme).toContain('https://github.com/altic-dev/FluidVoice')
   }
