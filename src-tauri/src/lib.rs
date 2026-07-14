@@ -559,6 +559,7 @@ fn start_capture(
         .lock()
         .map_err(|_| "transcript storage coordinator is unavailable".to_string())?;
     let transcription = transcription.unwrap_or_default();
+    state.transcription.validate_selection(&transcription)?;
     let secrets = CaptureSecrets {
         deepgram: if transcription.asr.provider == "deepgram"
             || transcription.diarization.provider == "deepgram"

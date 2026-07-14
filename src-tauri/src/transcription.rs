@@ -1,5 +1,5 @@
 use crate::capture::discover_local_transcriber;
-use crate::models::TranscriptionModelStatus;
+use crate::models::{TranscriptionConfig, TranscriptionModelStatus};
 use crate::paths::AppPaths;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -21,6 +21,17 @@ impl LocalTranscriptionRuntime {
 
     pub fn statuses(&self) -> Result<Vec<TranscriptionModelStatus>, String> {
         self.run(["models"])
+    }
+
+    pub fn validate_selection(&self, config: &TranscriptionConfig) -> Result<(), String> {
+        config.validate()?;
+        if config.asr.provider != "local" && config.diarization.provider != "local" {
+            return Ok(());
+        }
+        let statuses = self.statuses().map_err(|error| {
+            format!("Could not check the selected on-device transcription models: {error}")
+        })?;
+        validate_selected_models(config, &statuses)
     }
 
     pub fn prepare(&self, model: &str) -> Result<Vec<TranscriptionModelStatus>, String> {
@@ -107,6 +118,53 @@ impl LocalTranscriptionRuntime {
     }
 }
 
+fn validate_selected_models(
+    config: &TranscriptionConfig,
+    statuses: &[TranscriptionModelStatus],
+) -> Result<(), String> {
+    let mut required = Vec::with_capacity(2);
+    if config.asr.provider == "local" {
+        required.push(config.asr.model.as_str());
+    }
+    if config.diarization.provider == "local" {
+        required.push(
+            config
+                .diarization
+                .model
+                .as_deref()
+                .ok_or_else(|| "local diarization requires a streaming model".to_string())?,
+        );
+    }
+    for model in required {
+        let ready = statuses
+            .iter()
+            .any(|status| status.id == model && status.installed && status.phase == "ready");
+        if !ready {
+            return Err(format!(
+                "{} is selected but not installed. Open Arco Settings → Audio & speakers → Recognition, then choose Download & use.",
+                local_model_label(model)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn local_model_label(model: &str) -> &str {
+    match model {
+        "nemotron-speech-3.5-streaming" => "Nemotron Speech 3.5",
+        "whisper-tiny" => "Whisper Tiny",
+        "whisper-base" => "Whisper Base",
+        "whisper-small" => "Whisper Small",
+        "whisper-medium" => "Whisper Medium",
+        "whisper-large" => "Whisper Large",
+        "sortformer-streaming" => "Streaming Sortformer",
+        "pyannote-wespeaker-streaming" => "Pyannote + WeSpeaker",
+        "lseend-ami-streaming" => "LS-EEND Meeting",
+        "lseend-dihard3-streaming" => "LS-EEND General",
+        _ => model,
+    }
+}
+
 fn validate_model(model: &str, allow_diarizer: bool) -> Result<(), String> {
     const MODELS: &[&str] = &[
         "nemotron-speech-3.5-streaming",
@@ -164,5 +222,60 @@ mod tests {
         assert_eq!(parsed.progress, Some(0.25));
         assert!(parsed.error.is_none());
         assert!(parsed.path.is_none());
+    }
+
+    #[test]
+    fn selected_local_models_must_be_installed_before_capture_starts() {
+        use crate::models::{AsrConfig, DiarizationConfig, TranscriptionConfig};
+
+        let local = TranscriptionConfig {
+            asr: AsrConfig {
+                provider: "local".into(),
+                model: "nemotron-speech-3.5-streaming".into(),
+                language: "zh-CN".into(),
+            },
+            diarization: DiarizationConfig {
+                provider: "local".into(),
+                model: Some("sortformer-streaming".into()),
+            },
+        };
+        let statuses = vec![
+            TranscriptionModelStatus {
+                id: "nemotron-speech-3.5-streaming".into(),
+                installed: true,
+                phase: "ready".into(),
+                progress: Some(1.0),
+                error: None,
+                path: Some("/models/nemotron".into()),
+            },
+            TranscriptionModelStatus {
+                id: "sortformer-streaming".into(),
+                installed: false,
+                phase: "not-installed".into(),
+                progress: None,
+                error: None,
+                path: None,
+            },
+        ];
+
+        let error = validate_selected_models(&local, &statuses).unwrap_err();
+        assert_eq!(
+            error,
+            "Streaming Sortformer is selected but not installed. Open Arco Settings → Audio & speakers → Recognition, then choose Download & use."
+        );
+
+        let installed = statuses
+            .iter()
+            .cloned()
+            .map(|mut status| {
+                status.installed = true;
+                status.phase = "ready".into();
+                status
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(validate_selected_models(&local, &installed), Ok(()));
+
+        let cloud = TranscriptionConfig::default();
+        assert_eq!(validate_selected_models(&cloud, &[]), Ok(()));
     }
 }
