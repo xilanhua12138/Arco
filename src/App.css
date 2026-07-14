@@ -1063,6 +1063,8 @@
 .recognition-engine strong { color: var(--ink-strong); font-size: 12px; font-weight: 600; line-height: 17px; }
 .recognition-engine small { color: var(--ink-muted); font-size: 10px; line-height: 15px; }
 .recognition-engine:disabled label { opacity: 0.56; cursor: not-allowed; }
+.recognition-engine-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.recognition-engine.diarization-location { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-thin); }
 .recognition-engine-locked { min-height: 48px; display: flex; align-items: center; gap: 9px; margin-bottom: 14px; padding: 8px 10px; border-radius: 9px; color: var(--ink); background: var(--surface-subtle); }
 .recognition-engine-locked > span { display: grid; }
 .recognition-engine-locked strong { color: var(--ink-strong); font-size: 12px; font-weight: 600; line-height: 17px; }
@@ -1077,7 +1079,7 @@
 .cloud-provider-options strong { color: var(--ink-strong); font-size: 12px; font-weight: 600; line-height: 17px; }
 .cloud-provider-options small { color: var(--ink-muted); font-size: 10px; line-height: 15px; }
 .cloud-provider-options label > svg { color: var(--success); }
-.provider-choice-options:disabled > label { cursor: not-allowed; opacity: 0.56; }
+.cloud-provider-options em { color: var(--ink-muted); font-size: 10px; font-style: normal; }
 .local-recognition-settings { display: grid; margin-bottom: 16px; border-top: 1px solid var(--line-thin); }
 .settings-control-row { min-width: 0; min-height: 58px; display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 0.9fr); align-items: center; gap: 16px; border-bottom: 1px solid var(--line-thin); }
 .settings-control-row > span, .model-lifecycle-row > span, .diarization-choice > label { min-width: 0; display: grid; gap: 1px; }
@@ -1123,6 +1125,9 @@
 .diarization-choice em { color: var(--ink-muted); font-size: 10px; font-style: normal; }
 .diarization-models { min-width: 0; margin: 14px 0 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line-thin); }
 .diarization-models legend { padding: 0 0 6px; color: var(--ink-strong); font-size: 12px; font-weight: 500; line-height: 18px; }
+.cloud-provider-options.provider-second-level,
+.local-recognition-settings.provider-second-level,
+.diarization-models.provider-second-level { margin-left: 20px; }
 .diarization-choice-off { grid-template-columns: 18px minmax(0, 1fr); border-bottom: 0; cursor: pointer; }
 .diarization-choice-off > span { min-width: 0; display: grid; gap: 1px; }
 .provider-diarization-receipt { min-height: 52px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-thin); color: var(--ink-muted); }
