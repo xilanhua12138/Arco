@@ -66,7 +66,7 @@ describe('SettingsSheet audio scenarios', () => {
 
     const recognitionDetails = screen.getByText('Recognition').closest('details')
     expect(recognitionDetails).not.toHaveAttribute('open')
-    expect(screen.getByText('Chinese')).toBeVisible()
+    expect(screen.getByText('Deepgram · Chinese')).toBeVisible()
     expect(screen.queryByText('Remote 1… · In room 1…')).not.toBeInTheDocument()
     expect(screen.getByText(/Deepgram separates multiple speakers/i)).not.toBeVisible()
 

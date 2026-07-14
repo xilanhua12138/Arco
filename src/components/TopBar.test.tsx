@@ -137,6 +137,31 @@ describe('TopBar progressive disclosure', () => {
     expect(popover).toHaveTextContent('Location labels, not identities')
   })
 
+  it('shows ElevenLabs instead of hard-coding Deepgram for an active meeting', async () => {
+    const user = userEvent.setup()
+    render(
+      <TopBar
+        meeting={demoMeetings[0]}
+        meetingDetail={liveMeeting}
+        capture={{
+          ...demoCapture,
+          transcription: {
+            provider: 'elevenlabs',
+            model: 'scribe-v2-realtime',
+            language: 'zh-CN',
+            diarization: 'none',
+          },
+        }}
+        onRenameMeeting={renameMeeting}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Meeting details' }))
+    const popover = screen.getByRole('dialog', { name: 'Meeting details' })
+    expect(popover).toHaveTextContent('ElevenLabs')
+    expect(popover).not.toHaveTextContent('Deepgram')
+  })
+
   it('closes meeting details with Escape and restores focus to its trigger', async () => {
     const user = userEvent.setup()
     render(

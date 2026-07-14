@@ -359,6 +359,10 @@ impl MeetingStateStore {
         }))
     }
 
+    // These fields form the atomic persistence contract for one native agent turn.
+    // Keeping them explicit makes it harder to accidentally commit a turn under
+    // a different meeting, scope, workspace, or provider session.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_agent_turn(
         &self,
         meeting_id: &str,

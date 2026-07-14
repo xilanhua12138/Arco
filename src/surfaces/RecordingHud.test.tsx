@@ -38,6 +38,15 @@ describe('RecordingHud', () => {
     expect(toggle).toHaveBeenCalledTimes(1)
   })
 
+  it('uses the non-control HUD surface as a native drag region', async () => {
+    render(<RecordingHud />)
+
+    const hud = await screen.findByRole('region', { name: 'Arco recording controls' })
+    expect(hud).toHaveAttribute('data-tauri-drag-region', 'deep')
+    expect(screen.getByRole('button', { name: 'Stop recording' })).not.toHaveAttribute('data-tauri-drag-region')
+    expect(screen.getByRole('button', { name: 'Ask Arco' })).not.toHaveAttribute('data-tauri-drag-region')
+  })
+
   it('stops capture exactly once and locks the controls while the final transcript is saved', async () => {
     const user = userEvent.setup()
     let resolveStop!: (state: CaptureState) => void

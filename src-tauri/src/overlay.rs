@@ -182,7 +182,12 @@ pub fn release_capture_surfaces(app: &AppHandle) -> Result<(), String> {
     let mut errors = Vec::new();
     for label in capture_surface_labels() {
         if let Some(window) = app.get_webview_window(label) {
-            if let Err(error) = window.destroy() {
+            // WebKit can retain the native NSWindow backing a destroyed
+            // transparent webview until the app exits. Recreating the HUD on
+            // every recording therefore accumulates protected Liquid Glass
+            // windows in WindowServer. Hide and reuse the owned surfaces so a
+            // long-running Arco process always has at most one of each.
+            if let Err(error) = window.hide() {
                 errors.push(format!("{label}: {error}"));
             }
         }
@@ -195,7 +200,22 @@ pub fn release_capture_surfaces(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-pub fn show_or_focus_agent(app: &AppHandle) -> Result<bool, String> {
+fn agent_visibility_after_toggle(currently_visible: bool) -> bool {
+    !currently_visible
+}
+
+pub fn toggle_agent(app: &AppHandle) -> Result<bool, String> {
+    let currently_visible = app
+        .get_webview_window(AGENT_LABEL)
+        .map(|agent| agent.is_visible().map_err(|error| error.to_string()))
+        .transpose()?
+        .unwrap_or(false);
+
+    if !agent_visibility_after_toggle(currently_visible) {
+        hide_agent(app)?;
+        return Ok(false);
+    }
+
     let agent = ensure_agent_window(app)?;
     let physical_size = agent.inner_size().map_err(|error| error.to_string())?;
     let source_scale_factor = agent.scale_factor().map_err(|error| error.to_string())?;
@@ -205,9 +225,7 @@ pub fn show_or_focus_agent(app: &AppHandle) -> Result<bool, String> {
     );
     let monitor = preferred_monitor(app, AGENT_LABEL)?;
     apply_agent_size_and_position(&agent, geometry(&monitor), requested)?;
-    if !agent.is_visible().map_err(|error| error.to_string())? {
-        agent.show().map_err(|error| error.to_string())?;
-    }
+    agent.show().map_err(|error| error.to_string())?;
     agent.set_focus().map_err(|error| error.to_string())?;
     Ok(true)
 }
@@ -332,7 +350,6 @@ fn ensure_hud_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .shadow(true)
     .always_on_top(true)
     .visible_on_all_workspaces(true)
-    .content_protected(true)
     .focused(false)
     .focusable(true)
     .accept_first_mouse(true)
@@ -368,7 +385,6 @@ fn ensure_agent_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .shadow(true)
     .always_on_top(true)
     .visible_on_all_workspaces(true)
-    .content_protected(true)
     .focused(false)
     .focusable(true)
     .accept_first_mouse(true)
@@ -385,10 +401,16 @@ fn ensure_agent_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_frame, capture_surface_labels, hud_position, logical_size_from_physical,
-        monitor_fallback_labels, MonitorGeometry, AGENT_COLLAPSED_SIZE, AGENT_LABEL, AGENT_SIZE,
-        HUD_LABEL, HUD_SIZE,
+        agent_frame, agent_visibility_after_toggle, capture_surface_labels, hud_position,
+        logical_size_from_physical, monitor_fallback_labels, MonitorGeometry, AGENT_COLLAPSED_SIZE,
+        AGENT_LABEL, AGENT_SIZE, HUD_LABEL, HUD_SIZE,
     };
+
+    #[test]
+    fn pressing_the_hud_agent_action_again_closes_the_visible_overlay() {
+        assert!(agent_visibility_after_toggle(false));
+        assert!(!agent_visibility_after_toggle(true));
+    }
 
     #[test]
     fn active_display_fallback_uses_the_main_window_before_a_stale_agent_window() {
@@ -398,6 +420,37 @@ mod tests {
     #[test]
     fn stopping_capture_owns_and_releases_every_global_capture_surface() {
         assert_eq!(capture_surface_labels(), [HUD_LABEL, AGENT_LABEL]);
+    }
+
+    #[test]
+    fn stopping_capture_hides_surfaces_for_reuse_instead_of_leaking_native_windows() {
+        let source = include_str!("overlay.rs");
+        let release = source
+            .split("pub fn release_capture_surfaces")
+            .nth(1)
+            .and_then(|tail| tail.split("fn agent_visibility_after_toggle").next())
+            .expect("release_capture_surfaces body should remain inspectable");
+
+        assert!(release.contains("window.hide()"));
+        assert!(!release.contains("window.destroy()"));
+    }
+
+    #[test]
+    fn liquid_glass_overlays_do_not_request_a_protected_compositor_surface() {
+        let source = include_str!("overlay.rs");
+        let hud_builder = source
+            .split("fn ensure_hud_window")
+            .nth(1)
+            .and_then(|tail| tail.split("fn ensure_agent_window").next())
+            .expect("HUD builder should remain inspectable");
+        let agent_builder = source
+            .split("fn ensure_agent_window")
+            .nth(1)
+            .and_then(|tail| tail.split("#[cfg(test)]").next())
+            .expect("Agent builder should remain inspectable");
+
+        assert!(!hud_builder.contains(".content_protected(true)"));
+        assert!(!agent_builder.contains(".content_protected(true)"));
     }
 
     #[test]

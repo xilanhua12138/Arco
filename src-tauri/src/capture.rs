@@ -49,17 +49,26 @@ pub struct CaptureConfig {
 pub struct TranscriberDefinition {
     pub command: CommandSpec,
     pub requires_deepgram_key: bool,
+    pub requires_elevenlabs_key: bool,
     pub ready_timeout: Duration,
 }
 
 #[derive(Clone, Debug)]
 pub struct TranscriberCatalog {
     pub deepgram: TranscriberDefinition,
+    pub elevenlabs: TranscriberDefinition,
     pub local: Option<TranscriberDefinition>,
 }
 
 impl CaptureConfig {
     pub fn discover(paths: &AppPaths) -> Self {
+        let log_dir = paths.app_data.join("logs");
+        if let Err(error) = cleanup_stale_ready_signals(&log_dir) {
+            log::warn!(
+                "Arco could not clear stale audio readiness signals in {}: {error}",
+                log_dir.display()
+            );
+        }
         let recorder = std::env::var_os("ARCO_RECORDER_BIN")
             .map(PathBuf::from)
             .map(RecorderSpec::Executable)
@@ -86,20 +95,31 @@ impl CaptureConfig {
             };
 
         let local_binary = discover_local_transcriber(paths);
+        let elevenlabs_command = std::env::var_os("ARCO_ELEVENLABS_TRANSCRIBER_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| discover_elevenlabs_transcriber(paths));
         let environment = load_capture_environment(paths);
         Self {
             transcript_dir: paths.transcripts.clone(),
-            log_dir: paths.app_data.join("logs"),
+            log_dir,
             recorder,
             transcribers: TranscriberCatalog {
                 deepgram: TranscriberDefinition {
                     command: deepgram_command,
                     requires_deepgram_key,
+                    requires_elevenlabs_key: false,
+                    ready_timeout: Duration::from_secs(20),
+                },
+                elevenlabs: TranscriberDefinition {
+                    command: CommandSpec::new(elevenlabs_command, Vec::new()),
+                    requires_deepgram_key: false,
+                    requires_elevenlabs_key: true,
                     ready_timeout: Duration::from_secs(20),
                 },
                 local: local_binary.map(|program| TranscriberDefinition {
                     command: CommandSpec::new(program, vec![OsString::from("stream")]),
                     requires_deepgram_key: false,
+                    requires_elevenlabs_key: false,
                     // The ASR model is fast once loaded, but a first Core ML
                     // compilation for Streaming Sortformer can take minutes.
                     ready_timeout: Duration::from_secs(300),
@@ -109,6 +129,26 @@ impl CaptureConfig {
             requires_ready_signal: true,
         }
     }
+}
+
+fn cleanup_stale_ready_signals(log_dir: &Path) -> std::io::Result<()> {
+    if !log_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(log_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_pipeline_signal = name.ends_with(".signal")
+            && (name.starts_with("recorder-ready-") || name.starts_with("transcriber-ready-"));
+        if is_pipeline_signal {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 pub fn discover_deepgram_transcriber(paths: &AppPaths) -> PathBuf {
@@ -122,6 +162,19 @@ pub fn discover_deepgram_transcriber(paths: &AppPaths) -> PathBuf {
     .into_iter()
     .find(|path| is_executable(path))
     .unwrap_or_else(|| paths.native_dir.join("arco-deepgram-transcriber"))
+}
+
+pub fn discover_elevenlabs_transcriber(paths: &AppPaths) -> PathBuf {
+    [
+        paths.native_dir.join("arco-elevenlabs-transcriber"),
+        paths
+            .native_dir
+            .join("runtime")
+            .join("arco-elevenlabs-transcriber"),
+    ]
+    .into_iter()
+    .find(|path| is_executable(path))
+    .unwrap_or_else(|| paths.native_dir.join("arco-elevenlabs-transcriber"))
 }
 
 pub fn discover_local_transcriber(paths: &AppPaths) -> Option<PathBuf> {
@@ -258,7 +311,7 @@ impl CaptureManager {
         &self,
         mode: &str,
         transcription: TranscriptionConfig,
-        deepgram_api_key: Option<String>,
+        provider_api_key: Option<String>,
     ) -> Result<CaptureState, String> {
         validate_mode(mode)?;
         transcription.validate()?;
@@ -284,7 +337,7 @@ impl CaptureManager {
             transcription: Some(transcription.clone()),
         };
 
-        match self.spawn_pipeline(mode, &transcription, deepgram_api_key.as_deref()) {
+        match self.spawn_pipeline(mode, &transcription, provider_api_key.as_deref()) {
             Ok((children, transcript, started_at, source)) => {
                 let id = meeting_id(&source, &transcript)?;
                 inner.transcript = Some(transcript.clone());
@@ -351,7 +404,7 @@ impl CaptureManager {
         &self,
         mode: &str,
         transcription: &TranscriptionConfig,
-        deepgram_api_key: Option<&str>,
+        provider_api_key: Option<&str>,
     ) -> Result<(CaptureChildren, PathBuf, String, String), String> {
         let destination = self
             .destination
@@ -361,7 +414,7 @@ impl CaptureManager {
         let transcript_dir = destination.path;
         let transcriber_definition = self.resolve_transcriber(transcription)?;
         if transcriber_definition.requires_deepgram_key
-            && deepgram_api_key
+            && provider_api_key
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .is_none()
@@ -376,6 +429,23 @@ impl CaptureManager {
                 .unwrap_or(true)
         {
             return Err("Deepgram is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
+        }
+        if transcriber_definition.requires_elevenlabs_key
+            && provider_api_key
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            && !self
+                .config
+                .environment
+                .get("ELEVENLABS_API_KEY")
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            && std::env::var("ELEVENLABS_API_KEY")
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return Err("ElevenLabs is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
         }
 
         fs::create_dir_all(&transcript_dir).map_err(|error| {
@@ -454,12 +524,20 @@ impl CaptureManager {
             .stderr(Stdio::from(transcriber_log))
             .envs(&self.config.environment)
             .env("ARCO_READY_FILE", &ready_signals.transcriber)
+            .env("ARCO_AUDIO_MODE", mode)
             .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
-        if let Some(api_key) = deepgram_api_key
+        if let Some(api_key) = provider_api_key
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            transcriber_command.env("DEEPGRAM_API_KEY", api_key);
+            transcriber_command.env(
+                if transcription.provider == "elevenlabs" {
+                    "ELEVENLABS_API_KEY"
+                } else {
+                    "DEEPGRAM_API_KEY"
+                },
+                api_key,
+            );
         }
         if let Err(error) = configure_process_group(&mut transcriber_command) {
             let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
@@ -503,6 +581,9 @@ impl CaptureManager {
     ) -> Result<TranscriberDefinition, String> {
         if transcription.provider == "deepgram" {
             return Ok(self.config.transcribers.deepgram.clone());
+        }
+        if transcription.provider == "elevenlabs" {
+            return Ok(self.config.transcribers.elevenlabs.clone());
         }
         let mut local = self.config.transcribers.local.clone().ok_or_else(|| {
             "The on-device transcription runtime is not installed. Build or reinstall Arco to add local speech models."
@@ -865,6 +946,7 @@ fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
     let allowed = [
         "DEEPGRAM_MODEL",
         "DEEPGRAM_LANG",
+        "ELEVENLABS_LANG",
         "ARCO_AUDIO_BUFFER_SECONDS",
         "ARCO_MIC_DEVICE_ID",
         "ARCO_MIC_DEVICE_NAME",
@@ -967,5 +1049,40 @@ mod tests {
         assert!(source.contains("kill(parentPID, 0)"));
         assert!(source.contains("errno == ESRCH"));
         assert!(source.contains("Arco parent process exited"));
+    }
+
+    #[test]
+    fn bundled_native_recorder_releases_every_core_audio_tap_resource() {
+        let source = include_str!("../../native/recorder.swift");
+
+        assert!(source.contains("installTerminationSignalHandler(SIGTERM)"));
+        assert!(source.contains("DispatchSource.makeSignalSource("));
+        assert!(source.contains("signal: signalNumber"));
+        assert!(source.contains("signal(SIGPIPE, SIG_IGN)"));
+        assert!(source.contains("private func stopCoreAudioTapCapture()"));
+        assert!(source.contains("AudioDeviceStop("));
+        assert!(source.contains("AudioDeviceDestroyIOProcID("));
+        assert!(source.contains("AudioHardwareDestroyAggregateDevice("));
+        assert!(source.contains("AudioHardwareDestroyProcessTap("));
+    }
+
+    #[test]
+    fn startup_removes_only_stale_pipeline_ready_signals() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder_signal = root.path().join("recorder-ready-old.signal");
+        let transcriber_signal = root.path().join("transcriber-ready-old.signal");
+        let regular_log = root.path().join("transcriber.log");
+        let unrelated_signal = root.path().join("some-other-ready.signal");
+        std::fs::write(&recorder_signal, b"ready").unwrap();
+        std::fs::write(&transcriber_signal, b"ready").unwrap();
+        std::fs::write(&regular_log, b"keep").unwrap();
+        std::fs::write(&unrelated_signal, b"keep").unwrap();
+
+        super::cleanup_stale_ready_signals(root.path()).unwrap();
+
+        assert!(!recorder_signal.exists());
+        assert!(!transcriber_signal.exists());
+        assert!(regular_log.exists());
+        assert!(unrelated_signal.exists());
     }
 }

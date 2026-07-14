@@ -163,7 +163,7 @@ export interface AudioSetupCheck {
   microphone: AudioSourceCheck
 }
 
-export type TranscriptionProviderId = 'deepgram' | 'local'
+export type TranscriptionProviderId = 'deepgram' | 'elevenlabs' | 'local'
 
 export type LocalTranscriptionModelId =
   | 'nemotron-speech-3.5-streaming'
@@ -173,7 +173,7 @@ export type LocalTranscriptionModelId =
   | 'whisper-medium'
   | 'whisper-large'
 
-export type TranscriptionModelId = 'nova-3' | LocalTranscriptionModelId
+export type TranscriptionModelId = 'nova-3' | 'scribe-v2-realtime' | LocalTranscriptionModelId
 
 export type TranscriptionLanguage = 'auto' | 'zh-CN' | 'en-US'
 
@@ -209,6 +209,12 @@ export interface TranscriptionModelStatus {
 }
 
 export interface DeepgramCredentialStatus {
+  configured: boolean
+  verified: boolean
+  message: string | null
+}
+
+export interface ElevenLabsCredentialStatus {
   configured: boolean
   verified: boolean
   message: string | null

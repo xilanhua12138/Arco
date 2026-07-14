@@ -7,6 +7,7 @@ import type {
   AudioMode,
   AudioSetupCheck,
   DeepgramCredentialStatus,
+  ElevenLabsCredentialStatus,
   RuntimeStatus,
   TranscriptionConfig,
   TranscriptionModelStatus,
@@ -31,6 +32,12 @@ const emptyDeepgram: DeepgramCredentialStatus = {
   message: null,
 }
 
+const emptyElevenLabs: ElevenLabsCredentialStatus = {
+  configured: false,
+  verified: false,
+  message: null,
+}
+
 const readyAudio = (mode: AudioMode): AudioSetupCheck => ({
   mode,
   success: true,
@@ -45,12 +52,14 @@ const renderOnboarding = (overrides: Partial<React.ComponentProps<typeof Onboard
     transcriptionConfig: deepgramConfig,
     transcriptionModels: [],
     deepgramCredential: emptyDeepgram,
+    elevenLabsCredential: emptyElevenLabs,
     listeningShortcut: 'CommandOrControl+Shift+Space',
     shortcutTestCount: 0,
     audioMode: 'both',
     onRefreshRuntimes: vi.fn().mockResolvedValue(runtimes),
     onTestProvider: vi.fn().mockResolvedValue(true),
     onSaveDeepgramApiKey: vi.fn().mockResolvedValue({ configured: true, verified: true, message: 'Deepgram is ready.' }),
+    onSaveElevenLabsApiKey: vi.fn().mockResolvedValue({ configured: true, verified: true, message: 'ElevenLabs is ready.' }),
     onPrepareTranscriptionModel: vi.fn().mockResolvedValue([]),
     onTestAudio: vi.fn().mockImplementation(async (mode: AudioMode) => readyAudio(mode)),
     onRelaunch: vi.fn().mockResolvedValue(undefined),
@@ -134,6 +143,30 @@ describe('Onboarding', () => {
 
     expect(onSaveDeepgramApiKey).toHaveBeenCalledWith('dg_live_abcdefghijklmnopqrstuvwxyz')
     expect(await screen.findByText('Deepgram is ready.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
+  })
+
+  it('offers ElevenLabs and verifies its key before transcription can continue', async () => {
+    const user = userEvent.setup()
+    const onSaveElevenLabsApiKey = vi.fn().mockResolvedValue({
+      configured: true,
+      verified: true,
+      message: 'ElevenLabs is ready.',
+    })
+    renderOnboarding({ onSaveElevenLabsApiKey })
+
+    await continueToAgent(user)
+    await chooseTranscriptOnly(user)
+    await user.click(screen.getByRole('radio', { name: 'ElevenLabs' }))
+
+    expect(screen.getByText(/Realtime speaker separation is not available/i)).toBeVisible()
+    expect(screen.queryByText(/when listening stops|final speaker/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    await user.type(screen.getByLabelText('ElevenLabs API key'), 'sk_0123456789abcdefghijklmnopqrstuvwxyz')
+    await user.click(screen.getByRole('button', { name: 'Verify & save' }))
+
+    expect(onSaveElevenLabsApiKey).toHaveBeenCalledWith('sk_0123456789abcdefghijklmnopqrstuvwxyz')
+    expect(await screen.findByText('ElevenLabs is ready.')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })
 

@@ -1,6 +1,6 @@
 [package]
 name = "Arco"
-version = "0.1.6"
+version = "0.2.0"
 description = "AI-native meeting copilot powered by the user's local agent CLI"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -17,11 +17,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 deepgram-sidecar = []
+elevenlabs-sidecar = []
 
 [[bin]]
 name = "arco-deepgram-transcriber"
 path = "src/bin/arco-deepgram-transcriber.rs"
 required-features = ["deepgram-sidecar"]
+
+[[bin]]
+name = "arco-elevenlabs-transcriber"
+path = "src/bin/arco-elevenlabs-transcriber.rs"
+required-features = ["elevenlabs-sidecar"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
@@ -35,6 +41,7 @@ sha2 = "0.10"
 log = "0.4"
 libc = "0.2"
 futures-util = "0.3"
+base64 = "0.22"
 tokio = { version = "1.44", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tauri = { version = "2.11.3", features = ["macos-private-api"] }

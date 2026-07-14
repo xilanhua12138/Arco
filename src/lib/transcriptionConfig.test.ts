@@ -51,6 +51,30 @@ describe('transcription configuration', () => {
     expect(loadTranscriptionConfig()).toEqual(config)
   })
 
+  it('persists ElevenLabs as a distinct realtime provider without speaker diarization', () => {
+    const config = {
+      provider: 'elevenlabs' as const,
+      model: 'scribe-v2-realtime' as const,
+      language: 'auto' as const,
+      diarization: 'none' as const,
+    }
+
+    saveTranscriptionConfig(config)
+
+    expect(loadTranscriptionConfig()).toEqual(config)
+  })
+
+  it('rejects ElevenLabs configurations that claim provider or local diarization', () => {
+    window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
+      provider: 'elevenlabs',
+      model: 'scribe-v2-realtime',
+      language: 'zh-CN',
+      diarization: 'provider',
+    }))
+
+    expect(loadTranscriptionConfig()).toEqual(defaultTranscriptionConfig())
+  })
+
   it('migrates the legacy local-streaming mode to Sortformer', () => {
     window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
       provider: 'local',

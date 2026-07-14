@@ -27,7 +27,7 @@ import {
   type GenerationSettings,
 } from './lib/generationSettings'
 import type { AudioMode } from './types'
-import type { DeepgramCredentialStatus, MeetingDetail, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
+import type { DeepgramCredentialStatus, ElevenLabsCredentialStatus, MeetingDetail, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
 import {
   loadTranscriptionConfig,
   saveTranscriptionConfig,
@@ -72,6 +72,8 @@ function App() {
   const [transcriptionModels, setTranscriptionModels] = useState<TranscriptionModelStatus[]>([])
   const [deepgramCredential, setDeepgramCredential] = useState<DeepgramCredentialStatus>({ configured: false, verified: false, message: null })
   const [deepgramCredentialBusy, setDeepgramCredentialBusy] = useState(false)
+  const [elevenLabsCredential, setElevenLabsCredential] = useState<ElevenLabsCredentialStatus>({ configured: false, verified: false, message: null })
+  const [elevenLabsCredentialBusy, setElevenLabsCredentialBusy] = useState(false)
   const [providerSetupOpen, setProviderSetupOpen] = useState(() => {
     const existingProvider = loadProviderConfig()
     return !existingProvider.setupComplete && !loadOnboardingState().completed
@@ -153,6 +155,33 @@ function App() {
     }
   }
 
+  const refreshElevenLabsCredential = async () => {
+    const status = await arcoBridge.elevenLabsCredentialStatus()
+    setElevenLabsCredential(status)
+    return status
+  }
+
+  const saveElevenLabsApiKey = async (apiKey: string) => {
+    setElevenLabsCredentialBusy(true)
+    try {
+      const status = await arcoBridge.saveElevenLabsApiKey(apiKey)
+      setElevenLabsCredential(status)
+      return status
+    } finally {
+      setElevenLabsCredentialBusy(false)
+    }
+  }
+
+  const removeElevenLabsApiKey = async () => {
+    setElevenLabsCredentialBusy(true)
+    try {
+      const status = await arcoBridge.removeElevenLabsApiKey()
+      setElevenLabsCredential(status)
+    } finally {
+      setElevenLabsCredentialBusy(false)
+    }
+  }
+
   const mergeTranscriptionModelStatus = useCallback((status: TranscriptionModelStatus) => {
     setTranscriptionModels((current) => {
       const retained = current.filter((candidate) => candidate.id !== status.id)
@@ -164,6 +193,7 @@ function App() {
     if (!providerSetupOpen || editingProviders) return
     void Promise.all([
       arcoBridge.deepgramCredentialStatus().then(setDeepgramCredential),
+      arcoBridge.elevenLabsCredentialStatus().then(setElevenLabsCredential),
       arcoBridge.transcriptionModelStatus().then(setTranscriptionModels),
     ]).catch((cause) => console.warn('Could not prepare onboarding status', cause))
   }, [editingProviders, providerSetupOpen])
@@ -478,6 +508,7 @@ function App() {
         transcriptionConfig={transcriptionConfig}
         transcriptionModels={transcriptionModels}
         deepgramCredential={deepgramCredential}
+        elevenLabsCredential={elevenLabsCredential}
         listeningShortcut={listeningShortcut}
         shortcutTestCount={shortcutTestCount}
         audioMode={audioMode}
@@ -493,6 +524,7 @@ function App() {
             setDeepgramCredentialBusy(false)
           }
         }}
+        onSaveElevenLabsApiKey={saveElevenLabsApiKey}
         onPrepareTranscriptionModel={async (model, diarizationModel) => {
           const next = await arcoBridge.prepareTranscriptionModel(model, diarizationModel)
           setTranscriptionModels(next)
@@ -547,6 +579,7 @@ function App() {
             void refreshStorageSettings()
             void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
             void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
+            void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
         }}
       />
 
@@ -579,6 +612,7 @@ function App() {
                     setSettingsOpen(true)
                     void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
                     void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
+                    void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
                   }}
                 />
               )}
@@ -677,9 +711,14 @@ function App() {
         transcriptionModels={transcriptionModels}
         deepgramCredential={deepgramCredential}
         deepgramCredentialBusy={deepgramCredentialBusy}
+        elevenLabsCredential={elevenLabsCredential}
+        elevenLabsCredentialBusy={elevenLabsCredentialBusy}
         onSaveDeepgramApiKey={saveDeepgramApiKey}
         onRemoveDeepgramApiKey={removeDeepgramApiKey}
         onOpenDeepgramConsole={arcoBridge.openDeepgramConsole}
+        onSaveElevenLabsApiKey={saveElevenLabsApiKey}
+        onRemoveElevenLabsApiKey={removeElevenLabsApiKey}
+        onOpenElevenLabsConsole={arcoBridge.openElevenLabsConsole}
         onChangeTranscriptionConfig={changeTranscriptionConfig}
         onPrepareTranscriptionModel={(model, diarizationModel) => {
           const selectedStatus = transcriptionModels.find((status) => status.id === model)

@@ -31,6 +31,7 @@ import type {
   AudioSourceCheck,
   AudioSetupCheck,
   DeepgramCredentialStatus,
+  ElevenLabsCredentialStatus,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
   ProviderId,
@@ -56,12 +57,14 @@ interface OnboardingProps {
   transcriptionConfig: TranscriptionConfig
   transcriptionModels: TranscriptionModelStatus[]
   deepgramCredential: DeepgramCredentialStatus
+  elevenLabsCredential: ElevenLabsCredentialStatus
   listeningShortcut: ListeningShortcut
   shortcutTestCount: number
   audioMode: AudioMode
   onRefreshRuntimes: () => Promise<RuntimeStatus[] | void> | RuntimeStatus[] | void
   onTestProvider: (provider: ProviderId) => Promise<boolean>
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
+  onSaveElevenLabsApiKey: (apiKey: string) => Promise<ElevenLabsCredentialStatus>
   onPrepareTranscriptionModel: (
     model: LocalTranscriptionModelId,
     diarizationModel?: LocalDiarizationModelId,
@@ -124,11 +127,13 @@ export function Onboarding({
   transcriptionConfig: initialTranscription,
   transcriptionModels,
   deepgramCredential,
+  elevenLabsCredential,
   listeningShortcut,
   shortcutTestCount,
   onRefreshRuntimes,
   onTestProvider,
   onSaveDeepgramApiKey,
+  onSaveElevenLabsApiKey,
   onPrepareTranscriptionModel,
   onTestAudio,
   onRelaunch,
@@ -156,7 +161,8 @@ export function Onboarding({
   const [refreshing, setRefreshing] = useState(false)
   const [transcription, setTranscription] = useState<TranscriptionConfig>(initialDraft?.transcriptionConfig ?? initialTranscription)
   const [modelsOverride, setModelsOverride] = useState<TranscriptionModelStatus[] | null>(null)
-  const [credentialOverride, setCredentialOverride] = useState<DeepgramCredentialStatus | null>(null)
+  const [deepgramCredentialOverride, setDeepgramCredentialOverride] = useState<DeepgramCredentialStatus | null>(null)
+  const [elevenLabsCredentialOverride, setElevenLabsCredentialOverride] = useState<ElevenLabsCredentialStatus | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [transcriptionState, setTranscriptionState] = useState<AsyncState>('idle')
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
@@ -176,7 +182,9 @@ export function Onboarding({
 
   const primary = selectedPrimary ?? firstAvailable
   const models = modelsOverride ?? transcriptionModels
-  const credential = credentialOverride ?? deepgramCredential
+  const credential = transcription.provider === 'elevenlabs'
+    ? elevenLabsCredentialOverride ?? elevenLabsCredential
+    : deepgramCredentialOverride ?? deepgramCredential
   const selectedLocalModel: LocalTranscriptionModelId = transcription.provider === 'local'
     ? transcription.model as LocalTranscriptionModelId
     : defaultLocalModel
@@ -201,9 +209,9 @@ export function Onboarding({
   const providerReady = agentChoice === 'transcript'
     || (primary !== null && providerTest === 'passed' && testedProvider === primary)
   const localReady = modelReady(models, selectedLocalModel) && modelReady(models, selectedDiarizationModel)
-  const transcriptionReady = transcription.provider === 'deepgram'
-    ? credential.configured && credential.verified
-    : localReady
+  const transcriptionReady = transcription.provider === 'local'
+    ? localReady
+    : credential.configured && credential.verified
   const audioReady = (['system', 'microphone'] as const).every((source) => (
     audioChecks[source].state === 'passed' && audioChecks[source].result?.ready
   ))
@@ -238,7 +246,11 @@ export function Onboarding({
 
   const progressSummary = useMemo(() => ({
     agent: agentChoice === 'transcript' ? t('onboarding.transcriptOnly') : primary ? providerName(primary) : t('common.notSet'),
-    transcription: transcription.provider === 'deepgram' ? 'Deepgram' : t('onboarding.onThisMac'),
+    transcription: transcription.provider === 'deepgram'
+      ? 'Deepgram'
+      : transcription.provider === 'elevenlabs'
+        ? 'ElevenLabs'
+        : t('onboarding.onThisMac'),
   }), [agentChoice, primary, t, transcription.provider])
 
   const reveal = (next: number) => {
@@ -290,35 +302,43 @@ export function Onboarding({
     }
   }
 
-  const changeProvider = (provider: 'deepgram' | 'local') => {
+  const changeProvider = (provider: TranscriptionConfig['provider']) => {
+    setApiKey('')
     setTranscriptionError(null)
     setTranscriptionState('idle')
-    setTranscription(provider === 'deepgram'
-      ? { provider: 'deepgram', model: 'nova-3', language: transcription.language, diarization: 'provider' }
-      : {
+    setTranscription(provider === 'local'
+      ? {
           provider: 'local',
           model: selectedLocalModel,
           language: transcription.language,
           diarization: selectedDiarizationModel,
-        })
+        }
+      : provider === 'deepgram'
+        ? { provider: 'deepgram', model: 'nova-3', language: transcription.language, diarization: 'provider' }
+        : { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: transcription.language, diarization: 'none' })
   }
 
   const changeLanguage = (language: TranscriptionLanguage) => {
     setTranscription((current) => ({ ...current, language }))
   }
 
-  const saveDeepgram = async () => {
+  const saveCloudCredential = async () => {
     if (!apiKey.trim() || transcriptionState === 'working') return
     setTranscriptionState('working')
     setTranscriptionError(null)
     try {
-      const next = await onSaveDeepgramApiKey(apiKey.trim())
-      setCredentialOverride(next)
+      const next = transcription.provider === 'elevenlabs'
+        ? await onSaveElevenLabsApiKey(apiKey.trim())
+        : await onSaveDeepgramApiKey(apiKey.trim())
+      if (transcription.provider === 'elevenlabs') setElevenLabsCredentialOverride(next)
+      else setDeepgramCredentialOverride(next)
       setApiKey('')
       setTranscriptionState(next.configured && next.verified ? 'passed' : 'failed')
     } catch (cause) {
       setTranscriptionState('failed')
-      setTranscriptionError(cause instanceof Error ? cause.message : t('onboarding.deepgramFailed'))
+      setTranscriptionError(cause instanceof Error
+        ? cause.message
+        : t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsFailed' : 'onboarding.deepgramFailed'))
     }
   }
 
@@ -638,19 +658,24 @@ export function Onboarding({
                     <input type="radio" name="transcription-provider" aria-label="Deepgram" checked={transcription.provider === 'deepgram'} onChange={() => changeProvider('deepgram')} />
                     <Cloud size={19} /><span><strong>Deepgram</strong><small>{t('onboarding.deepgramHelp')}</small></span>
                   </label>
+                  <label className={transcription.provider === 'elevenlabs' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="transcription-provider" aria-label="ElevenLabs" checked={transcription.provider === 'elevenlabs'} onChange={() => changeProvider('elevenlabs')} />
+                    <Cloud size={19} /><span><strong>ElevenLabs</strong><small>{t('onboarding.elevenLabsHelp')}</small></span>
+                  </label>
                   <label className={transcription.provider === 'local' ? 'onboarding-choice-selected' : ''}>
                     <input type="radio" name="transcription-provider" aria-label={t('onboarding.onThisMac')} checked={transcription.provider === 'local'} onChange={() => changeProvider('local')} />
                     <HardDrive size={19} /><span><strong>{t('onboarding.onThisMac')}</strong><small>{t('onboarding.localHelp')}</small></span>
                   </label>
                 </div>
                 <label className="onboarding-language-field"><span>{t('settings.language')}</span><select value={transcription.language} onChange={(event) => changeLanguage(event.target.value as TranscriptionLanguage)}><option value="zh-CN">简体中文</option><option value="en-US">English</option><option value="auto">{t('common.automatic')}</option></select></label>
-                {transcription.provider === 'deepgram' ? (
+                {transcription.provider !== 'local' ? (
                   <div className="onboarding-transcription-action">
                     {credential.configured && credential.verified ? (
-                      <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.deepgramReady')}</span>
+                      <span className="onboarding-ready-line"><Check size={15} /> {t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsReady' : 'onboarding.deepgramReady')}</span>
                     ) : (
-                      <><label><span>{t('onboarding.deepgramKey')}</span><input type="password" aria-label={t('onboarding.deepgramKey')} value={apiKey} placeholder="dg_…" onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={saveDeepgram} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
+                      <><label><span>{t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')}</span><input type="password" aria-label={t(transcription.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')} value={apiKey} placeholder={transcription.provider === 'elevenlabs' ? 'sk_…' : 'dg_…'} onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={saveCloudCredential} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
                     )}
+                    {transcription.provider === 'elevenlabs' && <small className="onboarding-provider-capability">{t('onboarding.elevenLabsDiarization')}</small>}
                   </div>
                 ) : (
                   <div className="onboarding-local-models">

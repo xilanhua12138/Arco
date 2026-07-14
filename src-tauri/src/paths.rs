@@ -26,6 +26,8 @@ impl AppPaths {
             .filter(|path| {
                 path.join("arco-deepgram-transcriber").exists()
                     || path.join("runtime/arco-deepgram-transcriber").exists()
+                    || path.join("arco-elevenlabs-transcriber").exists()
+                    || path.join("runtime/arco-elevenlabs-transcriber").exists()
                     || path.join("recorder").exists()
             })
             .unwrap_or_else(|| {

@@ -85,6 +85,19 @@ describe('browser Agent bridge', () => {
     browserOpen.mockRestore()
   })
 
+  it('opens the ElevenLabs key page in a browser preview without navigating Arco away', async () => {
+    const browserOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    await arcoBridge.openElevenLabsConsole()
+
+    expect(browserOpen).toHaveBeenCalledWith(
+      'https://elevenlabs.io/app/developers/api-keys',
+      '_blank',
+      'noopener,noreferrer',
+    )
+    browserOpen.mockRestore()
+  })
+
   it('provides deterministic provider connection success only in explicit demo mode', async () => {
     window.history.replaceState({}, '', '/?demo=1')
 
@@ -324,6 +337,28 @@ describe('desktop transcription bridge', () => {
     await arcoBridge.startCapture('both', transcription)
 
     expect(invokeMock).toHaveBeenCalledWith('start_capture', { mode: 'both', transcription })
+  })
+
+  it('keeps ElevenLabs credential operations behind native commands', async () => {
+    const ready = { configured: true, verified: true, message: 'ElevenLabs is ready.' }
+    const missing = { configured: false, verified: false, message: null }
+    invokeMock
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(missing)
+
+    await expect(arcoBridge.elevenLabsCredentialStatus()).resolves.toEqual(ready)
+    await expect(arcoBridge.saveElevenLabsApiKey('sk_0123456789abcdefghijklmnopqrstuvwxyz')).resolves.toEqual(ready)
+    await expect(arcoBridge.openElevenLabsConsole()).resolves.toBeUndefined()
+    await expect(arcoBridge.removeElevenLabsApiKey()).resolves.toEqual(missing)
+
+    expect(invokeMock.mock.calls).toEqual([
+      ['elevenlabs_credential_status'],
+      ['save_elevenlabs_api_key', { apiKey: 'sk_0123456789abcdefghijklmnopqrstuvwxyz' }],
+      ['open_elevenlabs_console'],
+      ['remove_elevenlabs_api_key'],
+    ])
   })
 
   it('runs the native audio setup check with the selected meeting mode', async () => {

@@ -33,6 +33,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var micEngine: AVAudioEngine?
     private var mixTimer: DispatchSourceTimer?
     private var parentMonitor: DispatchSourceTimer?
+    private var terminationSignalSources: [DispatchSourceSignal] = []
     private let queue = DispatchQueue(label: "app.arco.recorder")
     private let lifecycleQueue = DispatchQueue(label: "app.arco.recorder.lifecycle")
     private let lock = NSLock()
@@ -42,9 +43,11 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var systemCaptureStarted = !useSystem
     private var microphoneCaptureStarted = !useMic
     private var announcedReady = false
+    private var hasStopped = false
     private let output = FileHandle.standardOutput
 
     func start() {
+        installTerminationHandlers()
         startParentMonitor()
         startMixTimer()
         if useMic {
@@ -54,6 +57,35 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             startSystemCapture()
         }
         announceReadyIfNeeded()
+    }
+
+    private func installTerminationHandlers() {
+        // Tauri stops its owned helper with SIGTERM. Convert that signal into
+        // an orderly teardown so Core Audio does not retain stale tap/privacy
+        // attribution after the helper disappears.
+        installTerminationSignalHandler(SIGTERM)
+        installTerminationSignalHandler(SIGINT)
+
+        // The transcriber owns the read end of stdout. If it exits first,
+        // write(2) must report EPIPE instead of killing this process before
+        // the Core Audio resources can be released.
+        signal(SIGPIPE, SIG_IGN)
+    }
+
+    private func installTerminationSignalHandler(_ signalNumber: Int32) {
+        signal(signalNumber, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(
+            signal: signalNumber,
+            queue: lifecycleQueue
+        )
+        source.setEventHandler { [weak self] in
+            self?.stopAndExit(
+                0,
+                reason: "received signal \(signalNumber); stopping native recorder"
+            )
+        }
+        source.resume()
+        terminationSignalSources.append(source)
     }
 
     private func startParentMonitor() {
@@ -69,11 +101,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         )
         timer.setEventHandler { [weak self] in
             guard kill(parentPID, 0) != 0, errno == ESRCH else { return }
-            self?.log("Arco parent process exited; stopping native recorder")
-            // The parent can disappear without running Tauri's shutdown hook
-            // (for example after a force quit or app replacement). Exiting
-            // closes stdout, which also lets the owned transcriber reach EOF.
-            exit(0)
+            self?.stopAndExit(
+                0,
+                reason: "Arco parent process exited; stopping native recorder"
+            )
         }
         timer.resume()
         parentMonitor = timer
@@ -453,9 +484,34 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
         // Emit even during silence so channel alignment remains stable from
         // process start through permission prompts and transient device gaps.
-        interleaved.withUnsafeBytes { bytes in
-            output.write(Data(bytes))
+        let emitted = interleaved.withUnsafeBytes { bytes in
+            writeAll(bytes)
         }
+        if !emitted {
+            stopAndExit(
+                0,
+                reason: "audio consumer closed; stopping native recorder"
+            )
+        }
+    }
+
+    private func writeAll(_ bytes: UnsafeRawBufferPointer) -> Bool {
+        guard var pointer = bytes.baseAddress else { return true }
+        var remaining = bytes.count
+        let descriptor = output.fileDescriptor
+        while remaining > 0 {
+            let written = Darwin.write(descriptor, pointer, remaining)
+            if written > 0 {
+                remaining -= written
+                pointer = pointer.advanced(by: written)
+                continue
+            }
+            if written < 0, errno == EINTR {
+                continue
+            }
+            return false
+        }
+        return true
     }
 
     func stream(
@@ -806,8 +862,91 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         FileHandle.standardError.write(Data("\(message)\n".utf8))
     }
 
+    private func stopAndExit(_ status: Int32, reason: String) -> Never {
+        log(reason)
+        stop()
+        exit(status)
+    }
+
+    private func stop() {
+        lock.lock()
+        guard !hasStopped else {
+            lock.unlock()
+            return
+        }
+        hasStopped = true
+        lock.unlock()
+
+        mixTimer?.cancel()
+        mixTimer = nil
+        parentMonitor?.cancel()
+        parentMonitor = nil
+        for source in terminationSignalSources {
+            source.cancel()
+        }
+        terminationSignalSources.removeAll()
+
+        if let engine = micEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            micEngine = nil
+        }
+
+        if #available(macOS 14.2, *) {
+            stopCoreAudioTapCapture()
+        }
+
+        if let stream {
+            let semaphore = DispatchSemaphore(value: 0)
+            stream.stopCapture { error in
+                if let error {
+                    self.log("could not stop ScreenCaptureKit capture cleanly: \(error)")
+                }
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 1)
+            self.stream = nil
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private func stopCoreAudioTapCapture() {
+        let aggregateID = systemAggregateID
+        if aggregateID != AudioObjectID(kAudioObjectUnknown),
+           let ioProcID = systemIOProcID
+        {
+            let stopStatus = AudioDeviceStop(aggregateID, ioProcID)
+            if stopStatus != noErr {
+                log("could not stop Core Audio system tap: \(stopStatus)")
+            }
+            let destroyIOStatus = AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
+            if destroyIOStatus != noErr {
+                log("could not destroy Core Audio IO callback: \(destroyIOStatus)")
+            }
+            systemIOProcID = nil
+        }
+
+        if aggregateID != AudioObjectID(kAudioObjectUnknown) {
+            let destroyAggregateStatus = AudioHardwareDestroyAggregateDevice(aggregateID)
+            if destroyAggregateStatus != noErr {
+                log("could not destroy Core Audio aggregate device: \(destroyAggregateStatus)")
+            }
+            systemAggregateID = AudioObjectID(kAudioObjectUnknown)
+        }
+
+        let tapID = systemTapID
+        if tapID != AudioObjectID(kAudioObjectUnknown) {
+            let destroyTapStatus = AudioHardwareDestroyProcessTap(tapID)
+            if destroyTapStatus != noErr {
+                log("could not destroy Core Audio process tap: \(destroyTapStatus)")
+            }
+            systemTapID = AudioObjectID(kAudioObjectUnknown)
+        }
+    }
+
     private func fail(_ message: String) -> Never {
         log(message)
+        stop()
         exit(1)
     }
 }

@@ -25,7 +25,7 @@
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
-The current preview build is ad-hoc signed but not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. The release includes the native audio and Rust Deepgram runtimes; Whisper, Nemotron, and speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
+The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the native audio, Deepgram, and ElevenLabs runtimes; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
 
 ## Live context, not another meeting dashboard
 
@@ -64,8 +64,8 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Feature | How it works | Why it matters |
 | --- | --- | --- |
 | Hybrid audio capture | Captures system audio and the room microphone as separate lanes with ScreenCaptureKit and AVAudioEngine. | Online and in-room speakers stay legible in the same meeting. |
-| Streaming transcription | Choose Deepgram or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
-| Multi-speaker separation | Deepgram diarization or optional on-device Streaming Sortformer separates anonymous speakers within each lane. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
+| Streaming transcription | Choose Deepgram, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
+| Multi-speaker separation | Deepgram separates speakers live; optional local Sortformer or LS-EEND models keep the work on-device. ElevenLabs realtime currently provides source lanes only, not speaker separation. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
 | Native local Agent | Sends questions through Codex CLI or Claude Code already installed and authenticated on the Mac. | Your meeting assistant can use the same project understanding and account you already trust. |
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
@@ -94,7 +94,8 @@ By default, transcripts and meeting state live at:
 - Arco streams audio for transcription but does not save raw PCM recordings.
 - With on-device transcription and diarization, speech processing stays on the Mac.
 - With Deepgram, audio is sent to Deepgram for transcription.
-- Deepgram credentials are verified by the Rust backend and stored in macOS Keychain; they are never written to a transcript or log.
+- With ElevenLabs, audio is streamed for live text only. Arco does not run a later batch pass; the realtime API currently provides source lanes rather than speaker identities.
+- Deepgram and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
 
@@ -123,7 +124,7 @@ For a UI-only browser preview:
 pnpm dev
 ```
 
-To create the same locally ad-hoc-signed macOS archive used for preview releases:
+To create the same locally signed macOS archive used for preview releases:
 
 ```bash
 pnpm desktop:package
@@ -131,7 +132,7 @@ pnpm desktop:package
 
 The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
-For Deepgram, open **Settings → Audio & speakers → Recognition**, paste a key, and choose **Verify & save**. Arco verifies it through Deepgram's [official authentication endpoint](https://developers.deepgram.com/guides/fundamentals/authenticating), then stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
+For Deepgram or ElevenLabs, open **Settings → Audio & speakers → Recognition**, choose the online provider, paste its key, and choose **Verify & save**. Arco verifies it through the provider's official endpoint, then stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
 
 ## The original Agent Skill is still here
 
@@ -166,7 +167,7 @@ pnpm desktop:package
 
 ## Architecture
 
-- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram streaming, credentials, Agent processes, and native session bindings.
+- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram and ElevenLabs streaming, credentials, Agent processes, and native session bindings.
 - **React + TypeScript** renders the main workspace, History, Settings, onboarding, and global Agent surfaces.
 - **Swift** captures macOS audio and runs the on-device transcription pipeline.
 - **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers and saved notes.

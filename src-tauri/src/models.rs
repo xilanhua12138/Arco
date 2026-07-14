@@ -153,6 +153,11 @@ impl TranscriptionConfig {
                     return Err("Deepgram requires model nova-3 with provider diarization".into());
                 }
             }
+            "elevenlabs" => {
+                if self.model != "scribe-v2-realtime" || self.diarization != "none" {
+                    return Err("ElevenLabs realtime does not support speaker diarization".into());
+                }
+            }
             "local" => {
                 const MODELS: &[&str] = &[
                     "nemotron-speech-3.5-streaming",
@@ -223,11 +228,32 @@ mod transcription_config_tests {
 
     #[test]
     fn cloud_and_local_diarization_backends_cannot_be_mixed() {
-        let mut deepgram = TranscriptionConfig::default();
-        deepgram.diarization = "lseend-ami-streaming".into();
+        let deepgram = TranscriptionConfig {
+            diarization: "lseend-ami-streaming".into(),
+            ..TranscriptionConfig::default()
+        };
         assert!(deepgram.validate().is_err());
 
         assert!(local("provider").validate().is_err());
+    }
+
+    #[test]
+    fn elevenlabs_requires_scribe_realtime_without_speaker_diarization() {
+        let valid = TranscriptionConfig {
+            provider: "elevenlabs".into(),
+            model: "scribe-v2-realtime".into(),
+            language: "auto".into(),
+            diarization: "none".into(),
+        };
+        assert!(valid.validate().is_ok());
+
+        let mut wrong_model = valid.clone();
+        wrong_model.model = "nova-3".into();
+        assert!(wrong_model.validate().is_err());
+
+        let mut wrong_diarizer = valid;
+        wrong_diarizer.diarization = "provider".into();
+        assert!(wrong_diarizer.validate().is_err());
     }
 }
 

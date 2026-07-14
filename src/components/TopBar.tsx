@@ -32,6 +32,13 @@ export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting
   const remoteSpeakers = speakers.filter((speaker) => speaker.toLocaleLowerCase().startsWith('remote'))
   const roomSpeakers = speakers.filter((speaker) => speaker.toLocaleLowerCase().startsWith('in room'))
   const utteranceCount = detail?.lines.length ?? meeting?.utteranceCount ?? 0
+  const transcriptionProvider = capture.transcription?.provider === 'deepgram'
+    ? 'Deepgram'
+    : capture.transcription?.provider === 'elevenlabs'
+      ? 'ElevenLabs'
+      : capture.transcription?.provider === 'local'
+        ? t('common.onThisMac')
+        : null
   const editingTitle = Boolean(meeting && editingMeetingId === meeting.id)
   const displayTitle = meeting
     ? meeting.title?.trim() || t('common.untitledMeeting')
@@ -188,7 +195,7 @@ export function TopBar({ meeting, meetingDetail = null, capture, onRenameMeeting
                   <div><dt>{t('topbar.duration')}</dt><dd>{formatDurationLabel(meeting.durationLabel, t)}</dd></div>
                   <div><dt>{t('topbar.transcript')}</dt><dd>{t(utteranceCount === 1 ? 'topbar.utteranceCountOne' : 'topbar.utteranceCount', { count: utteranceCount })} · {t(speakers.length === 1 ? 'topbar.speakerCountOne' : 'topbar.speakerCount', { count: speakers.length })}</dd></div>
                   <div><dt>{t('topbar.storage')}</dt><dd>{t('common.onThisMac')}</dd></div>
-                  <div><dt>{t('topbar.transcription')}</dt><dd>Deepgram</dd></div>
+                  {transcriptionProvider && <div><dt>{t('topbar.transcription')}</dt><dd>{transcriptionProvider}</dd></div>}
                   <div aria-label={t('topbar.systemSpeakers', { speakers: remoteSpeakers.map((speaker) => localizedSpeakerLabel(speaker, t)).join(', ') || t('common.waiting') })}>
                     <dt>{t('topbar.system')}</dt><dd>{remoteSpeakers.map((speaker) => localizedSpeakerLabel(speaker, t)).join(', ') || t('common.waiting')}</dd>
                   </div>

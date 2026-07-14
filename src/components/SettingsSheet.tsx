@@ -22,6 +22,7 @@ import { useState } from 'react'
 import type {
   AudioMode,
   DeepgramCredentialStatus,
+  ElevenLabsCredentialStatus,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
   ProviderId,
@@ -63,6 +64,13 @@ interface SettingsSheetProps {
   onSaveDeepgramApiKey?: (apiKey: string) => void | Promise<void>
   onRemoveDeepgramApiKey?: () => void | Promise<void>
   onOpenDeepgramConsole?: () => void | Promise<void>
+  elevenLabsCredential?: ElevenLabsCredentialStatus
+  elevenLabsCredentialBusy?: boolean
+  onSaveElevenLabsApiKey?: (
+    apiKey: string,
+  ) => void | ElevenLabsCredentialStatus | Promise<void | ElevenLabsCredentialStatus>
+  onRemoveElevenLabsApiKey?: () => void | Promise<void>
+  onOpenElevenLabsConsole?: () => void | Promise<void>
   providerConfig?: Readonly<ProviderConfig>
   onEditProviders?: () => void
   generationSettings?: GenerationSettings
@@ -113,6 +121,11 @@ export function SettingsSheet({
   onSaveDeepgramApiKey = () => undefined,
   onRemoveDeepgramApiKey = () => undefined,
   onOpenDeepgramConsole = () => undefined,
+  elevenLabsCredential = { configured: false, verified: false, message: null },
+  elevenLabsCredentialBusy = false,
+  onSaveElevenLabsApiKey = () => undefined,
+  onRemoveElevenLabsApiKey = () => undefined,
+  onOpenElevenLabsConsole = () => undefined,
   providerConfig = { setupComplete: false, primary: null, secondary: null },
   onEditProviders = () => undefined,
   generationSettings = defaultGenerationSettings(),
@@ -145,6 +158,8 @@ export function SettingsSheet({
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [deepgramApiKey, setDeepgramApiKey] = useState('')
   const [deepgramError, setDeepgramError] = useState<string | null>(null)
+  const [elevenLabsApiKey, setElevenLabsApiKey] = useState('')
+  const [elevenLabsError, setElevenLabsError] = useState<string | null>(null)
   if (!open) return null
   const audioScenarios: Array<{ mode: AudioMode; title: string; description: string }> = [
     { mode: 'both', title: t('settings.scenario.hybrid.title'), description: t('settings.scenario.hybrid.description') },
@@ -188,9 +203,14 @@ export function SettingsSheet({
       ? selectedDiarizationModel.label
       : t('settings.modelNotDownloaded', { model: selectedDiarizationModel.label })
     : t('settings.speakerSeparationOff')
+  const cloudLanguageLabel = transcriptionConfig.language === 'auto'
+    ? t('common.automatic')
+    : transcriptionConfig.language === 'en-US' ? t('common.english') : t('common.chinese')
   const recognitionLabel = transcriptionConfig.provider === 'deepgram'
-    ? transcriptionConfig.language === 'en-US' ? t('common.english') : t('common.chinese')
-    : `${localAsrSummary} · ${localDiarizationSummary}`
+    ? `Deepgram · ${cloudLanguageLabel}`
+    : transcriptionConfig.provider === 'elevenlabs'
+      ? `ElevenLabs · ${cloudLanguageLabel}`
+      : `${localAsrSummary} · ${localDiarizationSummary}`
 
   const changeEngine = (provider: TranscriptionConfig['provider']) => {
     if (provider === 'deepgram') {
@@ -199,6 +219,15 @@ export function SettingsSheet({
         model: 'nova-3',
         language: transcriptionConfig.language === 'auto' ? 'zh-CN' : transcriptionConfig.language,
         diarization: 'provider',
+      })
+      return
+    }
+    if (provider === 'elevenlabs') {
+      onChangeTranscriptionConfig({
+        provider: 'elevenlabs',
+        model: 'scribe-v2-realtime',
+        language: transcriptionConfig.language,
+        diarization: 'none',
       })
       return
     }
@@ -228,6 +257,27 @@ export function SettingsSheet({
       await onOpenDeepgramConsole()
     } catch (cause) {
       setDeepgramError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const saveElevenLabsKey = async () => {
+    const key = elevenLabsApiKey.trim()
+    if (!key) return
+    setElevenLabsError(null)
+    try {
+      await onSaveElevenLabsApiKey(key)
+      setElevenLabsApiKey('')
+    } catch (cause) {
+      setElevenLabsError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const openElevenLabsConsole = async () => {
+    setElevenLabsError(null)
+    try {
+      await onOpenElevenLabsConsole()
+    } catch (cause) {
+      setElevenLabsError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
@@ -394,24 +444,24 @@ export function SettingsSheet({
                     <div className="settings-disclosure-content">
                       {audioModeLocked ? (
                         <div className="recognition-engine-locked" aria-label={t('settings.currentRecognition')}>
-                          {transcriptionConfig.provider === 'deepgram' ? <Cloud size={16} /> : <Laptop size={16} />}
+                          {transcriptionConfig.provider === 'local' ? <Laptop size={16} /> : <Cloud size={16} />}
                           <span>
-                            <strong>{transcriptionConfig.provider === 'deepgram' ? 'Deepgram' : t('settings.onDevice')}</strong>
+                            <strong>{transcriptionConfig.provider === 'local' ? t('settings.onDevice') : transcriptionConfig.provider === 'deepgram' ? 'Deepgram' : 'ElevenLabs'}</strong>
                             <small>{t('settings.recognitionLocked')}</small>
                           </span>
                         </div>
                       ) : (
                         <fieldset className="recognition-engine">
                           <legend>{t('settings.recognitionEngine')}</legend>
-                          <label className={transcriptionConfig.provider === 'deepgram' ? 'recognition-engine-selected' : ''}>
+                          <label className={transcriptionConfig.provider !== 'local' ? 'recognition-engine-selected' : ''}>
                             <input
                               type="radio"
                               name="recognition-engine"
-                              checked={transcriptionConfig.provider === 'deepgram'}
-                              onChange={() => changeEngine('deepgram')}
+                              checked={transcriptionConfig.provider !== 'local'}
+                              onChange={() => changeEngine(transcriptionConfig.provider === 'local' ? 'deepgram' : transcriptionConfig.provider)}
                             />
                             <Cloud size={16} aria-hidden="true" />
-                            <span><strong>{t('settings.cloud')}</strong><small>{t('settings.deepgramDescription')}</small></span>
+                            <span><strong>{t('settings.cloud')}</strong><small>{t('settings.cloudDescription')}</small></span>
                           </label>
                           <label className={transcriptionConfig.provider === 'local' ? 'recognition-engine-selected' : ''}>
                             <input
@@ -422,6 +472,32 @@ export function SettingsSheet({
                             />
                             <Laptop size={16} aria-hidden="true" />
                             <span><strong>{t('settings.onDevice')}</strong><small>{t('settings.onDeviceDescription')}</small></span>
+                          </label>
+                        </fieldset>
+                      )}
+
+                      {!audioModeLocked && transcriptionConfig.provider !== 'local' && (
+                        <fieldset className="cloud-provider-options" aria-label={t('settings.onlineProvider')}>
+                          <legend>{t('settings.onlineProvider')}</legend>
+                          <label className={transcriptionConfig.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="cloud-transcription-provider"
+                              checked={transcriptionConfig.provider === 'deepgram'}
+                              onChange={() => changeEngine('deepgram')}
+                            />
+                            <span><strong>Deepgram</strong><small>{t('settings.deepgramDescription')}</small></span>
+                            {transcriptionConfig.provider === 'deepgram' && <Check size={14} aria-hidden="true" />}
+                          </label>
+                          <label className={transcriptionConfig.provider === 'elevenlabs' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="cloud-transcription-provider"
+                              checked={transcriptionConfig.provider === 'elevenlabs'}
+                              onChange={() => changeEngine('elevenlabs')}
+                            />
+                            <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
+                            {transcriptionConfig.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
                           </label>
                         </fieldset>
                       )}
@@ -602,10 +678,65 @@ export function SettingsSheet({
                         </div>
                       )}
 
+                      {transcriptionConfig.provider === 'elevenlabs' && (
+                        <div className="deepgram-provider-panel">
+                          <div className="provider-diarization-receipt">
+                            <AlertTriangle size={15} aria-hidden="true" />
+                            <span><strong>{t('settings.elevenLabsBuiltIn')}</strong><small>{t('settings.elevenLabsDiarizationTiming')}</small></span>
+                          </div>
+                          <div className="deepgram-key-panel" role="group" aria-label={t('settings.elevenLabsSetupAria')}>
+                          {elevenLabsCredential.configured ? (
+                            <div className="deepgram-key-ready" aria-live="polite">
+                              <span className="deepgram-key-status"><Check size={15} aria-hidden="true" /><span><strong>{t('settings.elevenLabsReady')}</strong><small>{t('settings.elevenLabsKeychain')}</small></span></span>
+                              <button type="button" className="model-action model-action-remove" disabled={audioModeLocked || elevenLabsCredentialBusy} onClick={() => void onRemoveElevenLabsApiKey()}>
+                                {t('settings.removeElevenLabsKey')}
+                              </button>
+                            </div>
+                          ) : (
+                            <form onSubmit={(event) => { event.preventDefault(); void saveElevenLabsKey() }}>
+                              <div className="deepgram-key-heading">
+                                <span><strong>{t('settings.elevenLabsPasteKey')}</strong><small>{t('settings.elevenLabsPasteKeyHelp')}</small></span>
+                                <a
+                                  href="https://elevenlabs.io/app/developers/api-keys"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(event) => {
+                                    event.preventDefault()
+                                    void openElevenLabsConsole()
+                                  }}
+                                >
+                                  {t('settings.elevenLabsGetKey')}
+                                </a>
+                              </div>
+                              <div className="deepgram-key-entry">
+                                <input
+                                  type="password"
+                                  aria-label={t('settings.elevenLabsApiKey')}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  value={elevenLabsApiKey}
+                                  disabled={audioModeLocked || elevenLabsCredentialBusy}
+                                  placeholder={t('settings.elevenLabsKeyPlaceholder')}
+                                  onChange={(event) => setElevenLabsApiKey(event.target.value)}
+                                />
+                                <button type="submit" className="model-action" disabled={audioModeLocked || elevenLabsCredentialBusy || !elevenLabsApiKey.trim()}>
+                                  {elevenLabsCredentialBusy ? t('settings.verifying') : t('settings.verifyAndSave')}
+                                </button>
+                              </div>
+                              {elevenLabsError && <p className="deepgram-key-error" role="alert">{elevenLabsError}</p>}
+                              <p className="deepgram-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.elevenLabsPrivacy')}</p>
+                            </form>
+                          )}
+                          </div>
+                        </div>
+                      )}
+
                       <h3>{t('settings.speakerLabels')}</h3>
                       <p className="settings-disclosure-note">
                         {transcriptionConfig.provider === 'deepgram'
                           ? t('settings.speakerDeepgram')
+                          : transcriptionConfig.provider === 'elevenlabs'
+                            ? t('settings.speakerElevenLabs')
                           : localDiarizationEnabled
                             ? t('settings.speakerLocal', { model: selectedDiarizationModel.label })
                             : t('settings.speakerOff')}
@@ -631,8 +762,8 @@ export function SettingsSheet({
                       </div>
                       <p className="speaker-policy">{t('settings.locationPolicy')}</p>
                       <dl className="settings-facts settings-disclosure-facts">
-                        <div><dt>{t('settings.engine')}</dt><dd>{transcriptionConfig.provider === 'deepgram' ? t('settings.deepgramDiarization') : selectedModel?.label}</dd></div>
-                        <div><dt>{t('settings.speakerSeparation')}</dt><dd>{selectedDiarizationModel?.label ?? (transcriptionConfig.diarization === 'provider' ? t('settings.deepgramBuiltIn') : t('common.off'))}</dd></div>
+                        <div><dt>{t('settings.engine')}</dt><dd>{transcriptionConfig.provider === 'deepgram' ? t('settings.deepgramDiarization') : transcriptionConfig.provider === 'elevenlabs' ? t('settings.elevenLabsDiarization') : selectedModel?.label}</dd></div>
+                        <div><dt>{t('settings.speakerSeparation')}</dt><dd>{selectedDiarizationModel?.label ?? (transcriptionConfig.diarization === 'provider' ? transcriptionConfig.provider === 'elevenlabs' ? t('settings.elevenLabsBuiltIn') : t('settings.deepgramBuiltIn') : t('common.off'))}</dd></div>
                       </dl>
                     </div>
                   </details>

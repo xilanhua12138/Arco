@@ -23,9 +23,8 @@ html[data-surface="agent-overlay"] #root {
   background-color: rgb(242 249 253 / 38%);
   background-image: var(--glass-chroma), var(--glass-sheen);
   box-shadow: inset 0 1px 0 var(--surface-inner-highlight);
-  -webkit-backdrop-filter: blur(40px) saturate(190%) contrast(108%);
-  backdrop-filter: blur(40px) saturate(190%) contrast(108%);
   user-select: none;
+  -webkit-app-region: drag;
 }
 
 .recording-hud-status {
@@ -77,6 +76,7 @@ html[data-surface="agent-overlay"] #root {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  -webkit-app-region: no-drag;
 }
 
 .hud-stop-button {
@@ -105,8 +105,6 @@ html[data-surface="agent-overlay"] #root {
   background-color: rgb(242 249 253 / 38%);
   background-image: var(--glass-chroma), var(--glass-sheen);
   box-shadow: inset 0 1px 0 var(--surface-inner-highlight);
-  -webkit-backdrop-filter: blur(40px) saturate(185%) contrast(107%);
-  backdrop-filter: blur(40px) saturate(185%) contrast(107%);
 }
 
 .agent-overlay-shared-header {
@@ -320,13 +318,6 @@ html[data-surface="agent-overlay"] #root {
 .agent-overlay-unavailable button { margin-top: 8px; padding: 8px 12px; border: 0; border-radius: 8px; color: var(--action-ink); background: var(--action); cursor: pointer; }
 
 @media (prefers-reduced-transparency: reduce) {
-  .recording-hud,
-  .agent-overlay-surface,
-  .agent-overlay-shared-header {
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-
   .recording-hud { background: #f4f4f4; }
   .agent-overlay-surface { background: var(--surface-document); }
 }

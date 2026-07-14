@@ -104,6 +104,12 @@ export const demoCapture: CaptureState = {
   activeMeetingId: 'demo-live',
   startedAt: '2026-07-10T14:02:00+08:00',
   message: null,
+  transcription: {
+    provider: 'deepgram',
+    model: 'nova-3',
+    language: 'zh-CN',
+    diarization: 'provider',
+  },
 }
 
 export const demoAgentReply: PersistedAgentTurn = {

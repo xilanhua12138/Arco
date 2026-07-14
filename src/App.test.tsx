@@ -527,7 +527,7 @@ describe('Arco consumer conversation workspace', () => {
     await user.click(screen.getByRole('button', { name: /Audio & speakers/i }))
     expect(screen.getByRole('dialog', { name: 'Audio & speakers' })).toBeVisible()
     expect(screen.getByText('Recognition')).toBeVisible()
-    expect(screen.getByText('Chinese')).toBeVisible()
+    expect(screen.getByText('Deepgram · Chinese')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: /Agent runtime/i }))
     const agentSettings = screen.getByRole('dialog', { name: 'Agent runtime' })

@@ -6,8 +6,6 @@
   place-items: center;
   padding: 24px;
   background: rgb(15 18 21 / 38%);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
 }
 
 .provider-setup {
@@ -21,8 +19,6 @@
   border-radius: 16px;
   background: #f8fafc;
   box-shadow: var(--shadow-sheet);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
 }
 
 .provider-setup-progress {

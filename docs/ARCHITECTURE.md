@@ -33,7 +33,8 @@ Bundled Swift recorder stdout (16kHz Int16LE stereo PCM)
   ├─ channel 0: system output
   ├─ channel 1: local microphone
   └─ selected TranscriberDefinition
-       ├─ Rust Deepgram sidecar ── cloud ASR + cloud diarization
+       ├─ Rust Deepgram sidecar ── cloud ASR + live cloud diarization
+       ├─ Rust ElevenLabs sidecar ── realtime ASR + source lanes only
        └─ bundled Swift sidecar
             ├─ LocalTranscriptionProvider
             │    ├─ Nemotron Speech 3.5 (FluidAudio/Core ML)
@@ -44,7 +45,7 @@ Bundled Swift recorder stdout (16kHz Int16LE stereo PCM)
 
 The desktop app does not invoke the legacy global `start.sh` / `stop.sh`, touch a shared `.stop` flag, or use `pkill -f`.
 
-`CaptureManager` resolves a validated `TranscriptionConfig` through the registry, then starts the recorder and selected transcriber in separate owned process groups. A provider-specific ready-file handshake gates the visible recording state: the bundled Rust Deepgram sidecar signals after its WebSocket is accepted; the local sidecar signals after the selected ASR and optional diarizer models are loaded. Stop/error/drop terminates those exact process trees, and an app shutdown finalizes an active Markdown transcript as `interrupted`.
+`CaptureManager` resolves a validated `TranscriptionConfig` through the registry, then starts the recorder and selected transcriber in separate owned process groups. A provider-specific ready-file handshake gates the visible recording state: the bundled Rust Deepgram sidecar signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted; the local sidecar signals after the selected ASR and optional diarizer models are loaded. Stop/error/drop targets only those exact process trees, and an app shutdown finalizes an active Markdown transcript as `interrupted`.
 
 Provider discovery, capture routing, model management, and inference are separate boundaries. Rust owns policy and lifecycle; the Swift sidecar owns local inference; every transcriber consumes the same PCM stream and writes the same transcript adapter. Adding another engine therefore means registering a definition and implementing its sidecar contract rather than branching through the UI, meeting store, and process lifecycle.
 
@@ -73,7 +74,7 @@ type TranscriptLine = {
 }
 ```
 
-Speaker identity is always the composite `(channel, speaker)`: channel 0 becomes `Remote 1/2/3`; channel 1 becomes `In room 1/2/3`. Deepgram supplies word-level speaker changes. The local pipeline runs an independent Streaming Sortformer timeline for each channel and assigns each finalized ASR segment to the speaker with the greatest temporal overlap. Sortformer's four output slots are anonymous and source-local. The mic channel is never assumed to be the user because one room microphone can hear several local participants. A later explicit personal-mic mode, manual rename, or voice enrollment may map one composite identity to `You`. The next storage revision will add `sessionId`, audio-relative start/end offsets, `source` (`mic` or `system`), confidence, and `isFinal`, then persist to SQLite while continuing to export the Markdown adapter.
+Speaker identity is always the composite `(channel, speaker)`: channel 0 becomes `Remote 1/2/3`; channel 1 becomes `In room 1/2/3`. Deepgram supplies live word-level speaker changes. ElevenLabs realtime supplies no speaker identity, so Arco uses one location label per active source and never promotes it as diarization. The local pipeline runs an independent diarizer timeline for each channel and assigns each finalized ASR segment to the speaker with the greatest temporal overlap. All output slots are anonymous and source-local. The mic channel is never assumed to be the user because one room microphone can hear several local participants. A later explicit personal-mic mode, manual rename, or voice enrollment may map one composite identity to `You`. The next storage revision will add `sessionId`, audio-relative start/end offsets, `source` (`mic` or `system`), confidence, and `isFinal`, then persist to SQLite while continuing to export the Markdown adapter.
 
 The frontend keeps `activeMeetingId` and the reviewed meeting ID separate. Capture polling always reads the active ID; History selection changes the reviewed snapshot only after its transcript loads successfully. A stop forces one final transcript read after the native pipeline has drained.
 
@@ -118,5 +119,5 @@ For Codex, `transcript` and `workspace` scopes add a macOS Seatbelt profile arou
 1. Keychain storage and first-run permission/key onboarding.
 2. SQLite/WAL session index, transcript FTS, incremental commits, and crash recovery.
 3. Stream provider deltas into the UI, add cancellation, and replace context receipts with real evidence citations where the provider exposes stable evidence references. Native provider-session resume is already the continuity base.
-4. Universal helper builds, Developer ID signing/notarization, DMG, and updater. The current build embeds host-architecture, ad-hoc-signed recorder, Rust Deepgram, and local-transcriber binaries.
+4. Universal helper builds, Developer ID signing/notarization, DMG, and updater. The current preview build embeds host-architecture recorder, Rust Deepgram, Rust ElevenLabs, and local-transcriber binaries under one stable local development identity. It is not a notarized distribution signature.
 5. Auto-detection of supported meeting apps without joining or recording invisibly.

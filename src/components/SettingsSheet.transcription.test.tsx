@@ -221,6 +221,68 @@ describe('SettingsSheet local transcription', () => {
     expect(screen.queryByRole('radio', { name: /LS-EEND/i })).not.toBeInTheDocument()
   })
 
+  it('offers ElevenLabs as an independent realtime provider without speaker diarization', async () => {
+    const user = userEvent.setup()
+    const changeConfig = vi.fn()
+    render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ provider: 'deepgram', model: 'nova-3', language: 'zh-CN', diarization: 'provider' }}
+        transcriptionModels={statuses}
+        onChangeTranscriptionConfig={changeConfig}
+        elevenLabsCredential={{ configured: false, verified: false, message: null }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByText('Recognition'))
+    const providers = screen.getByRole('group', { name: 'Online provider' })
+    await user.click(within(providers).getByRole('radio', { name: /ElevenLabs/i }))
+
+    expect(changeConfig).toHaveBeenCalledWith({
+      provider: 'elevenlabs',
+      model: 'scribe-v2-realtime',
+      language: 'zh-CN',
+      diarization: 'none',
+    })
+  })
+
+  it('configures ElevenLabs with its own key and never claims speaker separation', async () => {
+    const user = userEvent.setup()
+    const saveKey = vi.fn().mockResolvedValue(undefined)
+    const openConsole = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ provider: 'elevenlabs', model: 'scribe-v2-realtime', language: 'auto', diarization: 'none' }}
+        transcriptionModels={statuses}
+        elevenLabsCredential={{ configured: false, verified: false, message: null }}
+        onSaveElevenLabsApiKey={saveKey}
+        onOpenElevenLabsConsole={openConsole}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByText('Recognition'))
+    expect(screen.getByText(/Realtime speaker separation is not available/i)).toBeVisible()
+    expect(screen.getByText(/keeps system and room audio as separate source lanes/i)).toBeVisible()
+    expect(screen.queryByText(/when listening stops|final speaker/i)).not.toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('ElevenLabs API key'), 'sk_0123456789abcdefghijklmnopqrstuvwxyz')
+    await user.click(screen.getByRole('button', { name: 'Verify & save' }))
+
+    expect(saveKey).toHaveBeenCalledWith('sk_0123456789abcdefghijklmnopqrstuvwxyz')
+    const getKeyLink = screen.getByRole('link', { name: 'Get an ElevenLabs key' })
+    expect(getKeyLink).toHaveAttribute('href', 'https://elevenlabs.io/app/developers/api-keys')
+    await user.click(getKeyLink)
+    expect(openConsole).toHaveBeenCalledOnce()
+    expect(screen.queryByText(/ELEVENLABS_API_KEY=|\.env|python/i)).not.toBeInTheDocument()
+  })
+
   it('downloads a missing model and disables runtime changes during capture', async () => {
     const user = userEvent.setup()
     const prepare = vi.fn()
@@ -354,7 +416,7 @@ describe('SettingsSheet local transcription', () => {
     await user.click(screen.getByText('Recognition'))
     const recognition = screen.getByRole('group', { name: 'Where transcription runs' })
     expect(within(recognition).getByRole('radio', { name: /Cloud/i })).toBeChecked()
-    expect(within(recognition).getByText(/Deepgram · real-time transcription/i)).toBeVisible()
+    expect(within(recognition).getByText(/Deepgram or ElevenLabs · audio sent to the selected provider/i)).toBeVisible()
     expect(within(recognition).getByRole('radio', { name: /This Mac/i })).not.toBeChecked()
   })
 

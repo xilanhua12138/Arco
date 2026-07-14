@@ -92,7 +92,7 @@ export const diarizationModels: DiarizationModelDescriptor[] = [
   { id: 'lseend-dihard3-streaming', label: 'LS-EEND General', detailKey: 'settings.lseendGeneralDescription' },
 ]
 
-const providers = new Set<TranscriptionProviderId>(['deepgram', 'local'])
+const providers = new Set<TranscriptionProviderId>(['deepgram', 'elevenlabs', 'local'])
 const localModels = new Set<LocalTranscriptionModelId>(transcriptionModels.map((model) => model.id))
 const languages = new Set<TranscriptionLanguage>(['auto', 'zh-CN', 'en-US'])
 const localDiarizationModels = new Set<LocalDiarizationModelId>(diarizationModels.map((model) => model.id))
@@ -113,6 +113,9 @@ export const isValidTranscriptionConfig = (value: unknown): value is Transcripti
   if (!diarizationModes.has(candidate.diarization as DiarizationMode)) return false
   if (candidate.provider === 'deepgram') {
     return candidate.model === 'nova-3' && candidate.diarization === 'provider'
+  }
+  if (candidate.provider === 'elevenlabs') {
+    return candidate.model === 'scribe-v2-realtime' && candidate.diarization === 'none'
   }
   return localModels.has(candidate.model as LocalTranscriptionModelId)
     && (localDiarizationModels.has(candidate.diarization as LocalDiarizationModelId) || candidate.diarization === 'none')
@@ -142,5 +145,6 @@ export const localModelDescriptor = (id: TranscriptionModelId) =>
 
 export const recognitionSummary = (config: TranscriptionConfig) => {
   if (config.provider === 'deepgram') return config.language === 'en-US' ? 'English' : 'Chinese'
+  if (config.provider === 'elevenlabs') return config.language === 'auto' ? 'Automatic' : config.language === 'en-US' ? 'English' : 'Chinese'
   return localModelDescriptor(config.model)?.label ?? 'On-device'
 }

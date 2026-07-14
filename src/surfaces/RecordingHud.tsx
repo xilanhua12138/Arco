@@ -80,7 +80,11 @@ export function RecordingHud() {
   }
 
   return (
-    <section className="recording-hud" aria-label={t('hud.controls')}>
+    <section
+      className="recording-hud"
+      aria-label={t('hud.controls')}
+      data-tauri-drag-region="deep"
+    >
       <div className="recording-hud-status" role="status" aria-live="polite">
         <span className="recording-dot" aria-hidden="true" />
         <strong>{status}</strong>

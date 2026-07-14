@@ -2142,8 +2142,15 @@ fn fake_capture_config(root: &TempDir, transcriber_source: &str) -> CaptureConfi
         recorder: RecorderSpec::Executable(recorder),
         transcribers: TranscriberCatalog {
             deepgram: TranscriberDefinition {
+                command: CommandSpec::new(transcriber.clone(), Vec::<OsString>::new()),
+                requires_deepgram_key: false,
+                requires_elevenlabs_key: false,
+                ready_timeout: Duration::from_secs(3),
+            },
+            elevenlabs: TranscriberDefinition {
                 command: CommandSpec::new(transcriber, Vec::<OsString>::new()),
                 requires_deepgram_key: false,
+                requires_elevenlabs_key: false,
                 ready_timeout: Duration::from_secs(3),
             },
             local: None,
@@ -2358,6 +2365,7 @@ fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
     config.transcribers.local = Some(TranscriberDefinition {
         command: CommandSpec::new(local, vec![OsString::from("stream")]),
         requires_deepgram_key: false,
+        requires_elevenlabs_key: false,
         ready_timeout: Duration::from_secs(3),
     });
     config.environment.insert(
@@ -2401,6 +2409,7 @@ fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
     config.transcribers.deepgram = TranscriberDefinition {
         command: CommandSpec::new(transcriber, Vec::new()),
         requires_deepgram_key: true,
+        requires_elevenlabs_key: false,
         ready_timeout: Duration::from_secs(3),
     };
     config.environment.insert(
@@ -2425,6 +2434,49 @@ fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
     let args = fs::read_to_string(args_path).unwrap();
     assert!(!args.contains(&secret));
     assert_eq!(fs::read_to_string(env_path).unwrap(), secret);
+    assert_eq!(manager.stop().unwrap().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn elevenlabs_selection_routes_its_sidecar_secret_and_audio_mode() {
+    let root = TempDir::new().unwrap();
+    let env_path = root.path().join("elevenlabs-env.txt");
+    let transcriber = executable_script(
+        root.path(),
+        "arco-elevenlabs-transcriber",
+        "#!/bin/sh\nprintf '%s|%s|%s' \"$ELEVENLABS_API_KEY\" \"${DEEPGRAM_API_KEY:-}\" \"$ARCO_AUDIO_MODE\" > \"$ARCO_TEST_SECRET\"\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    let mut config = fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n");
+    config.requires_ready_signal = true;
+    config.transcribers.elevenlabs = TranscriberDefinition {
+        command: CommandSpec::new(transcriber, Vec::new()),
+        requires_deepgram_key: false,
+        requires_elevenlabs_key: true,
+        ready_timeout: Duration::from_secs(3),
+    };
+    config.environment.insert(
+        "ARCO_TEST_SECRET".into(),
+        env_path.to_string_lossy().into_owned(),
+    );
+    let manager = CaptureManager::new(config);
+    let transcription = TranscriptionConfig {
+        provider: "elevenlabs".into(),
+        model: "scribe-v2-realtime".into(),
+        language: "zh-CN".into(),
+        diarization: "none".into(),
+    };
+    let secret = "sk_0123456789abcdef0123456789abcdef".to_string();
+
+    let capture = manager
+        .start_with_transcription_and_secret("mic", transcription.clone(), Some(secret.clone()))
+        .unwrap();
+
+    assert_eq!(capture.transcription, Some(transcription));
+    assert_eq!(
+        fs::read_to_string(env_path).unwrap(),
+        format!("{secret}||mic")
+    );
     assert_eq!(manager.stop().unwrap().phase, "idle");
 }
 

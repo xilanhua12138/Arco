@@ -8,9 +8,10 @@ The frontend persists one validated `TranscriptionConfig`:
 
 ```ts
 type TranscriptionConfig = {
-  provider: 'deepgram' | 'local'
+  provider: 'deepgram' | 'elevenlabs' | 'local'
   model:
     | 'nova-3'
+    | 'scribe-v2-realtime'
     | 'nemotron-speech-3.5-streaming'
     | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
     | 'whisper-medium' | 'whisper-large'
@@ -124,6 +125,22 @@ Deepgram sends a separate streaming `Results` object for each channel. Speaker n
 
 Deepgram may restart numbering after a reconnect. Arco namespaces identities by connection and allocates new session-wide display numbers. This can split the same human into two anonymous labels after a network interruption, but avoids the more damaging false claim that two different humans are one person.
 
+## ElevenLabs realtime transcription
+
+ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not currently expose speaker diarization or dual-channel transcription, so Arco does not claim that this provider separates speakers.
+
+- Arco opens one realtime WebSocket for each active source. `system` sends only channel 0, `mic` sends only channel 1, and `both` sends each channel through its own connection.
+- Realtime commits receive one source label per channel: `Remote 1` or `In room 1`. These are location labels, not detected speaker identities.
+- Audio is streamed only while the meeting is active. Arco does not buffer meeting audio for a later ElevenLabs batch pass and does not replace the transcript after capture stops.
+- Choose Deepgram or an on-device diarization model when realtime multi-speaker separation is required.
+
+The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned sidecar environment.
+
+Primary references:
+
+- [Scribe v2 Realtime API](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime)
+- [ElevenLabs API authentication](https://elevenlabs.io/docs/api-reference/authentication)
+
 ## Ordering, readiness, and backpressure
 
 - Only finalized results become durable transcript events.
@@ -131,9 +148,9 @@ Deepgram may restart numbering after a reconnect. Arco namespaces identities by 
 - Exact repeated speech is preserved; text equality is not a deduplication key.
 - The mic channel is never assumed to be `You`. That name requires a future explicit mapping, personal-mic mode, or voice enrollment.
 
-The Rust Deepgram adapter drains recorder stdout into a bounded in-memory queue: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement, so the MVP cannot promise lossless cloud recovery without recording PCM locally.
+The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; both cloud providers remain streaming-only.
 
-Rust reports `recording` only after provider readiness. Deepgram signals after the WebSocket is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. The local sidecar signals after model load; a missing or incomplete model is a terminal setup error.
+Rust reports `recording` only after provider readiness. Deepgram signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. The local sidecar signals after model load; a missing or incomplete model is a terminal setup error.
 
 ## Echo caveat
 

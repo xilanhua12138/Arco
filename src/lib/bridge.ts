@@ -13,12 +13,14 @@ import type {
   AudioSetupCheck,
   CaptureState,
   DeepgramCredentialStatus,
+  ElevenLabsCredentialStatus,
   GenerateMeetingOutputInput,
   MeetingDetail,
   MeetingGenerationStatus,
   MeetingOutputArtifact,
   MeetingSummary,
   LocalDiarizationModelId,
+  LocalTranscriptionModelId,
   NoteDocument,
   NotesStorageSettings,
   PersistedAgentTurn,
@@ -45,6 +47,7 @@ const demoMeetingOutputsKey = 'arco.demoMeetingOutputs'
 const demoStorageKey = 'arco.demoTranscriptStorage'
 const demoTranscriptionModelsKey = 'arco.demoTranscriptionModels'
 const demoDeepgramConfiguredKey = 'arco.demoDeepgramConfigured'
+const demoElevenLabsConfiguredKey = 'arco.demoElevenLabsConfigured'
 const demoNotesKey = 'arco.demoNotes'
 const demoNotesStorageKey = 'arco.demoNotesStorage'
 const demoDefaultTranscriptDirectory = '/Users/demo/Library/Application Support/Arco/transcripts'
@@ -218,6 +221,14 @@ export const arcoBridge = {
       return
     }
     window.open('https://console.deepgram.com/', '_blank', 'noopener,noreferrer')
+  },
+
+  async openElevenLabsConsole(): Promise<void> {
+    if (hasTauriRuntime()) {
+      await invoke('open_elevenlabs_console')
+      return
+    }
+    window.open('https://elevenlabs.io/app/developers/api-keys', '_blank', 'noopener,noreferrer')
   },
 
   async listMeetings(query = ''): Promise<MeetingSummary[]> {
@@ -437,6 +448,30 @@ export const arcoBridge = {
     return { configured: false, verified: false, message: null }
   },
 
+  async elevenLabsCredentialStatus(): Promise<ElevenLabsCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<ElevenLabsCredentialStatus>('elevenlabs_credential_status')
+    const configured = window.sessionStorage.getItem(demoElevenLabsConfiguredKey) === 'true'
+    return { configured, verified: configured, message: null }
+  },
+
+  async saveElevenLabsApiKey(apiKey: string): Promise<ElevenLabsCredentialStatus> {
+    if (hasTauriRuntime()) {
+      return invoke<ElevenLabsCredentialStatus>('save_elevenlabs_api_key', { apiKey })
+    }
+    if (apiKey.trim().length < 20 || /\s/.test(apiKey.trim())) {
+      throw new Error('Paste a complete ElevenLabs API key.')
+    }
+    await wait(120)
+    window.sessionStorage.setItem(demoElevenLabsConfiguredKey, 'true')
+    return { configured: true, verified: true, message: 'ElevenLabs is ready.' }
+  },
+
+  async removeElevenLabsApiKey(): Promise<ElevenLabsCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<ElevenLabsCredentialStatus>('remove_elevenlabs_api_key')
+    window.sessionStorage.removeItem(demoElevenLabsConfiguredKey)
+    return { configured: false, verified: false, message: null }
+  },
+
   async startCapture(mode: AudioMode, transcription?: TranscriptionConfig): Promise<CaptureState> {
     if (hasTauriRuntime()) return invoke<CaptureState>('start_capture', { mode, transcription })
     await wait(250)
@@ -456,11 +491,11 @@ export const arcoBridge = {
     return hasExplicitDemoMode() ? readDemoTranscriptionModels() : demoTranscriptionModels
   },
 
-  async prepareTranscriptionModel(model: TranscriptionConfig['model'], diarizationModel?: LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
+  async prepareTranscriptionModel(model: LocalTranscriptionModelId, diarizationModel?: LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
       return invoke<TranscriptionModelStatus[]>('prepare_transcription_model', { model, diarizationModel })
     }
-    if (hasExplicitDemoMode() && model !== 'nova-3') {
+    if (hasExplicitDemoMode()) {
       await wait(120)
       let statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, true)
       if (diarizationModel) {
@@ -472,11 +507,11 @@ export const arcoBridge = {
     throw new Error('Open the Arco desktop app to download on-device speech models.')
   },
 
-  async removeTranscriptionModel(model: TranscriptionConfig['model'] | LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
+  async removeTranscriptionModel(model: LocalTranscriptionModelId | LocalDiarizationModelId): Promise<TranscriptionModelStatus[]> {
     if (hasTauriRuntime()) {
       return invoke<TranscriptionModelStatus[]>('remove_transcription_model', { model })
     }
-    if (hasExplicitDemoMode() && model !== 'nova-3') {
+    if (hasExplicitDemoMode()) {
       const statuses = updateDemoTranscriptionModel(readDemoTranscriptionModels(), model, false)
       writeDemoTranscriptionModels(statuses)
       return statuses

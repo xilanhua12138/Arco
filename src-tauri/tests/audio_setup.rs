@@ -116,8 +116,8 @@ fn tester_returns_a_strong_no_signal_result_instead_of_false_success() {
         .test("both")
         .unwrap();
     assert!(!result.success);
-    assert_eq!(result.system.ready, false);
-    assert_eq!(result.microphone.ready, false);
+    assert!(!result.system.ready);
+    assert!(!result.microphone.ready);
 }
 
 #[test]

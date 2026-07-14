@@ -5,6 +5,8 @@ pub mod deepgram;
 mod deepgram_credentials;
 #[cfg(target_os = "macos")]
 mod dock_icon;
+pub mod elevenlabs;
+mod elevenlabs_credentials;
 mod listening_shortcut;
 mod material;
 pub mod meeting_output;
@@ -69,6 +71,7 @@ use agent::AgentRunner;
 use audio_setup::AudioSetupTester;
 use capture::{CaptureConfig, CaptureManager};
 use deepgram_credentials::DeepgramCredentialStatus;
+use elevenlabs_credentials::ElevenLabsCredentialStatus;
 use meeting_output::{
     generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
 };
@@ -455,6 +458,35 @@ fn open_deepgram_console(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+fn elevenlabs_credential_status() -> ElevenLabsCredentialStatus {
+    elevenlabs_credentials::status()
+}
+
+#[tauri::command]
+async fn save_elevenlabs_api_key(api_key: String) -> Result<ElevenLabsCredentialStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        elevenlabs_credentials::save_verified_api_key(&api_key)
+    })
+    .await
+    .map_err(|error| format!("could not verify the ElevenLabs credential: {error}"))?
+}
+
+#[tauri::command(async)]
+fn remove_elevenlabs_api_key() -> Result<ElevenLabsCredentialStatus, String> {
+    elevenlabs_credentials::remove_api_key()
+}
+
+#[tauri::command(async)]
+fn open_elevenlabs_console(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(
+            "https://elevenlabs.io/app/developers/api-keys",
+            None::<&str>,
+        )
+        .map_err(|error| format!("Could not open the ElevenLabs API keys page: {error}"))
+}
+
+#[tauri::command(async)]
 fn capture_status(state: tauri::State<'_, AppState>) -> CaptureState {
     state.capture.status()
 }
@@ -525,15 +557,15 @@ fn start_capture(
         .lock()
         .map_err(|_| "transcript storage coordinator is unavailable".to_string())?;
     let transcription = transcription.unwrap_or_default();
-    let deepgram_api_key = if transcription.provider == "deepgram" {
-        deepgram_credentials::load_api_key()?
-    } else {
-        None
+    let provider_api_key = match transcription.provider.as_str() {
+        "deepgram" => deepgram_credentials::load_api_key()?,
+        "elevenlabs" => elevenlabs_credentials::load_api_key()?,
+        _ => None,
     };
     let capture = state.capture.start_with_transcription_and_secret(
         &mode,
         transcription,
-        deepgram_api_key,
+        provider_api_key,
     )?;
     if let Err(window_error) = overlay::show_hud(&app) {
         let rollback = state.capture.stop();
@@ -573,8 +605,10 @@ fn toggle_agent_overlay(
     if capture.phase != "recording" || capture.active_meeting_id.is_none() {
         return Err("Start listening before opening Ask Arco".to_string());
     }
-    let visible = overlay::show_or_focus_agent(&app)?;
-    let _ = app.emit("arco:agent-target-changed", capture.active_meeting_id);
+    let visible = overlay::toggle_agent(&app)?;
+    if visible {
+        let _ = app.emit("arco:agent-target-changed", capture.active_meeting_id);
+    }
     Ok(visible)
 }
 
@@ -594,6 +628,9 @@ fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+// Tauri deserializes command arguments by name, so this boundary intentionally
+// mirrors the stable frontend invoke contract instead of hiding it in a blob.
+#[allow(clippy::too_many_arguments)]
 fn run_agent(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -744,6 +781,10 @@ pub fn run() {
             save_deepgram_api_key,
             remove_deepgram_api_key,
             open_deepgram_console,
+            elevenlabs_credential_status,
+            save_elevenlabs_api_key,
+            remove_elevenlabs_api_key,
+            open_elevenlabs_console,
             capture_status,
             test_audio_setup,
             relaunch_app,

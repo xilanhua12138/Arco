@@ -8,7 +8,7 @@ fn material_for_macos_version(version: Option<&str>) -> NativeMaterial {
     let major_version = version.and_then(parse_macos_major_version);
 
     match major_version {
-        Some(26) => NativeMaterial::LiquidGlass,
+        Some(version) if version >= 26 => NativeMaterial::LiquidGlass,
         _ => NativeMaterial::Vibrancy,
     }
 }
@@ -75,14 +75,10 @@ pub fn apply_overlay_material(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
-fn glass_style_for_surface(overlay: bool) -> window_vibrancy::NSGlassEffectViewStyle {
+fn glass_style_for_surface(_overlay: bool) -> window_vibrancy::NSGlassEffectViewStyle {
     use window_vibrancy::NSGlassEffectViewStyle;
 
-    if overlay {
-        NSGlassEffectViewStyle::Clear
-    } else {
-        NSGlassEffectViewStyle::Regular
-    }
+    NSGlassEffectViewStyle::Regular
 }
 
 #[cfg(target_os = "macos")]
@@ -133,10 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn unvalidated_future_macos_versions_use_vibrancy() {
+    fn macos_27_and_newer_keep_using_liquid_glass() {
         assert_eq!(
             material_for_macos_version(Some("27.1.2")),
-            NativeMaterial::Vibrancy
+            NativeMaterial::LiquidGlass
+        );
+        assert_eq!(
+            material_for_macos_version(Some("42.0")),
+            NativeMaterial::LiquidGlass
         );
     }
 
@@ -149,12 +149,15 @@ mod tests {
     }
 
     #[test]
-    fn main_window_uses_regular_glass_while_utility_windows_stay_clear() {
+    fn every_surface_uses_regular_glass_to_avoid_clear_overlay_compositor_saturation() {
         assert_eq!(
             glass_style_for_surface(false),
             NSGlassEffectViewStyle::Regular
         );
-        assert_eq!(glass_style_for_surface(true), NSGlassEffectViewStyle::Clear);
+        assert_eq!(
+            glass_style_for_surface(true),
+            NSGlassEffectViewStyle::Regular
+        );
     }
 
     #[test]

@@ -501,7 +501,7 @@ test('a meeting title is edited in place, persists, and updates History', async 
   await expect(page.getByRole('heading', { level: 1, name: 'Untitled meeting' })).toBeVisible()
 })
 
-test('Current exposes native glass through chrome while keeping both reading surfaces stable', async ({ page }) => {
+test('Current delegates glass to the native shell while keeping both reading surfaces stable', async ({ page }) => {
   await page.setViewportSize({ width: 1240, height: 820 })
   await gotoConfigured(page)
 
@@ -545,18 +545,16 @@ test('Current exposes native glass through chrome while keeping both reading sur
 
   if (material.reducedTransparency) {
     expect(alpha(material.shellBackground)).toBeGreaterThan(0.7)
-    expect(material.sidebarBackdrop).toBe('none')
-    expect(material.workspaceBackdrop).toBe('none')
   } else {
     expect(alpha(material.shellBackground)).toBeLessThan(0.35)
     expect(alpha(material.sidebarBackground)).toBeLessThan(0.45)
-    expect(material.sidebarBackdrop).toContain('blur(')
-    expect(material.activeNavBackdrop).toContain('blur(')
-    expect(material.captureBackdrop).toContain('blur(')
     expect(alpha(material.pageStageBackground)).toBeLessThan(0.12)
     expect(alpha(material.workspaceBackground)).toBeLessThan(0.24)
-    expect(material.workspaceBackdrop).toContain('blur(')
   }
+  expect(material.sidebarBackdrop).toBe('none')
+  expect(material.activeNavBackdrop).toBe('none')
+  expect(material.captureBackdrop).toBe('none')
+  expect(material.workspaceBackdrop).toBe('none')
   expect(Number.parseFloat(material.pageStageTopRightRadius)).toBeGreaterThanOrEqual(16)
   expect(Number.parseFloat(material.pageStageBottomRightRadius)).toBeGreaterThanOrEqual(16)
   expect(material.pageStageRightGap).toBeGreaterThanOrEqual(7)
@@ -888,11 +886,11 @@ test('Settings uses navigable sections in one centered sheet', async ({ page }) 
   }))
   const settingsAlpha = settingsMaterial.background.match(/rgba?\([^,]+,[^,]+,[^,]+(?:,\s*([\d.]+))?\)/)?.[1]
   expect(settingsAlpha === undefined ? 1 : Number(settingsAlpha)).toBeLessThan(0.8)
-  expect(settingsMaterial.backdrop).toContain('blur(')
+  expect(settingsMaterial.backdrop).toBe('none')
   await page.getByRole('button', { name: 'Audio & speakers' }).click()
   const recognition = page.locator('summary').filter({ hasText: /^Recognition/ })
   await expect(recognition).toBeVisible()
-  await expect(page.getByText('Chinese', { exact: true })).toBeVisible()
+  await expect(recognition).toContainText('Deepgram · Chinese')
   await expect(page.getByText('Remote 1… · In room 1…')).toHaveCount(0)
   await expect(page.getByText(/Deepgram separates multiple speakers/i)).not.toBeVisible()
   await page.screenshot({ path: 'test-results/arco-product-audio-modes.png', fullPage: true })
@@ -958,7 +956,8 @@ test('Recognition keeps Deepgram built-in and exposes independent local diarizat
   await page.getByRole('button', { name: 'Audio & speakers' }).click()
 
   const settings = page.getByRole('dialog', { name: 'Audio & speakers' })
-  await settings.locator('summary').filter({ hasText: /^Recognition/ }).click()
+  const recognitionSummary = settings.locator('summary').filter({ hasText: /^Recognition/ })
+  await recognitionSummary.click()
   const deepgramSetup = settings.getByRole('group', { name: 'Deepgram setup' })
   const getDeepgramKey = deepgramSetup.getByRole('link', { name: 'Get a Deepgram key' })
   await expect(getDeepgramKey).toHaveAttribute(
@@ -977,8 +976,25 @@ test('Recognition keeps Deepgram built-in and exposes independent local diarizat
   await expect(settings.getByRole('radio', { name: /LS-EEND/i })).toHaveCount(0)
   await expect(deepgramSetup).not.toContainText(/uv|python|\.env|DEEPGRAM_API_KEY=/i)
   await page.screenshot({ path: 'test-results/arco-deepgram-setup.png', fullPage: true })
+
+  const onlineProviders = settings.getByRole('group', { name: 'Online provider' })
+  await onlineProviders.getByRole('radio', { name: /ElevenLabs/i }).click()
+  await expect(onlineProviders.getByRole('radio', { name: /ElevenLabs/i })).toBeChecked()
+  const elevenLabsSetup = settings.getByRole('group', { name: 'ElevenLabs setup' })
+  await expect(elevenLabsSetup.getByRole('link', { name: 'Get an ElevenLabs key' })).toHaveAttribute(
+    'href',
+    'https://elevenlabs.io/app/developers/api-keys',
+  )
+  await elevenLabsSetup.getByLabel('ElevenLabs API key').fill('sk_0123456789abcdefghijklmnopqrstuvwxyz')
+  await elevenLabsSetup.getByRole('button', { name: 'Verify & save' }).click()
+  await expect(elevenLabsSetup.getByText('ElevenLabs is ready')).toBeVisible()
+  await expect(settings.getByText(/No realtime speaker separation/i)).toBeVisible()
+  await expect(settings.getByText(/keeps system and room audio as separate source lanes/i)).toBeVisible()
+  await expect(settings.getByText(/when listening stops|final speaker/i)).toHaveCount(0)
+  await expect(recognitionSummary).toContainText('ElevenLabs · Chinese')
+  await page.screenshot({ path: 'test-results/arco-elevenlabs-setup.png', fullPage: true })
+
   await settings.getByText('This Mac', { exact: true }).click()
-  const recognitionSummary = settings.locator('summary').filter({ hasText: /^Recognition/ })
   await expect(recognitionSummary).toContainText('Nemotron Speech 3.5 not downloaded')
   await expect(recognitionSummary).toContainText('Streaming Sortformer not downloaded')
   await expect(recognitionSummary.getByLabel('Required local models are not downloaded')).toBeVisible()
