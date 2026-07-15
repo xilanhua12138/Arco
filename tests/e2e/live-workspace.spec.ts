@@ -214,7 +214,7 @@ test('global utility surfaces remain light when system appearance is dark', asyn
 
   await page.goto('/?surface=agent-overlay&demo=1')
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'light')
-  await expect(page.getByRole('heading', { name: 'Ask Arco' })).toHaveCSS('color', 'rgb(17, 17, 17)')
+  await expect(page.getByRole('heading', { name: 'Ask Arco' })).toHaveCSS('color', 'rgb(23, 26, 31)')
   await expect(page.getByRole('button', { name: 'Answer what was asked' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Meeting transcript' })).toBeVisible()
   await page.screenshot({ path: 'test-results/arco-agent-overlay-light-forced.png', fullPage: true })
@@ -369,7 +369,7 @@ test('an idle Current keeps one focused launch surface until listening begins', 
   await gotoConfigured(page, '/?demo=empty')
 
   const idle = page.getByRole('region', { name: 'Start listening' })
-  await expect(idle.getByRole('heading', { name: 'Start listening' })).toBeVisible()
+  await expect(idle.locator('.current-idle-wave')).toBeVisible()
   await expect(idle.getByText('Start a new meeting when you are ready. Its live transcript and Agent will appear here.')).toHaveCount(0)
   await expect(idle.getByRole('region', { name: 'On this Mac' })).toContainText('0')
   await expect(idle.getByRole('region', { name: 'Shortcuts' }).locator('kbd')).toHaveText(['⌘', '⇧', 'Space', '⌘', 'K'])
@@ -535,9 +535,14 @@ test('Current delegates glass to the native shell while keeping both reading sur
     const shellRect = shell.getBoundingClientRect()
     const stageRect = pageStage.getBoundingClientRect()
     const stageStyle = getComputedStyle(pageStage)
+    const ambientStyle = getComputedStyle(pageStage, '::before')
+    const matrixStyle = getComputedStyle(pageStage, '::after')
+    const currentPage = shell.querySelector<HTMLElement>('.current-page')
+    if (!currentPage) throw new Error('Current page motion surface is missing')
 
     return {
       reducedTransparency: window.matchMedia('(prefers-reduced-transparency: reduce)').matches,
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
       shellBackground: getComputedStyle(shell).backgroundColor,
       sidebarBackground: getComputedStyle(sidebar).backgroundColor,
       sidebarBackgroundImage: getComputedStyle(sidebar).backgroundImage,
@@ -547,6 +552,9 @@ test('Current delegates glass to the native shell while keeping both reading sur
       captureBackgroundImage: getComputedStyle(captureCard).backgroundImage,
       captureBackdrop: getComputedStyle(captureCard).backdropFilter,
       pageStageBackground: getComputedStyle(pageStage).backgroundColor,
+      pageStageAmbientBackground: ambientStyle.backgroundImage,
+      pageStageDotBackground: matrixStyle.backgroundImage,
+      pageStageDotSize: matrixStyle.backgroundSize,
       pageStageTopRightRadius: stageStyle.borderTopRightRadius,
       pageStageBottomRightRadius: stageStyle.borderBottomRightRadius,
       pageStageBoxShadow: stageStyle.boxShadow,
@@ -555,6 +563,8 @@ test('Current delegates glass to the native shell while keeping both reading sur
       workspaceBackdrop: getComputedStyle(workspace).backdropFilter,
       transcriptBackground: getComputedStyle(transcript).backgroundColor,
       agentBackground: getComputedStyle(agent).backgroundColor,
+      currentPageAnimationName: getComputedStyle(currentPage).animationName,
+      currentPageAnimationDuration: getComputedStyle(currentPage).animationDuration,
     }
   })
   const alpha = (color: string) => {
@@ -562,14 +572,10 @@ test('Current delegates glass to the native shell while keeping both reading sur
     return match?.[1] === undefined ? 1 : Number(match[1])
   }
 
-  if (material.reducedTransparency) {
-    expect(alpha(material.shellBackground)).toBeGreaterThan(0.7)
-  } else {
-    expect(alpha(material.shellBackground)).toBeLessThan(0.35)
-    expect(alpha(material.sidebarBackground)).toBeLessThan(0.45)
-    expect(alpha(material.pageStageBackground)).toBeLessThan(0.12)
-    expect(alpha(material.workspaceBackground)).toBeLessThan(0.24)
-  }
+  expect(alpha(material.shellBackground)).toBeGreaterThan(0.95)
+  expect(alpha(material.pageStageBackground)).toBeGreaterThan(0.95)
+  expect(alpha(material.sidebarBackground)).toBeLessThan(0.45)
+  expect(alpha(material.workspaceBackground)).toBeLessThan(0.24)
   expect(material.sidebarBackdrop).toBe('none')
   expect(material.sidebarBackgroundImage).toBe('none')
   expect(material.activeNavBackdrop).toBe('none')
@@ -577,6 +583,11 @@ test('Current delegates glass to the native shell while keeping both reading sur
   expect(material.captureBackdrop).toBe('none')
   expect(material.captureBackgroundImage).toBe('none')
   expect(material.workspaceBackdrop).toBe('none')
+  expect(material.pageStageAmbientBackground).toContain('radial-gradient')
+  expect(material.pageStageDotBackground).toContain('radial-gradient')
+  expect(material.pageStageDotSize).toBe('8px 8px')
+  expect(material.currentPageAnimationName).toBe('macos-content-in')
+  expect(material.currentPageAnimationDuration).toBe(material.reducedMotion ? '0.01ms' : '0.22s')
   expect(Number.parseFloat(material.pageStageTopRightRadius)).toBeGreaterThanOrEqual(16)
   expect(Number.parseFloat(material.pageStageBottomRightRadius)).toBeGreaterThanOrEqual(16)
   expect(material.pageStageRightGap).toBeGreaterThanOrEqual(7)
@@ -590,6 +601,21 @@ test('History is searchable and opens a meeting as History review', async ({ pag
   await page.getByRole('button', { name: 'Open meeting history' }).click()
 
   await expect(page.getByRole('heading', { level: 1, name: 'History' })).toBeVisible()
+  const searchField = page.locator('.history-search')
+  const searchMaterial = await searchField.evaluate((field) => {
+    const style = getComputedStyle(field)
+    return {
+      height: field.getBoundingClientRect().height,
+      borderRadius: Number.parseFloat(style.borderTopLeftRadius),
+      backgroundColor: style.backgroundColor,
+      boxShadow: style.boxShadow,
+    }
+  })
+  expect(searchMaterial.borderRadius).toBeGreaterThanOrEqual(searchMaterial.height / 2 - 1)
+  expect(searchMaterial.backgroundColor).not.toBe('rgb(255, 255, 255)')
+  expect(searchMaterial.boxShadow).not.toBe('none')
+  await expect(searchField.locator('kbd')).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: 'Search meetings' })).toHaveAttribute('placeholder', 'Search')
   const historyStageMaterial = await page.locator('.page-stage').evaluate((stage) => {
     const stageStyle = getComputedStyle(stage)
     const ambientStyle = getComputedStyle(stage, '::before')
@@ -600,14 +626,16 @@ test('History is searchable and opens a meeting as History review', async ({ pag
       ambientOverlayBackground: ambientStyle.backgroundImage,
       matrixTop: matrixStyle.top,
       matrixBackground: matrixStyle.backgroundImage,
+      matrixSize: matrixStyle.backgroundSize,
       matrixMask: matrixStyle.maskImage,
     }
   })
   expect(Number.parseFloat(historyStageMaterial.topLeftRadius)).toBeGreaterThanOrEqual(16)
   expect(historyStageMaterial.stageBackground).toBe('none')
-  expect(historyStageMaterial.ambientOverlayBackground).toBe('none')
-  expect(historyStageMaterial.matrixTop).toBe('auto')
-  expect(historyStageMaterial.matrixBackground).toBe('none')
+  expect(historyStageMaterial.ambientOverlayBackground).toContain('radial-gradient')
+  expect(historyStageMaterial.matrixTop).toBe('0px')
+  expect(historyStageMaterial.matrixBackground).toContain('radial-gradient')
+  expect(historyStageMaterial.matrixSize).toBe('8px 8px')
   expect(historyStageMaterial.matrixMask).toBe('none')
   const historyViewport = await page.locator('.history-results').evaluate((results) => {
     const style = getComputedStyle(results)
@@ -853,7 +881,9 @@ test('saved Agent answers are browsable from Notes and retain their meeting sour
   await page.getByRole('button', { name: 'Open saved notes' }).click()
 
   await expect(page.getByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Product direction · weekly working session', exact: true })).toBeVisible()
+  const savedNote = page.getByRole('button', { name: /Answer what was asked.*Product direction · weekly working session.*Saved Agent answer/ })
+  await expect(savedNote).toBeVisible()
+  await expect(savedNote).toContainText('Product direction · weekly working session')
   await expect(page.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(/Arco becomes more than a recorder/)
   await expect(page.getByRole('button', { name: 'Open saved notes' })).toHaveAttribute('aria-current', 'page')
   await page.screenshot({ path: 'test-results/arco-notes-1240x820.png', fullPage: true })
@@ -889,13 +919,11 @@ test('a user can write multiple Markdown notes for the same meeting and reopen t
   await expect(page.getByRole('combobox', { name: 'Meeting for this note' })).toHaveValue('demo-live')
   await page.getByRole('textbox', { name: 'Note title' }).fill('Interview follow-ups')
   await page.getByRole('textbox', { name: 'Markdown note' }).fill('- Ask about the rollout\n- Confirm the owner')
-  await page.getByRole('button', { name: 'Save note' }).click()
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'New note' }).click()
   await page.getByRole('textbox', { name: 'Note title' }).fill('Open questions')
   await page.getByRole('textbox', { name: 'Markdown note' }).fill('1. Who owns launch readiness?')
-  await page.getByRole('button', { name: 'Save note' }).click()
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
 
   await expect(page.getByRole('button', { name: /Interview follow-ups/ })).toBeVisible()

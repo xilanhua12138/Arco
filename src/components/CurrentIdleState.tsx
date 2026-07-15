@@ -3,6 +3,8 @@ import type { AudioMode, CaptureState, MeetingSummary } from '../types'
 import { formatListeningShortcut, type ListeningShortcut } from '../lib/listeningShortcut'
 import { summarizeMeetings } from '../lib/meetingStats'
 import { useI18n } from '../i18n/i18n'
+import { PlatformActionButton } from './PlatformActionButton'
+import { PlatformGlassSurface } from './PlatformGlassSurface'
 
 interface CurrentIdleStateProps {
   capture: CaptureState
@@ -45,21 +47,25 @@ export function CurrentIdleState({
         <div className="current-idle-wave" aria-hidden="true">
           <span /><span /><span /><span /><span /><span /><span />
         </div>
-        <h1>{t('capture.idleTitle')}</h1>
-        <button
-          type="button"
-          className="current-idle-primary"
-          disabled={busy}
-          onClick={onStart}
-        >
-          <AudioWaveform size={19} aria-hidden="true" />
-          {busy ? t(capture.phase === 'stopping' ? 'common.stopping' : 'common.starting') : t('capture.start')}
-        </button>
-        <div className="current-idle-quick-controls">
-          <button type="button" onClick={onOpenAudioSettings} aria-label={t('capture.nextMeetingAudio')}>
-            <SlidersHorizontal size={14} aria-hidden="true" />
-            {audioLabel}
-          </button>
+        <div className="current-idle-actions">
+          <PlatformActionButton
+            nativeId="capture-toggle"
+            className="current-idle-primary"
+            label={busy ? t(capture.phase === 'stopping' ? 'common.stopping' : 'common.starting') : t('capture.start')}
+            symbol="waveform"
+            variant="prominent"
+            disabled={busy}
+            onPress={onStart}
+          >
+            <AudioWaveform size={19} aria-hidden="true" />
+            {busy ? t(capture.phase === 'stopping' ? 'common.stopping' : 'common.starting') : t('capture.start')}
+          </PlatformActionButton>
+          <div className="current-idle-quick-controls">
+            <button type="button" onClick={onOpenAudioSettings} aria-label={t('capture.nextMeetingAudio')}>
+              <SlidersHorizontal size={14} aria-hidden="true" />
+              {audioLabel}
+            </button>
+          </div>
         </div>
         <p className="current-idle-local-receipt">
           <LockKeyhole size={12} aria-hidden="true" />
@@ -68,7 +74,13 @@ export function CurrentIdleState({
       </div>
 
       <div className="current-idle-overview">
-        <section className="current-idle-stats" aria-labelledby="current-idle-stats-heading">
+        <PlatformGlassSurface
+          nativeId="current-stats"
+          className="current-idle-stats"
+          cornerRadius={18}
+          tone="neutral"
+          ariaLabel={t('capture.statsHeading')}
+        >
           <h2 id="current-idle-stats-heading">{t('capture.statsHeading')}</h2>
           <dl>
             <div className="current-idle-stat">
@@ -84,9 +96,15 @@ export function CurrentIdleState({
               <dd>{formatNumber(stats.transcriptLineCount)}</dd>
             </div>
           </dl>
-        </section>
+        </PlatformGlassSurface>
 
-        <section className="current-idle-shortcuts" aria-labelledby="current-idle-shortcuts-heading">
+        <PlatformGlassSurface
+          nativeId="current-shortcuts"
+          className="current-idle-shortcuts"
+          cornerRadius={18}
+          tone="elevated"
+          ariaLabel={t('capture.shortcutsHeading')}
+        >
           <h2 id="current-idle-shortcuts-heading">{t('capture.shortcutsHeading')}</h2>
           <dl>
             <div>
@@ -100,7 +118,7 @@ export function CurrentIdleState({
               <dd className="current-idle-keycaps" aria-label="⌘ K"><kbd>⌘</kbd><kbd>K</kbd></dd>
             </div>
           </dl>
-        </section>
+        </PlatformGlassSurface>
       </div>
     </section>
   )

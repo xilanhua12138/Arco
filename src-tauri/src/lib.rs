@@ -15,6 +15,12 @@ pub mod meeting_output;
 pub mod meeting_state;
 pub mod meetings;
 pub mod models;
+mod native_action;
+mod native_glass;
+mod native_notes_toolbar;
+mod native_search;
+mod native_shell;
+mod native_surface;
 pub mod notes;
 mod overlay;
 pub mod paths;
@@ -86,6 +92,11 @@ use models::{
     MeetingSummary, NoteDocument, PersistedAgentTurn, ProviderConnectionTest, RuntimeStatus,
     SavedNote, TranscriptionConfig, TranscriptionModelStatus,
 };
+use native_action::NativeActionButtonState;
+use native_notes_toolbar::NativeNotesToolbarState;
+use native_search::NativeSearchFieldState;
+use native_shell::NativeShellState;
+use native_surface::NativeGlassSurfaceState;
 use notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage, NotesStorageSettings};
 use paths::AppPaths;
 use std::path::PathBuf;
@@ -831,6 +842,46 @@ fn generate_meeting_output(
     Ok(artifact)
 }
 
+#[tauri::command]
+fn sync_native_search_field(
+    window: tauri::WebviewWindow,
+    state: NativeSearchFieldState,
+) -> Result<bool, String> {
+    native_search::sync_native_search_field(&window, state)
+}
+
+#[tauri::command]
+fn sync_native_action_button(
+    window: tauri::WebviewWindow,
+    state: NativeActionButtonState,
+) -> Result<bool, String> {
+    native_action::sync_native_action_button(&window, state)
+}
+
+#[tauri::command]
+fn sync_native_glass_surface(
+    window: tauri::WebviewWindow,
+    state: NativeGlassSurfaceState,
+) -> Result<bool, String> {
+    native_surface::sync_native_glass_surface(&window, state)
+}
+
+#[tauri::command]
+fn sync_native_notes_toolbar(
+    window: tauri::WebviewWindow,
+    state: NativeNotesToolbarState,
+) -> Result<bool, String> {
+    native_notes_toolbar::sync_native_notes_toolbar(&window, state)
+}
+
+#[tauri::command]
+fn sync_native_shell(
+    window: tauri::WebviewWindow,
+    state: NativeShellState,
+) -> Result<bool, String> {
+    native_shell::sync_native_shell(&window, state)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -854,14 +905,13 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
-                material::apply_native_material(&window);
                 if let Err(error) = dock_icon::apply_to_window(&window) {
                     log::warn!(
                         "Arco could not install its transparent minimized-window icon: {error}"
                     );
                 }
             } else {
-                log::warn!("Arco could not find its main window; native material was not applied");
+                log::warn!("Arco could not find its main window; native shell was not prepared");
             }
             let resource_dir = app.path().resource_dir().ok();
             let paths = AppPaths::discover(resource_dir.as_deref())
@@ -909,6 +959,11 @@ pub fn run() {
             hide_agent_overlay,
             set_agent_transcript_visible,
             focus_main_window,
+            sync_native_search_field,
+            sync_native_action_button,
+            sync_native_glass_surface,
+            sync_native_notes_toolbar,
+            sync_native_shell,
             run_agent,
             generate_meeting_output
         ])

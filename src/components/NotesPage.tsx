@@ -1,25 +1,24 @@
 import {
   ArrowUpRight,
   Bold,
-  Code2,
   Eye,
   FileText,
-  Heading2,
   Italic,
-  List,
   ListChecks,
-  ListOrdered,
+  PanelLeft,
   PencilLine,
   Plus,
-  Quote,
-  Save,
-  Search,
+  Strikethrough,
+  Table2,
   Trash2,
 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { useI18n } from '../i18n/i18n'
 import type { MeetingSummary, NoteDocument, SaveNoteInput } from '../types'
 import { MarkdownContent } from './MarkdownContent'
+import { PlatformActionButton } from './PlatformActionButton'
+import { PlatformNotesToolbar, type NotesToolbarAction } from './PlatformNotesToolbar'
+import { PlatformSearchField } from './PlatformSearchField'
 
 interface NotesPageProps {
   notes: NoteDocument[]
@@ -42,6 +41,22 @@ interface NoteDraft {
   updatedAt: string | null
 }
 
+interface NoteContextMenu {
+  note: NoteDocument
+  x: number
+  y: number
+}
+
+const hasTauriRuntime = () => '__TAURI_INTERNALS__' in window
+const BLOCK_PREFIX = /^(?:#{1,6}\s+|>\s+|(?:[-+*]\s+(?:\[[ xX]\]\s+)?)|\d+\.\s+)/
+
+const sameDraftContent = (left: NoteDraft, right: NoteDraft) => (
+  left.id === right.id
+  && left.title === right.title
+  && left.body === right.body
+  && left.meetingId === right.meetingId
+)
+
 const draftFrom = (note: NoteDocument): NoteDraft => ({
   id: note.id,
   title: note.title,
@@ -62,6 +77,19 @@ const emptyDraft = (meetingId: string | null): NoteDraft => ({
   updatedAt: null,
 })
 
+const plainTextPreview = (body: string, fallback: string) => {
+  const firstLine = body.split('\n').map((line) => line.trim()).find(Boolean)
+  if (!firstLine) return fallback
+
+  return firstLine
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^(?:[-+*>]|\d+\.)\s+/, '')
+    .replace(/\[([^\]]+)]\([^)]+\)/g, '$1')
+    .replace(/[*_`~#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim() || fallback
+}
+
 export function NotesPage({
   notes,
   meetings,
@@ -78,23 +106,49 @@ export function NotesPage({
   const [saving, setSaving] = useState(false)
   const [savedReceipt, setSavedReceipt] = useState(false)
   const [editorMode, setEditorMode] = useState<'write' | 'preview'>('write')
+  const [formatOpen, setFormatOpen] = useState(false)
+  const [indexOpen, setIndexOpen] = useState(true)
+  const [contextMenu, setContextMenu] = useState<NoteContextMenu | null>(null)
   const bodyInputRef = useRef<HTMLTextAreaElement>(null)
+  const latestDraftRef = useRef<NoteDraft | null>(null)
+  const saveInFlightRef = useRef(false)
   const visibleDraft = draft ?? (notes[0] ? draftFrom(notes[0]) : null)
+
+  useLayoutEffect(() => {
+    latestDraftRef.current = visibleDraft
+  }, [visibleDraft])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [contextMenu])
 
   const noteTime = (value: string | null) => {
     if (!value) return ''
     const date = new Date(value)
     return Number.isNaN(date.getTime())
       ? t('common.unknownTime')
-      : formatDate(date, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : formatDate(date, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
   const updateDraft = (patch: Partial<NoteDraft>) => {
-    setDraft({ ...(visibleDraft ?? emptyDraft(meetings[0]?.id ?? null)), ...patch })
+    const next = { ...(visibleDraft ?? emptyDraft(meetings[0]?.id ?? null)), ...patch }
+    latestDraftRef.current = next
+    setDraft(next)
     setDirty(true)
     setSavedReceipt(false)
   }
   const replaceDraft = (next: NoteDraft) => {
     if (dirty && !window.confirm(t('notes.discardConfirm'))) return
+    latestDraftRef.current = next
     setDraft(next)
     setDirty(false)
     setSavedReceipt(false)
@@ -119,6 +173,15 @@ export function NotesPage({
     })
     restoreSelection(start + before.length, start + before.length + content.length)
   }
+  const insertAtSelection = (content: string) => {
+    const input = bodyInputRef.current
+    if (!input || editorMode !== 'write') return
+    const body = visibleDraft?.body ?? ''
+    const start = input.selectionStart
+    const end = input.selectionEnd
+    updateDraft({ body: `${body.slice(0, start)}${content}${body.slice(end)}` })
+    restoreSelection(start + content.length, start + content.length)
+  }
   const applyLineFormat = (prefix: string) => {
     const input = bodyInputRef.current
     if (!input || editorMode !== 'write') return
@@ -131,55 +194,204 @@ export function NotesPage({
     const selectedLines = body.slice(lineStart, lineEnd)
     const replacement = selectedLines
       .split('\n')
-      .map((line) => `${prefix}${line}`)
+      .map((line) => `${prefix}${line.replace(BLOCK_PREFIX, '')}`)
       .join('\n')
     updateDraft({ body: `${body.slice(0, lineStart)}${replacement}${body.slice(lineEnd)}` })
     restoreSelection(lineStart + prefix.length, lineStart + replacement.length)
   }
-  const saveDraft = async () => {
-    if (!visibleDraft?.title.trim() || !visibleDraft.meetingId || saving) return
+  const insertTable = () => {
+    insertAtSelection('| Column 1 | Column 2 |\n| --- | --- |\n|  |  |')
+  }
+  const persistDraft = useCallback(async (snapshot: NoteDraft) => {
+    if (!snapshot.title.trim() || !snapshot.meetingId || saveInFlightRef.current) return
+    saveInFlightRef.current = true
     setSaving(true)
     const saved = await onSaveNote({
-      id: visibleDraft.id,
-      meetingId: visibleDraft.meetingId,
-      title: visibleDraft.title.trim(),
-      body: visibleDraft.body,
+      id: snapshot.id,
+      meetingId: snapshot.meetingId,
+      title: snapshot.title.trim(),
+      body: snapshot.body,
     })
+    saveInFlightRef.current = false
     setSaving(false)
     if (!saved) return
-    setDraft(draftFrom(saved))
-    setDirty(false)
-    setSavedReceipt(true)
+    const latest = latestDraftRef.current
+    if (latest && sameDraftContent(latest, snapshot)) {
+      const savedDraft = draftFrom(saved)
+      latestDraftRef.current = savedDraft
+      setDraft(savedDraft)
+      setDirty(false)
+      setSavedReceipt(true)
+      return
+    }
+    if (latest && snapshot.id === null && latest.id === null) {
+      const identifiedDraft = { ...latest, id: saved.id, updatedAt: saved.updatedAt }
+      latestDraftRef.current = identifiedDraft
+      setDraft(identifiedDraft)
+    }
+  }, [onSaveNote])
+
+  useEffect(() => {
+    if (!dirty || !visibleDraft?.title.trim() || !visibleDraft.meetingId || saveInFlightRef.current) return
+    const snapshot = visibleDraft
+    const timeout = window.setTimeout(() => void persistDraft(snapshot), 650)
+    return () => window.clearTimeout(timeout)
+  }, [dirty, persistDraft, visibleDraft])
+
+  const deleteNoteDocument = useCallback(async (note: NoteDocument) => {
+    if (!window.confirm(t('notes.deleteConfirm'))) return
+    if (!await onDeleteNote(note.id)) return
+    if (latestDraftRef.current?.id === note.id) {
+      const nextNote = notes.find((candidate) => candidate.id !== note.id)
+      const nextDraft = nextNote ? draftFrom(nextNote) : null
+      latestDraftRef.current = nextDraft
+      setDraft(nextDraft)
+      setDirty(false)
+      setSavedReceipt(false)
+    }
+  }, [notes, onDeleteNote, t])
+
+  const openNoteContextMenu = async (event: MouseEvent<HTMLButtonElement>, note: NoteDocument) => {
+    event.preventDefault()
+    if (!hasTauriRuntime()) {
+      setContextMenu({ note, x: event.clientX, y: event.clientY })
+      return
+    }
+    try {
+      const [{ Menu }, { LogicalPosition }] = await Promise.all([
+        import('@tauri-apps/api/menu'),
+        import('@tauri-apps/api/dpi'),
+      ])
+      const menu = await Menu.new({
+        items: [{
+          id: 'delete-note',
+          text: t('notes.delete'),
+          action: () => void deleteNoteDocument(note),
+        }],
+      })
+      await menu.popup(new LogicalPosition(event.clientX, event.clientY))
+      await menu.close()
+    } catch (error) {
+      console.warn('Arco could not open the native note context menu.', error)
+      setContextMenu({ note, x: event.clientX, y: event.clientY })
+    }
   }
+
+  const handleNativeToolbarAction = (action: NotesToolbarAction) => {
+    switch (action) {
+      case 'title': applyLineFormat('# '); break
+      case 'heading': applyLineFormat('## '); break
+      case 'subheading': applyLineFormat('### '); break
+      case 'body': applyLineFormat(''); break
+      case 'monostyled': applyInlineFormat('`', '`', t('notes.formatCodeText')); break
+      case 'bold': applyInlineFormat('**', '**', t('notes.formatText')); break
+      case 'italic': applyInlineFormat('_', '_', t('notes.formatText')); break
+      case 'strikethrough': applyInlineFormat('~~', '~~', t('notes.formatText')); break
+      case 'bullet': applyLineFormat('* '); break
+      case 'dash': applyLineFormat('- '); break
+      case 'numbered': applyLineFormat('1. '); break
+      case 'checklist': applyLineFormat('- [ ] '); break
+      case 'quote': applyLineFormat('> '); break
+      case 'table': insertTable(); break
+      case 'code': applyInlineFormat('`', '`', t('notes.formatCodeText')); break
+      case 'write': setEditorMode('write'); break
+      case 'preview': setEditorMode('preview'); break
+    }
+  }
+
+  const toolbarLabels = {
+    format: t('notes.formatToolbar'),
+    title: t('notes.formatTitle'),
+    heading: t('notes.formatHeading'),
+    subheading: t('notes.formatSubheading'),
+    body: t('notes.formatBody'),
+    monostyled: t('notes.formatMonostyled'),
+    bold: t('notes.formatBold'),
+    italic: t('notes.formatItalic'),
+    strikethrough: t('notes.formatStrikethrough'),
+    bullet: t('notes.formatBulletList'),
+    dash: t('notes.formatDashList'),
+    numbered: t('notes.formatNumberedList'),
+    checklist: t('notes.formatChecklist'),
+    quote: t('notes.formatQuote'),
+    table: t('notes.formatTable'),
+    code: t('notes.formatCode'),
+    write: t('notes.write'),
+    preview: t('notes.preview'),
+  }
+
+  const formatToolbar = visibleDraft ? (
+    <PlatformNotesToolbar
+      labels={toolbarLabels}
+      mode={editorMode}
+      onAction={handleNativeToolbarAction}
+    >
+      <div className="note-format-toolbar" role="toolbar" aria-label={t('notes.formatToolbar')}>
+        <div className="note-format-actions">
+          <button
+            type="button"
+            className="note-format-trigger"
+            aria-expanded={formatOpen}
+            disabled={editorMode === 'preview'}
+            onClick={() => setFormatOpen((open) => !open)}
+          >
+            {t('notes.formatToolbar')}
+          </button>
+          <button type="button" aria-label={t('notes.formatChecklist')} title={t('notes.formatChecklist')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('- [ ] ')}><ListChecks size={17} /></button>
+          <button type="button" aria-label={t('notes.formatTable')} title={t('notes.formatTable')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={insertTable}><Table2 size={17} /></button>
+        </div>
+        {formatOpen && (
+          <div className="note-format-popover" role="menu" aria-label={t('notes.formatToolbar')}>
+            <div className="note-format-inline-row">
+              {[
+                [toolbarLabels.bold, <Bold size={19} />, 'bold'],
+                [toolbarLabels.italic, <Italic size={19} />, 'italic'],
+                [toolbarLabels.strikethrough, <Strikethrough size={19} />, 'strikethrough'],
+              ].map(([label, icon, action]) => (
+                <button key={action as string} type="button" role="menuitem" aria-label={label as string} onMouseDown={(event) => event.preventDefault()} onClick={() => { handleNativeToolbarAction(action as NotesToolbarAction); setFormatOpen(false) }}>{icon}</button>
+              ))}
+            </div>
+            <span className="note-format-menu-divider" aria-hidden="true" />
+            {[
+              ['title', toolbarLabels.title], ['heading', toolbarLabels.heading], ['subheading', toolbarLabels.subheading],
+              ['body', toolbarLabels.body], ['monostyled', toolbarLabels.monostyled], ['bullet', toolbarLabels.bullet],
+              ['dash', toolbarLabels.dash], ['numbered', toolbarLabels.numbered], ['quote', toolbarLabels.quote],
+            ].map(([action, label]) => (
+              <button key={action} type="button" role="menuitem" className={`note-format-menu-${action}`} onMouseDown={(event) => event.preventDefault()} onClick={() => { handleNativeToolbarAction(action as NotesToolbarAction); setFormatOpen(false) }}>
+                {action === 'body' && <span aria-hidden="true">✓</span>}{label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </PlatformNotesToolbar>
+  ) : <span className="note-format-toolbar-placeholder" aria-hidden="true" />
+
+  const indexToggle = (
+    <PlatformActionButton
+      nativeId="notes-list-toggle"
+      className="notes-index-toggle"
+      label={indexOpen ? t('notes.hideList') : t('notes.showList')}
+      symbol="sidebar.left"
+      variant="toolbar"
+      onPress={() => setIndexOpen((open) => !open)}
+    >
+      <PanelLeft size={16} aria-hidden="true" />
+    </PlatformActionButton>
+  )
 
   return (
     <main className="history-page notes-page" aria-labelledby="notes-heading">
-      <header className="page-header history-page-header notes-page-header">
-        <div className="page-title-block"><h1 id="notes-heading">{t('notes.heading')}</h1></div>
-        <div className="notes-header-actions">
-          <label className="history-search notes-search">
-            <Search size={17} aria-hidden="true" />
-            <span className="sr-only">{t('notes.search')}</span>
-            <input
-              aria-label={t('notes.search')}
-              value={query}
-              onChange={(event) => onQueryChange(event.target.value)}
-              placeholder={t('notes.searchPlaceholder')}
-            />
-          </label>
-          <button
-            type="button"
-            className="notes-new-button"
-            onClick={() => replaceDraft(emptyDraft(meetings[0]?.id ?? null))}
-            disabled={meetings.length === 0}
-          >
-            <Plus size={15} aria-hidden="true" /> {t('notes.new')}
-          </button>
-        </div>
-      </header>
-
-      <section className="notes-workspace" aria-label={t('notes.workspace')}>
-        <aside className="notes-index" aria-label={t('notes.results')} aria-busy={loading}>
+      <h1 id="notes-heading" className="sr-only">{t('notes.heading')}</h1>
+      <section className={indexOpen ? 'notes-workspace' : 'notes-workspace notes-workspace-index-collapsed'} aria-label={t('notes.workspace')}>
+        {indexToggle}
+        {indexOpen && <aside className="notes-index" aria-label={t('notes.results')} aria-busy={loading}>
+          <header className="notes-index-header">
+            <div>
+              <h2>{t('notes.heading')}</h2>
+              <small>{t('notes.count', { count: notes.length })}</small>
+            </div>
+          </header>
           {loading && notes.length === 0 ? (
             <div className="notes-loading" role="status" aria-label={t('notes.loading')}>
               {[0, 1, 2].map((item) => <span key={item} />)}
@@ -199,17 +411,46 @@ export function NotesPage({
                   key={note.id}
                   aria-current={visibleDraft?.id === note.id ? 'page' : undefined}
                   onClick={() => replaceDraft(draftFrom(note))}
+                  onContextMenu={(event) => void openNoteContextMenu(event, note)}
                 >
                   <strong>{note.title}</strong>
-                  <span>{note.body.trim().split('\n').find(Boolean) || t('notes.emptyBody')}</span>
+                  <span>{plainTextPreview(note.body, t('notes.emptyBody'))}</span>
                   <small>{note.meetingTitle || t('common.untitledMeeting')} · {note.source === 'agent' ? t('notes.agentNote') : noteTime(note.updatedAt)}</small>
                 </button>
               ))}
             </div>
           )}
-        </aside>
+        </aside>}
 
         <section className="note-editor" aria-label={t('notes.editor')}>
+          <header className="notes-editor-command-bar" role="group" aria-label={t('notes.controls')}>
+            <div className="notes-editor-leading">
+              <PlatformActionButton
+                nativeId="notes-new"
+                className="notes-new-button"
+                label={t('notes.new')}
+                symbol="square.and.pencil"
+                variant="toolbar"
+                layoutVersion={indexOpen ? 'index-open' : 'index-closed'}
+                onPress={() => replaceDraft(emptyDraft(meetings[0]?.id ?? null))}
+                disabled={meetings.length === 0}
+              >
+                <PencilLine size={16} aria-hidden="true" />
+                <span className="sr-only">{t('notes.new')}</span>
+              </PlatformActionButton>
+            </div>
+
+            {formatToolbar}
+
+            <PlatformSearchField
+              className="notes-search"
+              label={t('notes.search')}
+              value={query}
+              onChange={onQueryChange}
+              placeholder={t('notes.searchPlaceholder')}
+            />
+          </header>
+
           {!visibleDraft ? (
             <div className="note-editor-empty">
               <FileText size={22} aria-hidden="true" />
@@ -229,84 +470,35 @@ export function NotesPage({
               className="note-editor-form"
               onSubmit={(event) => {
                 event.preventDefault()
-                void saveDraft()
+                if (visibleDraft) void persistDraft(visibleDraft)
               }}
               onKeyDown={(event) => {
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
                   event.preventDefault()
-                  void saveDraft()
+                  void persistDraft(visibleDraft)
                 }
               }}
             >
-              <header className="note-editor-toolbar">
-                <div className="note-editor-receipt">
-                  {visibleDraft.source === 'agent' ? t('notes.agentNote') : t('notes.markdownFile')}
-                  {visibleDraft.updatedAt && <span>· {noteTime(visibleDraft.updatedAt)}</span>}
-                  {dirty && <span>· {t('notes.unsaved')}</span>}
-                  {savedReceipt && <strong>{t('common.saved')}</strong>}
+              <header className="note-editor-toolbar" role="group" aria-label={t('notes.documentControls')}>
+                <div className="note-editor-modes">
+                  <button type="button" className={editorMode === 'write' ? 'note-editor-mode-active' : ''} aria-pressed={editorMode === 'write'} onClick={() => setEditorMode('write')}><PencilLine size={13} /> {t('notes.write')}</button>
+                  <button type="button" className={editorMode === 'preview' ? 'note-editor-mode-active' : ''} aria-pressed={editorMode === 'preview'} onClick={() => setEditorMode('preview')}><Eye size={13} /> {t('notes.preview')}</button>
                 </div>
-                <div>
-                  {visibleDraft.meetingId && (
-                    <button
-                      type="button"
-                      className="note-editor-secondary"
-                      onClick={() => {
-                        if (!dirty || window.confirm(t('notes.discardConfirm'))) {
-                          onOpenMeeting(visibleDraft.meetingId!)
-                        }
-                      }}
-                    >
-                      {visibleDraft.meetingTitle || t('common.untitledMeeting')} <ArrowUpRight size={13} />
-                    </button>
-                  )}
-                  {visibleDraft.id && (
-                    <button
-                      type="button"
-                      className="note-editor-danger"
-                      aria-label={t('notes.delete')}
-                      onClick={async () => {
-                        if (!window.confirm(t('notes.deleteConfirm'))) return
-                        if (await onDeleteNote(visibleDraft.id!)) {
-                          setDraft(null)
-                          setDirty(false)
-                        }
-                      }}
-                    >
-                      <Trash2 size={14} aria-hidden="true" />
-                    </button>
-                  )}
-                  <button
-                    type="submit"
-                    className="note-editor-save"
-                    disabled={!visibleDraft.title.trim() || !visibleDraft.meetingId || saving || (!dirty && Boolean(visibleDraft.id))}
-                  >
-                    <Save size={14} aria-hidden="true" />
-                    {saving ? t('common.saving') : t('notes.save')}
-                  </button>
+                <div className="note-editor-receipt">
+                  <span className="note-editor-document-kind">
+                    {visibleDraft.source === 'agent' ? t('notes.agentNote') : t('notes.markdownFile')}
+                  </span>
+                  {visibleDraft.updatedAt && <time dateTime={visibleDraft.updatedAt}>{noteTime(visibleDraft.updatedAt)}</time>}
+                  {dirty && <span>{t('notes.unsaved')}</span>}
+                  {saving && <span>{t('common.saving')}</span>}
+                  {savedReceipt && <strong>{t('common.saved')}</strong>}
                 </div>
               </header>
 
               <div className="note-document-editor">
-                <div className="note-format-toolbar" role="toolbar" aria-label={t('notes.formatToolbar')}>
-                  <div className="note-format-actions">
-                    <button type="button" aria-label={t('notes.formatHeading')} title={t('notes.formatHeading')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('## ')}><Heading2 size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatBold')} title={t('notes.formatBold')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyInlineFormat('**', '**', t('notes.formatText'))}><Bold size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatItalic')} title={t('notes.formatItalic')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyInlineFormat('_', '_', t('notes.formatText'))}><Italic size={15} /></button>
-                    <span className="note-format-divider" aria-hidden="true" />
-                    <button type="button" aria-label={t('notes.formatBulletList')} title={t('notes.formatBulletList')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('- ')}><List size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatNumberedList')} title={t('notes.formatNumberedList')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('1. ')}><ListOrdered size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatChecklist')} title={t('notes.formatChecklist')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('- [ ] ')}><ListChecks size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatQuote')} title={t('notes.formatQuote')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyLineFormat('> ')}><Quote size={15} /></button>
-                    <button type="button" aria-label={t('notes.formatCode')} title={t('notes.formatCode')} disabled={editorMode === 'preview'} onMouseDown={(event) => event.preventDefault()} onClick={() => applyInlineFormat('`', '`', t('notes.formatCodeText'))}><Code2 size={15} /></button>
-                  </div>
-                  <div className="note-editor-modes">
-                    <button type="button" className={editorMode === 'write' ? 'note-editor-mode-active' : ''} aria-pressed={editorMode === 'write'} onClick={() => setEditorMode('write')}><PencilLine size={13} /> {t('notes.write')}</button>
-                    <button type="button" className={editorMode === 'preview' ? 'note-editor-mode-active' : ''} aria-pressed={editorMode === 'preview'} onClick={() => setEditorMode('preview')}><Eye size={13} /> {t('notes.preview')}</button>
-                  </div>
-                </div>
                 <div className="note-editor-content">
                   <div className="note-document-canvas">
-                    <div className="note-editor-document-meta">
+                    <div className="note-editor-document-meta" role="group" aria-label={t('notes.metadata')}>
                       <label className="sr-only" htmlFor="note-title">{t('notes.title')}</label>
                       <input
                         id="note-title"
@@ -318,25 +510,49 @@ export function NotesPage({
                         maxLength={120}
                         autoFocus={!visibleDraft.id}
                       />
-                      <label className="note-meeting-field">
-                        <span>{t('notes.meetingLabel')}</span>
-                        <select
-                          aria-label={t('notes.meeting')}
-                          value={visibleDraft.meetingId ?? ''}
-                          disabled={visibleDraft.source === 'agent'}
-                          onChange={(event) => updateDraft({
-                            meetingId: event.target.value || null,
-                            meetingTitle: meetings.find((meeting) => meeting.id === event.target.value)?.title ?? null,
-                          })}
-                        >
-                          <option value="" disabled>{t('notes.chooseMeeting')}</option>
-                          {meetings.map((meeting) => (
-                            <option value={meeting.id} key={meeting.id}>
-                              {meeting.title?.trim() || t('common.untitledMeeting')}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="note-meeting-row">
+                        <div className="note-meeting-field">
+                          <label htmlFor="note-meeting-select">{t('notes.meetingLabel')}</label>
+                          <div className="note-meeting-control">
+                          <select
+                            id="note-meeting-select"
+                            aria-label={t('notes.meeting')}
+                            value={visibleDraft.meetingId ?? ''}
+                            disabled={visibleDraft.source === 'agent'}
+                            onChange={(event) => updateDraft({
+                              meetingId: event.target.value || null,
+                              meetingTitle: meetings.find((meeting) => meeting.id === event.target.value)?.title ?? null,
+                            })}
+                          >
+                            <option value="" disabled>{t('notes.chooseMeeting')}</option>
+                            {meetings.map((meeting) => (
+                              <option value={meeting.id} key={meeting.id}>
+                                {meeting.title?.trim() || t('common.untitledMeeting')}
+                              </option>
+                            ))}
+                          </select>
+                            {visibleDraft.meetingId && (
+                              <button
+                                type="button"
+                                className="note-editor-secondary"
+                                aria-label={t('notes.openMeeting', {
+                                  title: visibleDraft.meetingTitle || t('common.untitledMeeting'),
+                                })}
+                                title={t('notes.openMeeting', {
+                                  title: visibleDraft.meetingTitle || t('common.untitledMeeting'),
+                                })}
+                                onClick={() => {
+                                  if (!dirty || window.confirm(t('notes.discardConfirm'))) {
+                                    onOpenMeeting(visibleDraft.meetingId!)
+                                  }
+                                }}
+                              >
+                                <ArrowUpRight size={13} aria-hidden="true" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                     {editorMode === 'write' ? (
                       <>
@@ -364,6 +580,27 @@ export function NotesPage({
           )}
         </section>
       </section>
+      {contextMenu && (
+        <div
+          className="note-context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const note = contextMenu.note
+              setContextMenu(null)
+              void deleteNoteDocument(note)
+            }}
+          >
+            <Trash2 size={14} aria-hidden="true" />
+            {t('notes.delete')}
+          </button>
+        </div>
+      )}
     </main>
   )
 }

@@ -1,7 +1,8 @@
-import { AudioLines, ChevronRight, Search } from 'lucide-react'
+import { AudioLines, ChevronRight } from 'lucide-react'
 import { groupMeetings } from '../lib/meetingGroups'
 import type { MeetingSummary } from '../types'
 import { formatDurationLabel, useI18n } from '../i18n/i18n'
+import { PlatformSearchField } from './PlatformSearchField'
 
 interface HistoryPageProps {
   meetings: MeetingSummary[]
@@ -38,17 +39,12 @@ export function HistoryPage({
           <h1 id="history-heading">{t('history.heading')}</h1>
         </div>
 
-        <label className="history-search">
-          <Search size={17} aria-hidden="true" />
-          <span className="sr-only">{t('history.search')}</span>
-          <input
-            aria-label={t('history.search')}
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={t('history.searchPlaceholder')}
-          />
-          <kbd>⌘K</kbd>
-        </label>
+        <PlatformSearchField
+          label={t('history.search')}
+          value={query}
+          onChange={onQueryChange}
+          placeholder={t('history.searchPlaceholder')}
+        />
       </header>
 
       <div className="history-results" aria-live="polite" aria-label={t('history.results')}>
