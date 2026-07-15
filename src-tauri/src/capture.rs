@@ -24,6 +24,7 @@ fn pipeline_layout(transcription: &TranscriptionConfig) -> Vec<&'static str> {
         transcription.diarization.provider.as_str(),
     ) {
         ("deepgram", "deepgram") => vec!["deepgram-combined"],
+        ("doubao", "doubao") => vec!["doubao-combined"],
         ("local", "local") => vec!["local-combined"],
         ("deepgram", "local") => vec!["deepgram-asr", "local-diarization"],
         ("deepgram", "none") => vec!["deepgram-asr"],
@@ -32,6 +33,12 @@ fn pipeline_layout(transcription: &TranscriptionConfig) -> Vec<&'static str> {
             vec!["elevenlabs-asr", "deepgram-diarization"]
         }
         ("elevenlabs", "none") => vec!["elevenlabs-asr"],
+        ("doubao", "local") => vec!["doubao-asr", "local-diarization"],
+        ("doubao", "deepgram") => vec!["doubao-asr", "deepgram-diarization"],
+        ("doubao", "none") => vec!["doubao-asr"],
+        ("deepgram", "doubao") => vec!["deepgram-asr", "doubao-diarization"],
+        ("elevenlabs", "doubao") => vec!["elevenlabs-asr", "doubao-diarization"],
+        ("local", "doubao") => vec!["local-asr", "doubao-diarization"],
         ("local", "deepgram") => vec!["local-asr", "deepgram-diarization"],
         ("local", "none") => vec!["local-asr"],
         _ => Vec::new(),
@@ -71,6 +78,7 @@ pub struct TranscriberDefinition {
     pub command: CommandSpec,
     pub requires_deepgram_key: bool,
     pub requires_elevenlabs_key: bool,
+    pub requires_doubao_credentials: bool,
     pub ready_timeout: Duration,
 }
 
@@ -78,6 +86,7 @@ pub struct TranscriberDefinition {
 pub struct CaptureSecrets {
     pub deepgram: Option<String>,
     pub elevenlabs: Option<String>,
+    pub doubao: Option<crate::doubao_credentials::DoubaoCredentials>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +107,7 @@ struct ResolvedTranscriber {
 pub struct TranscriberCatalog {
     pub deepgram: TranscriberDefinition,
     pub elevenlabs: TranscriberDefinition,
+    pub doubao: TranscriberDefinition,
     pub local: Option<TranscriberDefinition>,
 }
 
@@ -139,6 +149,9 @@ impl CaptureConfig {
         let elevenlabs_command = std::env::var_os("ARCO_ELEVENLABS_TRANSCRIBER_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| discover_elevenlabs_transcriber(paths));
+        let doubao_command = std::env::var_os("ARCO_DOUBAO_TRANSCRIBER_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| discover_doubao_transcriber(paths));
         let environment = load_capture_environment(paths);
         Self {
             transcript_dir: paths.transcripts.clone(),
@@ -149,18 +162,28 @@ impl CaptureConfig {
                     command: deepgram_command,
                     requires_deepgram_key,
                     requires_elevenlabs_key: false,
+                    requires_doubao_credentials: false,
                     ready_timeout: Duration::from_secs(20),
                 },
                 elevenlabs: TranscriberDefinition {
                     command: CommandSpec::new(elevenlabs_command, Vec::new()),
                     requires_deepgram_key: false,
                     requires_elevenlabs_key: true,
+                    requires_doubao_credentials: false,
+                    ready_timeout: Duration::from_secs(20),
+                },
+                doubao: TranscriberDefinition {
+                    command: CommandSpec::new(doubao_command, Vec::new()),
+                    requires_deepgram_key: false,
+                    requires_elevenlabs_key: false,
+                    requires_doubao_credentials: true,
                     ready_timeout: Duration::from_secs(20),
                 },
                 local: local_binary.map(|program| TranscriberDefinition {
                     command: CommandSpec::new(program, Vec::new()),
                     requires_deepgram_key: false,
                     requires_elevenlabs_key: false,
+                    requires_doubao_credentials: false,
                     // The ASR model is fast once loaded, but a first Core ML
                     // compilation for Streaming Sortformer can take minutes.
                     ready_timeout: Duration::from_secs(300),
@@ -216,6 +239,19 @@ pub fn discover_elevenlabs_transcriber(paths: &AppPaths) -> PathBuf {
     .into_iter()
     .find(|path| is_executable(path))
     .unwrap_or_else(|| paths.native_dir.join("arco-elevenlabs-transcriber"))
+}
+
+pub fn discover_doubao_transcriber(paths: &AppPaths) -> PathBuf {
+    [
+        paths.native_dir.join("arco-doubao-transcriber"),
+        paths
+            .native_dir
+            .join("runtime")
+            .join("arco-doubao-transcriber"),
+    ]
+    .into_iter()
+    .find(|path| is_executable(path))
+    .unwrap_or_else(|| paths.native_dir.join("arco-doubao-transcriber"))
 }
 
 pub fn discover_local_transcriber(paths: &AppPaths) -> Option<PathBuf> {
@@ -728,6 +764,28 @@ impl CaptureManager {
                         environment,
                     }
                 }
+                "doubao-combined" | "doubao-asr" | "doubao-diarization" => {
+                    let mut environment = HashMap::from([
+                        (
+                            "ARCO_TRANSCRIBER_ROLE".into(),
+                            match label {
+                                "doubao-combined" => "combined",
+                                "doubao-diarization" => "diarization",
+                                _ => "asr",
+                            }
+                            .into(),
+                        ),
+                        ("DOUBAO_LANG".into(), transcription.asr.language.clone()),
+                    ]);
+                    if label != "doubao-combined" && transcription.diarization.provider != "none" {
+                        environment.extend(timeline_environment()?);
+                    }
+                    ResolvedTranscriber {
+                        label,
+                        definition: self.config.transcribers.doubao.clone(),
+                        environment,
+                    }
+                }
                 "local-combined" | "local-asr" => {
                     let mut definition = local()?;
                     definition.command.args.extend([
@@ -746,7 +804,9 @@ impl CaptureManager {
                     ResolvedTranscriber {
                         label,
                         definition,
-                        environment: if transcription.diarization.provider == "deepgram" {
+                        environment: if label != "local-combined"
+                            && transcription.diarization.provider != "none"
+                        {
                             timeline_environment()?
                         } else {
                             HashMap::new()
@@ -802,6 +862,23 @@ impl CaptureManager {
         {
             return Err("ElevenLabs is not configured. Paste your API key in Arco Settings → Audio & speakers → Recognition.".into());
         }
+        if definition.requires_doubao_credentials {
+            let keychain_ready = secrets
+                .doubao
+                .as_ref()
+                .is_some_and(|credentials| !credentials.app_id.trim().is_empty());
+            let environment_ready =
+                credential_available(None, "DOUBAO_SPEECH_API_KEY", &self.config.environment)
+                    || (credential_available(None, "DOUBAO_APP_ID", &self.config.environment)
+                        && credential_available(
+                            None,
+                            "DOUBAO_ACCESS_TOKEN",
+                            &self.config.environment,
+                        ));
+            if !keychain_ready && !environment_ready {
+                return Err("Doubao is not configured. Paste your API Key, or legacy App ID and Access Token, in Arco Settings → Audio & speakers → Recognition.".into());
+            }
+        }
         Ok(())
     }
 }
@@ -843,6 +920,15 @@ fn apply_secret(
             .filter(|value| !value.is_empty())
         {
             command.env("ELEVENLABS_API_KEY", secret);
+        }
+    }
+    if definition.requires_doubao_credentials {
+        // DOUBAO_API_KEY is commonly an Ark/LLM credential. Never let it
+        // override a speech credential selected explicitly in Arco.
+        command.env_remove("DOUBAO_API_KEY");
+        if let Some(credentials) = secrets.doubao.as_ref() {
+            command.env("DOUBAO_APP_ID", credentials.app_id.trim());
+            command.env("DOUBAO_ACCESS_TOKEN", credentials.access_token.trim());
         }
     }
 }
@@ -1503,6 +1589,7 @@ mod tests {
                 model: match asr {
                     "deepgram" => "nova-3",
                     "elevenlabs" => "scribe-v2-realtime",
+                    "doubao" => "bigmodel",
                     _ => "whisper-small",
                 }
                 .into(),
@@ -1512,6 +1599,7 @@ mod tests {
                 provider: diarization.into(),
                 model: match diarization {
                     "deepgram" => Some("latest".into()),
+                    "doubao" => Some("bigmodel".into()),
                     "local" => Some("sortformer-streaming".into()),
                     _ => None,
                 },
@@ -1538,6 +1626,14 @@ mod tests {
             pipeline_layout(&config("elevenlabs", "none")),
             ["elevenlabs-asr"]
         );
+        assert_eq!(
+            pipeline_layout(&config("doubao", "doubao")),
+            ["doubao-combined"]
+        );
+        assert_eq!(
+            pipeline_layout(&config("local", "doubao")),
+            ["local-asr", "doubao-diarization"]
+        );
     }
 
     #[test]
@@ -1558,6 +1654,7 @@ mod tests {
             command: CommandSpec::new(PathBuf::from("/bin/echo"), Vec::new()),
             requires_deepgram_key,
             requires_elevenlabs_key,
+            requires_doubao_credentials: false,
             ready_timeout: Duration::from_secs(20),
         };
         let manager = CaptureManager::new(CaptureConfig {
@@ -1567,6 +1664,7 @@ mod tests {
             transcribers: TranscriberCatalog {
                 deepgram: definition(true, false),
                 elevenlabs: definition(false, true),
+                doubao: definition(false, false),
                 local: Some(definition(false, false)),
             },
             environment: HashMap::new(),

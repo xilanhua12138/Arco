@@ -308,6 +308,52 @@ describe('SettingsSheet local transcription', () => {
     })
   })
 
+  it('offers Doubao and saves a new-console API key without exposing environment setup', async () => {
+    const user = userEvent.setup()
+    const changeConfig = vi.fn()
+    const saveCredentials = vi.fn().mockResolvedValue(undefined)
+    const first = render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ asr: { provider: 'deepgram', model: 'nova-3', language: 'zh-CN' }, diarization: { provider: 'none', model: null } }}
+        transcriptionModels={statuses}
+        onChangeTranscriptionConfig={changeConfig}
+        doubaoCredential={{ configured: false, verified: false, message: null }}
+        onSaveDoubaoCredentials={saveCredentials}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await ensureRecognitionOpen()
+    await user.click(within(screen.getByRole('group', { name: 'Speech recognition provider' })).getByRole('radio', { name: /Doubao/i }))
+    expect(changeConfig).toHaveBeenCalledWith({
+      asr: { provider: 'doubao', model: 'bigmodel', language: 'zh-CN' },
+      diarization: { provider: 'none', model: null },
+    })
+    first.unmount()
+
+    render(
+      <SettingsSheet
+        open
+        runtimes={[]}
+        isDesktop
+        transcriptionConfig={{ asr: { provider: 'doubao', model: 'bigmodel', language: 'zh-CN' }, diarization: { provider: 'none', model: null } }}
+        transcriptionModels={statuses}
+        doubaoCredential={{ configured: false, verified: false, message: null }}
+        onSaveDoubaoCredentials={saveCredentials}
+        onClose={vi.fn()}
+      />,
+    )
+    await ensureRecognitionOpen()
+    await user.type(screen.getByLabelText('Doubao API Key / App ID'), 'api-key-123456789')
+    await user.click(screen.getAllByRole('button', { name: 'Verify & save' }).at(-1)!)
+
+    expect(saveCredentials).toHaveBeenCalledWith('api-key-123456789', '')
+    expect(screen.queryByText(/DOUBAO_APP_ID=|DOUBAO_ACCESS_TOKEN=|\.env/i)).not.toBeInTheDocument()
+  })
+
   it('configures ElevenLabs ASR independently from streaming speaker separation', async () => {
     const user = userEvent.setup()
     const saveKey = vi.fn().mockResolvedValue(undefined)

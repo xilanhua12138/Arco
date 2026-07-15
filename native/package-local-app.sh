@@ -54,6 +54,10 @@ if [ ! -x "$APP/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
   echo "Arco.app is missing the bundled Rust ElevenLabs runtime" >&2
   exit 1
 fi
+if [ ! -x "$APP/Contents/Resources/native/arco-doubao-transcriber" ]; then
+  echo "Arco.app is missing the bundled Rust Doubao runtime" >&2
+  exit 1
+fi
 MAIN_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
 if [ "$MAIN_EXECUTABLE" != "Arco" ]; then
   echo "Arco.app selected the wrong main executable: $MAIN_EXECUTABLE" >&2
@@ -65,6 +69,10 @@ if [ -e "$APP/Contents/MacOS/arco-deepgram-transcriber" ]; then
 fi
 if [ -e "$APP/Contents/MacOS/arco-elevenlabs-transcriber" ]; then
   echo "ElevenLabs sidecar was incorrectly selected as the app executable" >&2
+  exit 1
+fi
+if [ -e "$APP/Contents/MacOS/arco-doubao-transcriber" ]; then
+  echo "Doubao sidecar was incorrectly selected as the app executable" >&2
   exit 1
 fi
 unregister_app "$APP"
@@ -79,6 +87,9 @@ COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/arco-elevenlabs-transcriber" \
   app.arco.desktop.elevenlabs-transcriber
+"$ROOT/native/codesign-local.sh" \
+  "$STAGING/Arco.app/Contents/Resources/native/arco-doubao-transcriber" \
+  app.arco.desktop.doubao-transcriber
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/arco-local-transcriber" \
   app.arco.desktop.local-transcriber
@@ -141,6 +152,10 @@ MOUNTED=1
 codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Arco.app"
 if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
   echo "DMG is missing the bundled ElevenLabs runtime" >&2
+  exit 1
+fi
+if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-doubao-transcriber" ]; then
+  echo "DMG is missing the bundled Doubao runtime" >&2
   exit 1
 fi
 if [ ! -L "$MOUNT_POINT/Applications" ]; then

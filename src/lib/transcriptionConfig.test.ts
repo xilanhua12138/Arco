@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   defaultTranscriptionConfig,
   loadTranscriptionConfig,
+  recognitionSummary,
   saveTranscriptionConfig,
   transcriptionModels,
 } from './transcriptionConfig'
@@ -106,6 +107,43 @@ describe('transcription configuration', () => {
     saveTranscriptionConfig(config)
 
     expect(loadTranscriptionConfig()).toEqual(config)
+  })
+
+  it('persists Doubao BigModel as a cloud provider with independent diarization', () => {
+    const config = {
+      asr: {
+        provider: 'doubao' as const,
+        model: 'bigmodel' as const,
+        language: 'zh-CN' as const,
+      },
+      diarization: {
+        provider: 'local' as const,
+        model: 'sortformer-streaming' as const,
+      },
+    }
+
+    saveTranscriptionConfig(config)
+
+    expect(loadTranscriptionConfig()).toEqual(config)
+    expect(recognitionSummary(config)).toBe('Chinese')
+  })
+
+  it('accepts Doubao speaker separation as its own streaming provider', () => {
+    const config = {
+      asr: { provider: 'doubao' as const, model: 'bigmodel' as const, language: 'zh-CN' as const },
+      diarization: { provider: 'doubao' as const, model: 'bigmodel' as const },
+    }
+    saveTranscriptionConfig(config)
+    expect(loadTranscriptionConfig()).toEqual(config)
+  })
+
+  it('rejects a Doubao provider paired with a non-Doubao model', () => {
+    window.localStorage.setItem('arco.transcriptionConfig', JSON.stringify({
+      asr: { provider: 'doubao', model: 'nova-3', language: 'zh-CN' },
+      diarization: { provider: 'none', model: null },
+    }))
+
+    expect(loadTranscriptionConfig()).toEqual(defaultTranscriptionConfig())
   })
 
   it('rejects provider/model mismatches without rejecting local and remote mixing', () => {

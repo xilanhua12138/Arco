@@ -31,6 +31,7 @@ import type {
   AudioSourceCheck,
   AudioSetupCheck,
   DeepgramCredentialStatus,
+  DoubaoCredentialStatus,
   ElevenLabsCredentialStatus,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
@@ -59,6 +60,7 @@ interface OnboardingProps {
   transcriptionModels: TranscriptionModelStatus[]
   deepgramCredential: DeepgramCredentialStatus
   elevenLabsCredential: ElevenLabsCredentialStatus
+  doubaoCredential?: DoubaoCredentialStatus
   listeningShortcut: ListeningShortcut
   shortcutTestCount: number
   audioMode: AudioMode
@@ -66,6 +68,7 @@ interface OnboardingProps {
   onTestProvider: (provider: ProviderId) => Promise<ProviderConnectionTest>
   onSaveDeepgramApiKey: (apiKey: string) => Promise<DeepgramCredentialStatus>
   onSaveElevenLabsApiKey: (apiKey: string) => Promise<ElevenLabsCredentialStatus>
+  onSaveDoubaoCredentials?: (appId: string, accessToken: string) => Promise<DoubaoCredentialStatus>
   onPrepareTranscriptionModel: (
     model: LocalTranscriptionModelId | LocalDiarizationModelId,
   ) => Promise<TranscriptionModelStatus[]>
@@ -128,12 +131,14 @@ export function Onboarding({
   transcriptionModels,
   deepgramCredential,
   elevenLabsCredential,
+  doubaoCredential = { configured: false, verified: false, message: null },
   listeningShortcut,
   shortcutTestCount,
   onRefreshRuntimes,
   onTestProvider,
   onSaveDeepgramApiKey,
   onSaveElevenLabsApiKey,
+  onSaveDoubaoCredentials = async () => ({ configured: false, verified: false, message: null }),
   onPrepareTranscriptionModel,
   onTestAudio,
   onRelaunch,
@@ -164,7 +169,10 @@ export function Onboarding({
   const [modelsOverride, setModelsOverride] = useState<TranscriptionModelStatus[] | null>(null)
   const [deepgramCredentialOverride, setDeepgramCredentialOverride] = useState<DeepgramCredentialStatus | null>(null)
   const [elevenLabsCredentialOverride, setElevenLabsCredentialOverride] = useState<ElevenLabsCredentialStatus | null>(null)
+  const [doubaoCredentialOverride, setDoubaoCredentialOverride] = useState<DoubaoCredentialStatus | null>(null)
   const [apiKey, setApiKey] = useState('')
+  const [doubaoAppId, setDoubaoAppId] = useState('')
+  const [doubaoAccessToken, setDoubaoAccessToken] = useState('')
   const [transcriptionState, setTranscriptionState] = useState<AsyncState>('idle')
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
   const [preparingModel, setPreparingModel] = useState<TranscriptionModelStatus['id'] | null>(null)
@@ -185,8 +193,11 @@ export function Onboarding({
   const models = modelsOverride ?? transcriptionModels
   const currentDeepgramCredential = deepgramCredentialOverride ?? deepgramCredential
   const currentElevenLabsCredential = elevenLabsCredentialOverride ?? elevenLabsCredential
+  const currentDoubaoCredential = doubaoCredentialOverride ?? doubaoCredential
   const asrCredential = transcription.asr.provider === 'elevenlabs'
     ? currentElevenLabsCredential
+    : transcription.asr.provider === 'doubao'
+      ? currentDoubaoCredential
     : currentDeepgramCredential
   const selectedLocalModel: LocalTranscriptionModelId = transcription.asr.provider === 'local'
     ? transcription.asr.model as LocalTranscriptionModelId
@@ -215,7 +226,9 @@ export function Onboarding({
   const diarizationReady = transcription.diarization.provider === 'none'
     || (transcription.diarization.provider === 'local'
       ? modelReady(models, selectedDiarizationModel)
-      : currentDeepgramCredential.configured && currentDeepgramCredential.verified)
+      : transcription.diarization.provider === 'doubao'
+        ? currentDoubaoCredential.configured && currentDoubaoCredential.verified
+        : currentDeepgramCredential.configured && currentDeepgramCredential.verified)
   const transcriptionReady = asrReady && diarizationReady
   const audioReady = (['system', 'microphone'] as const).every((source) => (
     audioChecks[source].state === 'passed' && audioChecks[source].result?.ready
@@ -255,6 +268,8 @@ export function Onboarding({
       ? 'Deepgram'
       : transcription.asr.provider === 'elevenlabs'
         ? 'ElevenLabs'
+        : transcription.asr.provider === 'doubao'
+          ? 'Doubao'
         : t('onboarding.onThisMac'),
   }), [agentChoice, primary, t, transcription.asr.provider])
 
@@ -315,6 +330,8 @@ export function Onboarding({
 
   const changeProvider = (provider: TranscriptionConfig['asr']['provider']) => {
     setApiKey('')
+    setDoubaoAppId('')
+    setDoubaoAccessToken('')
     setTranscriptionError(null)
     setTranscriptionState('idle')
     setTranscription((current) => ({
@@ -323,7 +340,12 @@ export function Onboarding({
         ? { provider: 'local', model: selectedLocalModel, language: current.asr.language }
         : provider === 'deepgram'
           ? { provider: 'deepgram', model: 'nova-3', language: current.asr.language }
-          : { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: current.asr.language },
+          : provider === 'elevenlabs'
+            ? { provider: 'elevenlabs', model: 'scribe-v2-realtime', language: current.asr.language }
+            : { provider: 'doubao', model: 'bigmodel', language: current.asr.language },
+      diarization: provider === 'doubao' && current.diarization.provider === 'deepgram'
+        ? { provider: 'doubao', model: 'bigmodel' }
+        : current.diarization,
     }))
   }
 
@@ -351,6 +373,22 @@ export function Onboarding({
     }
   }
 
+  const saveDoubaoCredential = async () => {
+    if (!doubaoAppId.trim() || transcriptionState === 'working') return
+    setTranscriptionState('working')
+    setTranscriptionError(null)
+    try {
+      const next = await onSaveDoubaoCredentials(doubaoAppId.trim(), doubaoAccessToken.trim())
+      setDoubaoCredentialOverride(next)
+      setDoubaoAppId('')
+      setDoubaoAccessToken('')
+      setTranscriptionState(next.configured && next.verified ? 'passed' : 'failed')
+    } catch (cause) {
+      setTranscriptionState('failed')
+      setTranscriptionError(cause instanceof Error ? cause.message : t('onboarding.doubaoFailed'))
+    }
+  }
+
   const changeLocalModel = (model: LocalTranscriptionModelId) => {
     setTranscription((current) => ({
       ...current,
@@ -369,12 +407,16 @@ export function Onboarding({
 
   const changeDiarizationProvider = (provider: TranscriptionConfig['diarization']['provider']) => {
     setApiKey('')
+    setDoubaoAppId('')
+    setDoubaoAccessToken('')
     setTranscriptionError(null)
     setTranscriptionState('idle')
     setTranscription((current) => ({
       ...current,
       diarization: provider === 'deepgram'
         ? { provider: 'deepgram', model: 'latest' }
+        : provider === 'doubao'
+          ? { provider: 'doubao', model: 'bigmodel' }
         : provider === 'local'
           ? { provider: 'local', model: selectedDiarizationModel }
           : { provider: 'none', model: null },
@@ -677,6 +719,10 @@ export function Onboarding({
                     <input type="radio" name="transcription-provider" aria-label="ElevenLabs" checked={transcription.asr.provider === 'elevenlabs'} onChange={() => changeProvider('elevenlabs')} />
                     <Cloud size={19} /><span><strong>ElevenLabs</strong><small>{t('onboarding.elevenLabsHelp')}</small></span>
                   </label>
+                  <label className={transcription.asr.provider === 'doubao' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="transcription-provider" aria-label="Doubao" checked={transcription.asr.provider === 'doubao'} onChange={() => changeProvider('doubao')} />
+                    <Cloud size={19} /><span><strong>Doubao</strong><small>{t('onboarding.doubaoHelp')}</small></span>
+                  </label>
                   <label className={transcription.asr.provider === 'local' ? 'onboarding-choice-selected' : ''}>
                     <input type="radio" name="transcription-provider" aria-label={t('onboarding.onThisMac')} checked={transcription.asr.provider === 'local'} onChange={() => changeProvider('local')} />
                     <HardDrive size={19} /><span><strong>{t('onboarding.onThisMac')}</strong><small>{t('onboarding.localHelp')}</small></span>
@@ -686,7 +732,13 @@ export function Onboarding({
                 {transcription.asr.provider !== 'local' ? (
                   <div className="onboarding-transcription-action">
                     {asrCredential.configured && asrCredential.verified ? (
-                      <span className="onboarding-ready-line"><Check size={15} /> {t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsReady' : 'onboarding.deepgramReady')}</span>
+                      <span className="onboarding-ready-line"><Check size={15} /> {t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsReady' : transcription.asr.provider === 'doubao' ? 'onboarding.doubaoReady' : 'onboarding.deepgramReady')}</span>
+                    ) : transcription.asr.provider === 'doubao' ? (
+                      <>
+                        <label><span>{t('settings.doubaoAppId')}</span><input type="password" aria-label={t('settings.doubaoAppId')} value={doubaoAppId} onChange={(event) => setDoubaoAppId(event.target.value)} /></label>
+                        <label><span>{t('settings.doubaoAccessToken')}</span><input type="password" aria-label={t('settings.doubaoAccessToken')} value={doubaoAccessToken} onChange={(event) => setDoubaoAccessToken(event.target.value)} /></label>
+                        <button type="button" onClick={saveDoubaoCredential} disabled={!doubaoAppId.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button>
+                      </>
                     ) : (
                       <><label><span>{t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')}</span><input type="password" aria-label={t(transcription.asr.provider === 'elevenlabs' ? 'onboarding.elevenLabsKey' : 'onboarding.deepgramKey')} value={apiKey} placeholder={transcription.asr.provider === 'elevenlabs' ? 'sk_…' : 'dg_…'} onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={() => saveCloudCredential(transcription.asr.provider === 'elevenlabs' ? 'elevenlabs' : 'deepgram')} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
                     )}
@@ -718,6 +770,10 @@ export function Onboarding({
                   <label className={transcription.diarization.provider === 'deepgram' ? 'onboarding-choice-selected' : ''}>
                     <input type="radio" name="diarization-provider" aria-label="Deepgram speaker separation" checked={transcription.diarization.provider === 'deepgram'} onChange={() => changeDiarizationProvider('deepgram')} />
                     <Cloud size={19} /><span><strong>Deepgram</strong><small>{t('settings.deepgramNoLocalModel')}</small></span>
+                  </label>
+                  <label className={transcription.diarization.provider === 'doubao' ? 'onboarding-choice-selected' : ''}>
+                    <input type="radio" name="diarization-provider" aria-label="Doubao speaker separation" checked={transcription.diarization.provider === 'doubao'} onChange={() => changeDiarizationProvider('doubao')} />
+                    <Cloud size={19} /><span><strong>Doubao</strong><small>{t('settings.doubaoNoLocalModel')}</small></span>
                   </label>
                   <label className={transcription.diarization.provider === 'local' ? 'onboarding-choice-selected' : ''}>
                     <input type="radio" name="diarization-provider" aria-label={t('onboarding.speakerModel')} checked={transcription.diarization.provider === 'local'} onChange={() => changeDiarizationProvider('local')} />
@@ -760,6 +816,22 @@ export function Onboarding({
                         <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.deepgramReady')}</span>
                       ) : (
                         <><label><span>{t('onboarding.deepgramKey')}</span><input type="password" aria-label={t('onboarding.deepgramKey')} value={apiKey} placeholder="dg_…" onChange={(event) => setApiKey(event.target.value)} /></label><button type="button" onClick={() => saveCloudCredential('deepgram')} disabled={!apiKey.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button></>
+                      )}
+                    </div>
+                  )}
+                {transcription.diarization.provider === 'doubao'
+                  && transcription.asr.provider !== 'doubao'
+                  && asrReady
+                  && (
+                    <div className="onboarding-transcription-action">
+                      {currentDoubaoCredential.configured && currentDoubaoCredential.verified ? (
+                        <span className="onboarding-ready-line"><Check size={15} /> {t('onboarding.doubaoReady')}</span>
+                      ) : (
+                        <>
+                          <label><span>{t('settings.doubaoAppId')}</span><input type="password" aria-label={t('settings.doubaoAppId')} value={doubaoAppId} onChange={(event) => setDoubaoAppId(event.target.value)} /></label>
+                          <label><span>{t('settings.doubaoAccessToken')}</span><input type="password" aria-label={t('settings.doubaoAccessToken')} value={doubaoAccessToken} onChange={(event) => setDoubaoAccessToken(event.target.value)} /></label>
+                          <button type="button" onClick={saveDoubaoCredential} disabled={!doubaoAppId.trim() || transcriptionState === 'working'}>{transcriptionState === 'working' ? t('settings.verifying') : t('settings.verifyAndSave')}</button>
+                        </>
                       )}
                     </div>
                   )}

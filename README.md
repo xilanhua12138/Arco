@@ -64,8 +64,8 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Feature | How it works | Why it matters |
 | --- | --- | --- |
 | Hybrid audio capture | Captures system audio and the room microphone as separate lanes with ScreenCaptureKit and AVAudioEngine. | Online and in-room speakers stay legible in the same meeting. |
-| Streaming transcription | Choose Deepgram, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
-| Multi-speaker separation | Choose Deepgram or a local Sortformer, Pyannote + WeSpeaker, or LS-EEND model independently from ASR. Mixed cloud/on-device pipelines remain streaming. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
+| Streaming transcription | Choose Deepgram, Doubao, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
+| Multi-speaker separation | Choose Deepgram, Doubao, or a local Sortformer, Pyannote + WeSpeaker, or LS-EEND model independently from ASR. Mixed cloud/on-device pipelines remain streaming. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
 | Native local Agent | Sends questions through Codex CLI or Claude Code already installed and authenticated on the Mac. | Your meeting assistant can use the same project understanding and account you already trust. |
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
@@ -88,9 +88,10 @@ By default, transcripts and meeting state live at:
 - Arco streams audio for transcription but does not save raw PCM recordings.
 - With on-device ASR and diarization, speech processing stays on the Mac.
 - Selecting Deepgram for either ASR or speaker separation sends meeting audio to Deepgram.
+- Selecting Doubao for either ASR or speaker separation sends meeting audio to Doubao Speech. When selected for both roles, Arco uses Doubao's fused streaming recognition and automatic speaker separation.
 - Selecting ElevenLabs ASR sends audio to ElevenLabs. Its realtime API does not supply speaker identities, but Arco can label its finalized segments from the separately selected Deepgram or local streaming diarizer.
 - Speaker separation is incremental during the meeting. Arco does not run a later batch pass or rewrite the transcript after capture stops.
-- Deepgram and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
+- Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
 
@@ -162,7 +163,7 @@ pnpm desktop:package
 
 ## Architecture
 
-- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram and ElevenLabs streaming, credentials, Agent processes, and native session bindings.
+- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram, Doubao, and ElevenLabs streaming, credentials, Agent processes, and native session bindings.
 - **React + TypeScript** renders the main workspace, History, Settings, onboarding, and global Agent surfaces.
 - **Swift** captures macOS audio and runs the on-device transcription pipeline.
 - **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers and saved notes.

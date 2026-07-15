@@ -365,7 +365,11 @@ fn finish_overlay_setup(window: &WebviewWindow, is_hud: bool) -> Result<(), Stri
 
     window
         .run_on_main_thread(move || {
-            material::apply_overlay_material(&setup_window);
+            if is_hud {
+                material::apply_hud_material(&setup_window);
+            } else {
+                material::apply_agent_material(&setup_window);
+            }
             let _ = send_result.send(configure_macos_overlay(&setup_window, is_hud));
         })
         .map_err(|error| format!("could not dispatch {label} setup to the main thread: {error}"))?;

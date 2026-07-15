@@ -27,7 +27,7 @@ import {
   type GenerationSettings,
 } from './lib/generationSettings'
 import type { AudioMode } from './types'
-import type { DeepgramCredentialStatus, ElevenLabsCredentialStatus, MeetingDetail, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
+import type { DeepgramCredentialStatus, DoubaoCredentialStatus, ElevenLabsCredentialStatus, MeetingDetail, NotesStorageSettings, TranscriptStorageSettings, TranscriptionConfig, TranscriptionModelStatus } from './types'
 import {
   loadTranscriptionConfig,
   saveTranscriptionConfig,
@@ -74,6 +74,8 @@ function App() {
   const [deepgramCredentialBusy, setDeepgramCredentialBusy] = useState(false)
   const [elevenLabsCredential, setElevenLabsCredential] = useState<ElevenLabsCredentialStatus>({ configured: false, verified: false, message: null })
   const [elevenLabsCredentialBusy, setElevenLabsCredentialBusy] = useState(false)
+  const [doubaoCredential, setDoubaoCredential] = useState<DoubaoCredentialStatus>({ configured: false, verified: false, message: null })
+  const [doubaoCredentialBusy, setDoubaoCredentialBusy] = useState(false)
   const [providerSetupOpen, setProviderSetupOpen] = useState(() => {
     const existingProvider = loadProviderConfig()
     return !existingProvider.setupComplete && !loadOnboardingState().completed
@@ -184,6 +186,33 @@ function App() {
     }
   }
 
+  const refreshDoubaoCredential = async () => {
+    const status = await arcoBridge.doubaoCredentialStatus()
+    setDoubaoCredential(status)
+    return status
+  }
+
+  const saveDoubaoCredentials = async (appId: string, accessToken: string) => {
+    setDoubaoCredentialBusy(true)
+    try {
+      const status = await arcoBridge.saveDoubaoCredentials(appId, accessToken)
+      setDoubaoCredential(status)
+      return status
+    } finally {
+      setDoubaoCredentialBusy(false)
+    }
+  }
+
+  const removeDoubaoCredentials = async () => {
+    setDoubaoCredentialBusy(true)
+    try {
+      const status = await arcoBridge.removeDoubaoCredentials()
+      setDoubaoCredential(status)
+    } finally {
+      setDoubaoCredentialBusy(false)
+    }
+  }
+
   const mergeTranscriptionModelStatus = useCallback((status: TranscriptionModelStatus) => {
     setTranscriptionModels((current) => {
       const retained = current.filter((candidate) => candidate.id !== status.id)
@@ -196,6 +225,7 @@ function App() {
     void Promise.all([
       arcoBridge.deepgramCredentialStatus().then(setDeepgramCredential),
       arcoBridge.elevenLabsCredentialStatus().then(setElevenLabsCredential),
+      arcoBridge.doubaoCredentialStatus().then(setDoubaoCredential),
       arcoBridge.transcriptionModelStatus().then(setTranscriptionModels),
     ]).catch((cause) => console.warn('Could not prepare onboarding status', cause))
   }, [editingProviders, providerSetupOpen])
@@ -537,6 +567,7 @@ function App() {
         transcriptionModels={transcriptionModels}
         deepgramCredential={deepgramCredential}
         elevenLabsCredential={elevenLabsCredential}
+        doubaoCredential={doubaoCredential}
         listeningShortcut={listeningShortcut}
         shortcutTestCount={shortcutTestCount}
         audioMode={audioMode}
@@ -553,6 +584,7 @@ function App() {
           }
         }}
         onSaveElevenLabsApiKey={saveElevenLabsApiKey}
+        onSaveDoubaoCredentials={saveDoubaoCredentials}
         onPrepareTranscriptionModel={async (model) => {
           const next = await arcoBridge.prepareTranscriptionModel(model)
           setTranscriptionModels(next)
@@ -610,6 +642,7 @@ function App() {
             void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
             void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
             void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
+            void refreshDoubaoCredential().catch((cause) => console.warn('Could not read Doubao credential status', cause))
         }}
       />
 
@@ -643,6 +676,7 @@ function App() {
                     void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
                     void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
                     void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
+                    void refreshDoubaoCredential().catch((cause) => console.warn('Could not read Doubao credential status', cause))
                   }}
                 />
               )}
@@ -743,12 +777,17 @@ function App() {
         deepgramCredentialBusy={deepgramCredentialBusy}
         elevenLabsCredential={elevenLabsCredential}
         elevenLabsCredentialBusy={elevenLabsCredentialBusy}
+        doubaoCredential={doubaoCredential}
+        doubaoCredentialBusy={doubaoCredentialBusy}
         onSaveDeepgramApiKey={saveDeepgramApiKey}
         onRemoveDeepgramApiKey={removeDeepgramApiKey}
         onOpenDeepgramConsole={arcoBridge.openDeepgramConsole}
         onSaveElevenLabsApiKey={saveElevenLabsApiKey}
         onRemoveElevenLabsApiKey={removeElevenLabsApiKey}
         onOpenElevenLabsConsole={arcoBridge.openElevenLabsConsole}
+        onSaveDoubaoCredentials={saveDoubaoCredentials}
+        onRemoveDoubaoCredentials={removeDoubaoCredentials}
+        onOpenDoubaoConsole={arcoBridge.openDoubaoConsole}
         onChangeTranscriptionConfig={changeTranscriptionConfig}
         onPrepareTranscriptionModel={(model) => {
           const selectedStatus = transcriptionModels.find((status) => status.id === model)

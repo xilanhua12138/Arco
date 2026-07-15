@@ -63,8 +63,8 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 | 功能 | 工作方式 | 价值 |
 | --- | --- | --- |
 | 混合会议采集 | 使用 ScreenCaptureKit 与 AVAudioEngine，分别采集系统音频和房间麦克风。 | 同一场会议里的线上和现场发言都清晰可辨。 |
-| 流式转写 | 可选择 Deepgram，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
-| 多说话人分离 | 独立选择 Deepgram，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
+| 流式转写 | 可选择 Deepgram、豆包、ElevenLabs，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
+| 多说话人分离 | 独立选择 Deepgram、豆包，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
 | 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
 | 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
 | 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |
@@ -85,7 +85,9 @@ Arco 本地优先并完全开源。默认数据位置：
 - Arco 会流式处理音频，但不会保存原始 PCM 录音。
 - 使用本地转写和说话人分离时，语音处理留在 Mac 上。
 - 使用 Deepgram 时，音频会发送给 Deepgram 完成转写。
-- Deepgram Key 由 Rust 后端验证并保存在 macOS 钥匙串中，不会写入转写或日志。
+- 使用豆包进行转写或说话人分离时，音频会发送给豆包语音；两项都选择豆包时复用同一条流式识别与自动说话人分离链路。
+- 使用 ElevenLabs 进行转写时，音频会发送给 ElevenLabs；可搭配其他流式说话人分离供应商。
+- Deepgram、豆包语音和 ElevenLabs 凭证均由 Rust 后端验证并分别保存在 macOS 钥匙串中，不会写入转写或日志。
 - Agent 问题通过所选的本地 CLI 发送；输入框会始终显示当前使用的是“仅转写”还是“转写 + 工作区”。
 - Codex 的转写与工作区模式会额外受到 macOS 只读沙箱保护。
 
@@ -157,7 +159,7 @@ pnpm desktop:package
 
 ## 技术架构
 
-- **Tauri + Rust**：窗口、本地存储、采集生命周期、Deepgram 流式连接、凭证、Agent 进程与原生 session 绑定。
+- **Tauri + Rust**：窗口、本地存储、采集生命周期、Deepgram、豆包与 ElevenLabs 流式连接、凭证、Agent 进程与原生 session 绑定。
 - **React + TypeScript**：主工作区、历史、设置、Onboarding 与全局 Agent 浮层。
 - **Swift**：macOS 音频采集与本地转写链路。
 - **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答、用户保存的笔记分开存储。

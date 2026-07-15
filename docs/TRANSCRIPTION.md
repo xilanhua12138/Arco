@@ -9,9 +9,10 @@ The frontend persists one validated config with independent ASR and diarization 
 ```ts
 type TranscriptionConfig = {
   asr: {
-    provider: 'deepgram' | 'elevenlabs' | 'local'
+    provider: 'deepgram' | 'doubao' | 'elevenlabs' | 'local'
     model:
       | 'nova-3'
+      | 'bigmodel'
       | 'scribe-v2-realtime'
       | 'nemotron-speech-3.5-streaming'
       | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
@@ -20,6 +21,7 @@ type TranscriptionConfig = {
   }
   diarization:
     | { provider: 'deepgram', model: 'latest' }
+    | { provider: 'doubao', model: 'bigmodel' }
     | { provider: 'local', model:
         | 'sortformer-streaming'
         | 'pyannote-wespeaker-streaming'
@@ -55,11 +57,12 @@ The provider composition is explicit:
 | ASR | Diarization | Runtime layout |
 |---|---|---|
 | Deepgram | Deepgram | One fused Deepgram stream |
+| Doubao | Doubao | One fused Doubao stream with automatic speaker separation |
 | Local | Local | One fused local process |
 | Any provider | Off | One ASR worker |
-| Different providers | Deepgram or local | Two workers; bounded PCM fan-out plus one shared streaming speaker timeline |
+| Different providers | Deepgram, Doubao, or local | Two workers; bounded PCM fan-out plus one shared streaming speaker timeline |
 
-Mixed local/remote use works in both directions. For example, ElevenLabs ASR can use local Sortformer, and local Whisper can use Deepgram diarization. A remote provider selected for either role receives meeting audio and may incur its normal usage cost, even when the other role stays on-device.
+Mixed local/remote use works in both directions. For example, ElevenLabs ASR can use local Sortformer or Doubao speaker separation, and local Whisper can use Deepgram diarization. A remote provider selected for either role receives meeting audio and may incur its normal usage cost, even when the other role stays on-device.
 
 ## On-device ASR
 
@@ -143,6 +146,32 @@ Deepgram sends a separate streaming `Results` object for each channel. Speaker n
 
 Deepgram may restart numbering after a reconnect. Arco namespaces identities by connection and allocates new session-wide display numbers. This can split the same human into two anonymous labels after a network interruption, but avoids the more damaging false claim that two different humans are one person.
 
+## Doubao streaming transcription
+
+Doubao uses the bidirectional speech-recognition WebSocket at
+`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel` with resource ID
+`volc.bigasr.sauc.duration`. Arco splits its stereo capture into one mono stream
+per active source and sends the required gzip-compressed full request followed
+by sequenced audio frames.
+
+- With Doubao selected for both roles, one `doubao-combined` worker requests
+  `enable_speaker_info` and writes finalized utterances with their returned
+  speaker slots.
+- With Doubao as ASR-only, finalized text can consume an external shared
+  speaker timeline. With Doubao as diarization-only, it publishes speaker
+  intervals without writing a duplicate transcript.
+- Credentials support a Doubao Speech APP Key or the legacy App ID + Access
+  Token pair and are stored in a dedicated macOS Keychain service. Arco never
+  falls back to the generic Ark/LLM `DOUBAO_API_KEY`.
+- The worker is ready only after every active channel receives a server
+  response. Provider handshake errors and stream disconnects fail the owned
+  capture pipeline rather than silently switching providers.
+
+Primary references:
+
+- [Doubao Speech Recognition product capabilities](https://www.volcengine.com/docs/6561/1354871?lang=zh)
+- [Volcengine's official streaming ASR client](https://github.com/volcengine/ai-app-lab/blob/main/arkitect/core/component/asr/asr_client.py)
+
 ## ElevenLabs realtime transcription
 
 ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not currently expose speaker diarization or dual-channel transcription, so it is registered as an ASR provider, not a diarization provider.
@@ -167,9 +196,9 @@ Primary references:
 - Exact repeated speech is preserved; text equality is not a deduplication key.
 - The mic channel is never assumed to be `You`. That name requires a future explicit mapping, personal-mic mode, or voice enrollment.
 
-The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; both cloud providers remain streaming-only.
+The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; all cloud providers remain streaming-only.
 
-Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; ElevenLabs signals after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures; network and 5xx failures retry with bounded backoff while stdin continues draining. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
+Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. Deepgram and ElevenLabs retry transient network failures with bounded backoff while stdin continues draining; the current Doubao worker fails the owned capture pipeline on a dropped stream. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
 
 ## Echo caveat
 

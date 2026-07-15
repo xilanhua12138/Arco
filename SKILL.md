@@ -1,6 +1,6 @@
 ---
 name: arco
-description: Listen to a meeting and produce a real-time transcript with multi-speaker diarization. Captures system audio (the remote side of an online call) plus the microphone (you), mixes them, and runs Deepgram real-time ASR with diarization to label every line as Speaker 1/2/3..., writing it live to transcript.md that Claude can read at any time to summarize, extract action items, or answer questions grounded in the meeting. Use this when the user says things like "listen to the meeting", "take meeting notes", "start meeting transcription", "record this meeting", "听会", "监听会议", or "记录这次会议". Always STOP the listener (bin/stop.sh) as soon as the user signals the meeting is over ("stop listening", "会议结束", "结束监听", "好了用完了", "停止记录") or asks for a final summary — do not leave it running.
+description: Listen to a meeting and produce a real-time transcript with multi-speaker diarization. The standalone skill captures system audio plus the microphone and currently runs Deepgram real-time ASR; the Arco desktop app additionally supports Doubao streaming ASR with Doubao's own speaker separation. Use this when the user asks to listen to, transcribe, summarize, or configure recognition for a meeting, including "听会", "监听会议", "记录这次会议", or questions about Arco transcription providers. Always STOP the standalone listener (bin/stop.sh) as soon as the user signals the meeting is over or asks for a final summary — do not leave it running.
 ---
 
 # Arco — Meeting Listener (multi-speaker diarization)
@@ -107,6 +107,34 @@ The stopped session is preserved at `transcript-<timestamp>.md` for later refere
 
 Requires `uv` (it auto-pulls `websockets` via `--with`, no manual install).
 
+## Arco desktop transcription providers
+
+The packaged Arco desktop app has a provider stack that is broader than this
+standalone skill's `listen.py` path:
+
+- Treat Doubao as a cloud streaming ASR provider with its own automatic speaker
+  separation. Do not repeat the obsolete claim that Doubao speaker separation
+  is file/offline-only.
+- Use one `doubao-combined` streaming pipeline when both ASR and diarization are
+  set to Doubao. Doubao can also supply diarization alongside another
+  compatible ASR provider.
+- Interpret finalized Doubao utterance speaker metadata as stable Arco
+  speaker/source labels, not verified human identity.
+- Store desktop speech credentials in macOS Keychain. Accept a Doubao Speech
+  APP Key or the legacy App ID + Access Token pair. Never treat a generic
+  Ark/LLM `DOUBAO_API_KEY` as a speech credential; use
+  `DOUBAO_SPEECH_API_KEY` only as the dedicated process environment fallback.
+- Verify a real speech WebSocket handshake and finalized transcript output;
+  saving settings alone does not prove provider readiness.
+
+Continue to use Deepgram for the scripts in this skill checkout
+(`bin/start.sh` + `listen.py`). Do not tell the user that this standalone
+command is using Doubao unless a Doubao client is actually added to these
+scripts. For the packaged desktop app, use the provider selected in Arco
+Settings.
+
+Current product reference: https://www.volcengine.com/docs/6561/1354871?lang=zh
+
 ## Network / proxy
 
 Deepgram's ASR runs on its own servers, reached over the public internet
@@ -134,5 +162,7 @@ directly reachable on your network, skip this entirely; no proxy is needed.
 ## Notes
 
 - **Multi-speaker diarization** is done by Deepgram (`diarize=true`), labeling lines as `Speaker 1/2/3...`, kept consistent over time.
-- Why Deepgram and not Doubao: Doubao's speaker diarization only exists in its **file (offline) recognition** API (`additions.speaker`), not the streaming endpoint — so it can't do real-time multi-speaker labeling. Deepgram does it live in one WebSocket.
+- Apply the preceding Deepgram statement only to this standalone skill
+  pipeline. The packaged Arco desktop app also supports Doubao streaming
+  recognition with automatic speaker separation.
 - Transcripts are saved at `~/.claude/meeting-transcripts/transcript-<timestamp>.md`; `current.md` always points to the latest session.
