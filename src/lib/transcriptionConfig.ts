@@ -95,11 +95,11 @@ export const diarizationModels: DiarizationModelDescriptor[] = [
   { id: 'lseend-dihard3-streaming', label: 'LS-EEND General', detailKey: 'settings.lseendGeneralDescription' },
 ]
 
-const providers = new Set<TranscriptionProviderId>(['deepgram', 'elevenlabs', 'local'])
+const providers = new Set<TranscriptionProviderId>(['deepgram', 'elevenlabs', 'doubao', 'local'])
 const localModels = new Set<LocalTranscriptionModelId>(transcriptionModels.map((model) => model.id))
 const languages = new Set<TranscriptionLanguage>(['auto', 'zh-CN', 'en-US'])
 const localDiarizationModels = new Set<LocalDiarizationModelId>(diarizationModels.map((model) => model.id))
-const diarizationProviders = new Set<DiarizationProviderId>(['deepgram', 'local', 'none'])
+const diarizationProviders = new Set<DiarizationProviderId>(['deepgram', 'doubao', 'local', 'none'])
 
 export const defaultTranscriptionConfig = (): TranscriptionConfig => ({
   asr: {
@@ -125,10 +125,14 @@ export const isValidTranscriptionConfig = (value: unknown): value is Transcripti
   if (!diarizationProviders.has(diarization.provider as DiarizationProviderId)) return false
   if (asr.provider === 'deepgram' && asr.model !== 'nova-3') return false
   if (asr.provider === 'elevenlabs' && asr.model !== 'scribe-v2-realtime') return false
+  if (asr.provider === 'doubao' && asr.model !== 'bigmodel') return false
   if (asr.provider === 'local' && !localModels.has(asr.model as LocalTranscriptionModelId)) return false
 
   if (diarization.provider === 'deepgram') {
     return diarization.model === 'latest'
+  }
+  if (diarization.provider === 'doubao') {
+    return diarization.model === 'bigmodel'
   }
   if (diarization.provider === 'local') {
     return localDiarizationModels.has(diarization.model as LocalDiarizationModelId)
@@ -195,5 +199,6 @@ export const localModelDescriptor = (id: TranscriptionModelId) =>
 export const recognitionSummary = (config: TranscriptionConfig) => {
   if (config.asr.provider === 'deepgram') return config.asr.language === 'en-US' ? 'English' : 'Chinese'
   if (config.asr.provider === 'elevenlabs') return config.asr.language === 'auto' ? 'Automatic' : config.asr.language === 'en-US' ? 'English' : 'Chinese'
+  if (config.asr.provider === 'doubao') return config.asr.language === 'en-US' ? 'English' : config.asr.language === 'auto' ? 'Automatic' : 'Chinese'
   return localModelDescriptor(config.asr.model)?.label ?? 'On-device'
 }

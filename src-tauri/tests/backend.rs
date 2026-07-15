@@ -2260,12 +2260,21 @@ fn fake_capture_config(root: &TempDir, transcriber_source: &str) -> CaptureConfi
                 command: CommandSpec::new(transcriber.clone(), Vec::<OsString>::new()),
                 requires_deepgram_key: false,
                 requires_elevenlabs_key: false,
+                requires_doubao_credentials: false,
                 ready_timeout: Duration::from_secs(3),
             },
             elevenlabs: TranscriberDefinition {
+                command: CommandSpec::new(transcriber.clone(), Vec::<OsString>::new()),
+                requires_deepgram_key: false,
+                requires_elevenlabs_key: false,
+                requires_doubao_credentials: false,
+                ready_timeout: Duration::from_secs(3),
+            },
+            doubao: TranscriberDefinition {
                 command: CommandSpec::new(transcriber, Vec::<OsString>::new()),
                 requires_deepgram_key: false,
                 requires_elevenlabs_key: false,
+                requires_doubao_credentials: false,
                 ready_timeout: Duration::from_secs(3),
             },
             local: None,
@@ -2565,6 +2574,7 @@ fn capture_routes_selected_local_diarizer_without_requiring_a_deepgram_key() {
         command: CommandSpec::new(local, Vec::new()),
         requires_deepgram_key: false,
         requires_elevenlabs_key: false,
+        requires_doubao_credentials: false,
         ready_timeout: Duration::from_secs(3),
     });
     config.environment.insert(
@@ -2615,6 +2625,7 @@ fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
         command: CommandSpec::new(transcriber, Vec::new()),
         requires_deepgram_key: true,
         requires_elevenlabs_key: false,
+        requires_doubao_credentials: false,
         ready_timeout: Duration::from_secs(3),
     };
     config.environment.insert(
@@ -2635,6 +2646,7 @@ fn deepgram_secret_is_injected_only_through_the_owned_child_environment() {
             CaptureSecrets {
                 deepgram: Some(secret.clone()),
                 elevenlabs: None,
+                doubao: None,
             },
         )
         .unwrap();
@@ -2661,6 +2673,7 @@ fn elevenlabs_selection_routes_its_sidecar_secret_and_audio_mode() {
         command: CommandSpec::new(transcriber, Vec::new()),
         requires_deepgram_key: false,
         requires_elevenlabs_key: true,
+        requires_doubao_credentials: false,
         ready_timeout: Duration::from_secs(3),
     };
     config.environment.insert(
@@ -2688,6 +2701,7 @@ fn elevenlabs_selection_routes_its_sidecar_secret_and_audio_mode() {
             CaptureSecrets {
                 deepgram: None,
                 elevenlabs: Some(secret.clone()),
+                doubao: None,
             },
         )
         .unwrap();
@@ -2696,6 +2710,75 @@ fn elevenlabs_selection_routes_its_sidecar_secret_and_audio_mode() {
     assert_eq!(
         fs::read_to_string(env_path).unwrap(),
         format!("{secret}||mic")
+    );
+    assert_eq!(manager.stop().unwrap().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn doubao_selection_routes_single_key_role_and_audio_mode_only_through_the_child_environment() {
+    let root = TempDir::new().unwrap();
+    let args_path = root.path().join("doubao-args.txt");
+    let env_path = root.path().join("doubao-env.txt");
+    let transcriber = executable_script(
+        root.path(),
+        "arco-doubao-transcriber",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARCO_TEST_ARGS\"\nprintf '%s|%s|%s|%s|%s' \"$DOUBAO_APP_ID\" \"${DOUBAO_ACCESS_TOKEN:-}\" \"$ARCO_TRANSCRIBER_ROLE\" \"$ARCO_AUDIO_MODE\" \"${DOUBAO_API_KEY:-}\" > \"$ARCO_TEST_SECRET\"\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    let mut config = fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n");
+    config.requires_ready_signal = true;
+    config.transcribers.doubao = TranscriberDefinition {
+        command: CommandSpec::new(transcriber, Vec::new()),
+        requires_deepgram_key: false,
+        requires_elevenlabs_key: false,
+        requires_doubao_credentials: true,
+        ready_timeout: Duration::from_secs(3),
+    };
+    config.environment.insert(
+        "ARCO_TEST_ARGS".into(),
+        args_path.to_string_lossy().into_owned(),
+    );
+    config.environment.insert(
+        "ARCO_TEST_SECRET".into(),
+        env_path.to_string_lossy().into_owned(),
+    );
+    config
+        .environment
+        .insert("DOUBAO_API_KEY".into(), "unrelated-ark-key".into());
+    let manager = CaptureManager::new(config);
+    let transcription = TranscriptionConfig {
+        asr: AsrConfig {
+            provider: "doubao".into(),
+            model: "bigmodel".into(),
+            language: "zh-CN".into(),
+        },
+        diarization: DiarizationConfig {
+            provider: "doubao".into(),
+            model: Some("bigmodel".into()),
+        },
+    };
+    let secret = "api-key-0123456789abcdef".to_string();
+
+    let capture = manager
+        .start_with_transcription_and_secrets(
+            "system",
+            transcription.clone(),
+            CaptureSecrets {
+                deepgram: None,
+                elevenlabs: None,
+                doubao: Some(arco_lib::doubao_credentials::DoubaoCredentials {
+                    app_id: secret.clone(),
+                    access_token: String::new(),
+                }),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(capture.transcription, Some(transcription));
+    assert!(!fs::read_to_string(args_path).unwrap().contains(&secret));
+    assert_eq!(
+        fs::read_to_string(env_path).unwrap(),
+        format!("{secret}||combined|system|")
     );
     assert_eq!(manager.stop().unwrap().phase, "idle");
 }

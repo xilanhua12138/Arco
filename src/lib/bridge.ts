@@ -14,6 +14,7 @@ import type {
   AudioSetupCheck,
   CaptureState,
   DeepgramCredentialStatus,
+  DoubaoCredentialStatus,
   ElevenLabsCredentialStatus,
   GenerateMeetingOutputInput,
   MeetingDetail,
@@ -49,6 +50,7 @@ const demoStorageKey = 'arco.demoTranscriptStorage'
 const demoTranscriptionModelsKey = 'arco.demoTranscriptionModels'
 const demoDeepgramConfiguredKey = 'arco.demoDeepgramConfigured'
 const demoElevenLabsConfiguredKey = 'arco.demoElevenLabsConfigured'
+const demoDoubaoConfiguredKey = 'arco.demoDoubaoConfigured'
 const demoNotesKey = 'arco.demoNotes'
 const demoNotesStorageKey = 'arco.demoNotesStorage'
 const demoDefaultTranscriptDirectory = '/Users/demo/Library/Application Support/Arco/transcripts'
@@ -241,6 +243,14 @@ export const arcoBridge = {
       return
     }
     window.open('https://elevenlabs.io/app/developers/api-keys', '_blank', 'noopener,noreferrer')
+  },
+
+  async openDoubaoConsole(): Promise<void> {
+    if (hasTauriRuntime()) {
+      await invoke('open_doubao_console')
+      return
+    }
+    window.open('https://console.volcengine.com/speech/app', '_blank', 'noopener,noreferrer')
   },
 
   async listMeetings(query = ''): Promise<MeetingSummary[]> {
@@ -481,6 +491,30 @@ export const arcoBridge = {
   async removeElevenLabsApiKey(): Promise<ElevenLabsCredentialStatus> {
     if (hasTauriRuntime()) return invoke<ElevenLabsCredentialStatus>('remove_elevenlabs_api_key')
     window.sessionStorage.removeItem(demoElevenLabsConfiguredKey)
+    return { configured: false, verified: false, message: null }
+  },
+
+  async doubaoCredentialStatus(): Promise<DoubaoCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<DoubaoCredentialStatus>('doubao_credential_status')
+    const configured = window.sessionStorage.getItem(demoDoubaoConfiguredKey) === 'true'
+    return { configured, verified: configured, message: null }
+  },
+
+  async saveDoubaoCredentials(appId: string, accessToken: string): Promise<DoubaoCredentialStatus> {
+    if (hasTauriRuntime()) {
+      return invoke<DoubaoCredentialStatus>('save_doubao_credentials', { appId, accessToken })
+    }
+    if (appId.trim().length < 4 || (accessToken.trim() && accessToken.trim().length < 10) || /\s/.test(appId.trim()) || /\s/.test(accessToken.trim())) {
+      throw new Error('Paste a complete Doubao API Key, or a legacy App ID and Access Token.')
+    }
+    await wait(120)
+    window.sessionStorage.setItem(demoDoubaoConfiguredKey, 'true')
+    return { configured: true, verified: true, message: 'Doubao is ready.' }
+  },
+
+  async removeDoubaoCredentials(): Promise<DoubaoCredentialStatus> {
+    if (hasTauriRuntime()) return invoke<DoubaoCredentialStatus>('remove_doubao_credentials')
+    window.sessionStorage.removeItem(demoDoubaoConfiguredKey)
     return { configured: false, verified: false, message: null }
   },
 

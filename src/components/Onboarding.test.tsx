@@ -189,6 +189,29 @@ describe('Onboarding', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
   })
 
+  it('offers Doubao with its own speaker separation and verifies a new-console API key', async () => {
+    const user = userEvent.setup()
+    const onSaveDoubaoCredentials = vi.fn().mockResolvedValue({
+      configured: true,
+      verified: true,
+      message: 'Doubao is ready.',
+    })
+    renderOnboarding({ onSaveDoubaoCredentials })
+
+    await continueToAgent(user)
+    await chooseTranscriptOnly(user)
+    await user.click(screen.getByRole('radio', { name: 'Doubao' }))
+
+    expect(screen.getByRole('radio', { name: 'Doubao speaker separation' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    await user.type(screen.getByLabelText('Doubao API Key / App ID'), 'api-key-123456789')
+    await user.click(screen.getByRole('button', { name: 'Verify & save' }))
+
+    expect(onSaveDoubaoCredentials).toHaveBeenCalledWith('api-key-123456789', '')
+    expect(await screen.findByText('Doubao is ready.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
+  })
+
   it('offers every registered speech and speaker model as separate downloads', async () => {
     const user = userEvent.setup()
     const speechReady: TranscriptionModelStatus[] = [

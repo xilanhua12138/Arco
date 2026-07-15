@@ -427,10 +427,10 @@ test('Current keeps transcript primary with Agent visible at its right', async (
   expect(pageHeader).not.toBeNull()
   expect(sidebarBrand).not.toBeNull()
   expect(Math.round(dragSpace!.height)).toBe(32)
-  expect(Math.round(pageHeader!.y)).toBe(41)
+  expect(Math.round(pageHeader!.y)).toBe(40)
   // The sidebar clears the native macOS traffic lights; the page header only
   // needs the standard draggable titlebar clearance.
-  expect(Math.round(sidebarBrand!.y)).toBe(53)
+  expect(Math.round(sidebarBrand!.y)).toBe(52)
   await expect(page.locator('body')).toHaveCSS('font-family', /Avenir Next/)
   await expect(page.getByRole('heading', { level: 1, name: 'Product direction · weekly working session' })).toHaveCSS('font-family', /Avenir Next/)
   await expect(page.locator('.utterance time').first()).toHaveCSS('font-family', /SFMono/)
@@ -540,8 +540,11 @@ test('Current delegates glass to the native shell while keeping both reading sur
       reducedTransparency: window.matchMedia('(prefers-reduced-transparency: reduce)').matches,
       shellBackground: getComputedStyle(shell).backgroundColor,
       sidebarBackground: getComputedStyle(sidebar).backgroundColor,
+      sidebarBackgroundImage: getComputedStyle(sidebar).backgroundImage,
       sidebarBackdrop: getComputedStyle(sidebar).backdropFilter,
+      activeNavBackgroundImage: getComputedStyle(activeNav).backgroundImage,
       activeNavBackdrop: getComputedStyle(activeNav).backdropFilter,
+      captureBackgroundImage: getComputedStyle(captureCard).backgroundImage,
       captureBackdrop: getComputedStyle(captureCard).backdropFilter,
       pageStageBackground: getComputedStyle(pageStage).backgroundColor,
       pageStageTopRightRadius: stageStyle.borderTopRightRadius,
@@ -568,8 +571,11 @@ test('Current delegates glass to the native shell while keeping both reading sur
     expect(alpha(material.workspaceBackground)).toBeLessThan(0.24)
   }
   expect(material.sidebarBackdrop).toBe('none')
+  expect(material.sidebarBackgroundImage).toBe('none')
   expect(material.activeNavBackdrop).toBe('none')
+  expect(material.activeNavBackgroundImage).toBe('none')
   expect(material.captureBackdrop).toBe('none')
+  expect(material.captureBackgroundImage).toBe('none')
   expect(material.workspaceBackdrop).toBe('none')
   expect(Number.parseFloat(material.pageStageTopRightRadius)).toBeGreaterThanOrEqual(16)
   expect(Number.parseFloat(material.pageStageBottomRightRadius)).toBeGreaterThanOrEqual(16)
@@ -598,10 +604,10 @@ test('History is searchable and opens a meeting as History review', async ({ pag
     }
   })
   expect(Number.parseFloat(historyStageMaterial.topLeftRadius)).toBeGreaterThanOrEqual(16)
-  expect(historyStageMaterial.stageBackground.match(/gradient\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
+  expect(historyStageMaterial.stageBackground).toBe('none')
   expect(historyStageMaterial.ambientOverlayBackground).toBe('none')
-  expect(Number.parseFloat(historyStageMaterial.matrixTop)).toBe(0)
-  expect(historyStageMaterial.matrixBackground.match(/gradient\(/g)?.length ?? 0).toBe(1)
+  expect(historyStageMaterial.matrixTop).toBe('auto')
+  expect(historyStageMaterial.matrixBackground).toBe('none')
   expect(historyStageMaterial.matrixMask).toBe('none')
   const historyViewport = await page.locator('.history-results').evaluate((results) => {
     const style = getComputedStyle(results)

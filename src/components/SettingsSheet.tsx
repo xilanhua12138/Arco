@@ -22,6 +22,7 @@ import { useState } from 'react'
 import type {
   AudioMode,
   DeepgramCredentialStatus,
+  DoubaoCredentialStatus,
   ElevenLabsCredentialStatus,
   LocalDiarizationModelId,
   LocalTranscriptionModelId,
@@ -71,6 +72,14 @@ interface SettingsSheetProps {
   ) => void | ElevenLabsCredentialStatus | Promise<void | ElevenLabsCredentialStatus>
   onRemoveElevenLabsApiKey?: () => void | Promise<void>
   onOpenElevenLabsConsole?: () => void | Promise<void>
+  doubaoCredential?: DoubaoCredentialStatus
+  doubaoCredentialBusy?: boolean
+  onSaveDoubaoCredentials?: (
+    appId: string,
+    accessToken: string,
+  ) => void | DoubaoCredentialStatus | Promise<void | DoubaoCredentialStatus>
+  onRemoveDoubaoCredentials?: () => void | Promise<void>
+  onOpenDoubaoConsole?: () => void | Promise<void>
   providerConfig?: Readonly<ProviderConfig>
   onEditProviders?: () => void
   generationSettings?: GenerationSettings
@@ -226,6 +235,11 @@ export function SettingsSheet({
   onSaveElevenLabsApiKey = () => undefined,
   onRemoveElevenLabsApiKey = () => undefined,
   onOpenElevenLabsConsole = () => undefined,
+  doubaoCredential = { configured: false, verified: false, message: null },
+  doubaoCredentialBusy = false,
+  onSaveDoubaoCredentials = () => undefined,
+  onRemoveDoubaoCredentials = () => undefined,
+  onOpenDoubaoConsole = () => undefined,
   providerConfig = { setupComplete: false, primary: null, secondary: null },
   onEditProviders = () => undefined,
   generationSettings = defaultGenerationSettings(),
@@ -260,6 +274,9 @@ export function SettingsSheet({
   const [deepgramError, setDeepgramError] = useState<string | null>(null)
   const [elevenLabsApiKey, setElevenLabsApiKey] = useState('')
   const [elevenLabsError, setElevenLabsError] = useState<string | null>(null)
+  const [doubaoAppId, setDoubaoAppId] = useState('')
+  const [doubaoAccessToken, setDoubaoAccessToken] = useState('')
+  const [doubaoError, setDoubaoError] = useState<string | null>(null)
   if (!open) return null
   const audioScenarios: Array<{ mode: AudioMode; title: string; description: string }> = [
     { mode: 'both', title: t('settings.scenario.hybrid.title'), description: t('settings.scenario.hybrid.description') },
@@ -312,9 +329,13 @@ export function SettingsSheet({
     ? `Deepgram · ${cloudLanguageLabel}`
     : transcriptionConfig.asr.provider === 'elevenlabs'
       ? `ElevenLabs · ${cloudLanguageLabel}`
+      : transcriptionConfig.asr.provider === 'doubao'
+        ? `Doubao · ${cloudLanguageLabel}`
       : localAsrSummary
   const diarizationSummary = transcriptionConfig.diarization.provider === 'deepgram'
     ? t('settings.deepgramBuiltIn')
+    : transcriptionConfig.diarization.provider === 'doubao'
+      ? t('settings.doubaoBuiltIn')
     : transcriptionConfig.diarization.provider === 'local'
       ? localDiarizationSummary
       : t('settings.speakerSeparationOff')
@@ -343,6 +364,20 @@ export function SettingsSheet({
       })
       return
     }
+    if (provider === 'doubao') {
+      onChangeTranscriptionConfig({
+        ...transcriptionConfig,
+        asr: {
+          provider: 'doubao',
+          model: 'bigmodel',
+          language: transcriptionConfig.asr.language,
+        },
+        diarization: transcriptionConfig.diarization.provider === 'deepgram'
+          ? { provider: 'doubao', model: 'bigmodel' }
+          : transcriptionConfig.diarization,
+      })
+      return
+    }
     onChangeTranscriptionConfig({
       ...transcriptionConfig,
       asr: {
@@ -355,9 +390,15 @@ export function SettingsSheet({
 
   const changeDiarizationLocation = (location: 'cloud' | 'local' | 'off') => {
     if (location === 'cloud') {
+      const provider = transcriptionConfig.diarization.provider === 'doubao'
+        || transcriptionConfig.asr.provider === 'doubao'
+        ? 'doubao'
+        : 'deepgram'
       onChangeTranscriptionConfig({
         ...transcriptionConfig,
-        diarization: { provider: 'deepgram', model: 'latest' },
+        diarization: provider === 'doubao'
+          ? { provider: 'doubao', model: 'bigmodel' }
+          : { provider: 'deepgram', model: 'latest' },
       })
       return
     }
@@ -374,6 +415,15 @@ export function SettingsSheet({
     onChangeTranscriptionConfig({
       ...transcriptionConfig,
       diarization: { provider: 'none', model: null },
+    })
+  }
+
+  const changeDiarizationProvider = (provider: 'deepgram' | 'doubao') => {
+    onChangeTranscriptionConfig({
+      ...transcriptionConfig,
+      diarization: provider === 'doubao'
+        ? { provider: 'doubao', model: 'bigmodel' }
+        : { provider: 'deepgram', model: 'latest' },
     })
   }
 
@@ -416,6 +466,29 @@ export function SettingsSheet({
       await onOpenElevenLabsConsole()
     } catch (cause) {
       setElevenLabsError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const saveDoubao = async () => {
+    const appId = doubaoAppId.trim()
+    const accessToken = doubaoAccessToken.trim()
+    if (!appId) return
+    setDoubaoError(null)
+    try {
+      await onSaveDoubaoCredentials(appId, accessToken)
+      setDoubaoAppId('')
+      setDoubaoAccessToken('')
+    } catch (cause) {
+      setDoubaoError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const openDoubaoConsole = async () => {
+    setDoubaoError(null)
+    try {
+      await onOpenDoubaoConsole()
+    } catch (cause) {
+      setDoubaoError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
@@ -611,7 +684,7 @@ export function SettingsSheet({
 
                       {transcriptionConfig.asr.provider !== 'local' && (
                         <fieldset
-                          className="cloud-provider-options provider-second-level"
+                          className="cloud-provider-options cloud-provider-options-compact provider-second-level"
                           aria-label={t('settings.asrProvider')}
                           disabled={audioModeLocked}
                         >
@@ -635,6 +708,16 @@ export function SettingsSheet({
                             />
                             <span><strong>ElevenLabs</strong><small>{t('settings.elevenLabsDescription')}</small></span>
                             {transcriptionConfig.asr.provider === 'elevenlabs' && <Check size={14} aria-hidden="true" />}
+                          </label>
+                          <label className={transcriptionConfig.asr.provider === 'doubao' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="transcription-provider"
+                              checked={transcriptionConfig.asr.provider === 'doubao'}
+                              onChange={() => changeEngine('doubao')}
+                            />
+                            <span><strong>Doubao</strong><small>{t('settings.doubaoDescription')}</small></span>
+                            {transcriptionConfig.asr.provider === 'doubao' && <Check size={14} aria-hidden="true" />}
                           </label>
                         </fieldset>
                       )}
@@ -691,6 +774,40 @@ export function SettingsSheet({
                           onRemove={() => { void onRemoveElevenLabsApiKey() }}
                           onSubmit={() => { void saveElevenLabsKey() }}
                         />
+                      )}
+
+                      {(transcriptionConfig.asr.provider === 'doubao' || transcriptionConfig.diarization.provider === 'doubao') && (
+                        <div className="provider-key-setup" role="group" aria-label={t('settings.doubaoSetupAria')}>
+                          {doubaoCredential.configured ? (
+                            <div className="provider-key-ready" aria-live="polite">
+                              <span className="provider-key-status">
+                                <Check size={15} aria-hidden="true" />
+                                <span><strong>{t('settings.doubaoReady')}</strong><small>{t('settings.doubaoKeychain')}</small></span>
+                              </span>
+                              <button type="button" className="model-action model-action-remove" disabled={audioModeLocked || doubaoCredentialBusy} onClick={() => { void onRemoveDoubaoCredentials() }}>
+                                {t('settings.removeDoubaoCredentials')}
+                              </button>
+                            </div>
+                          ) : (
+                            <form onSubmit={(event) => { event.preventDefault(); void saveDoubao() }}>
+                              <div className="provider-key-heading">
+                                <span><strong>{t('settings.doubaoPasteCredentials')}</strong><small>{t('settings.doubaoPasteCredentialsHelp')}</small></span>
+                                <a href="https://console.volcengine.com/speech/app" target="_blank" rel="noreferrer" onClick={(event) => { event.preventDefault(); void openDoubaoConsole() }}>
+                                  {t('settings.doubaoGetCredentials')}
+                                </a>
+                              </div>
+                              <div className="doubao-credential-fields">
+                                <input type="password" aria-label={t('settings.doubaoAppId')} autoComplete="off" spellCheck={false} value={doubaoAppId} disabled={audioModeLocked || doubaoCredentialBusy} placeholder={t('settings.doubaoAppId')} onChange={(event) => setDoubaoAppId(event.target.value)} />
+                                <input type="password" aria-label={t('settings.doubaoAccessToken')} autoComplete="off" spellCheck={false} value={doubaoAccessToken} disabled={audioModeLocked || doubaoCredentialBusy} placeholder={t('settings.doubaoAccessToken')} onChange={(event) => setDoubaoAccessToken(event.target.value)} />
+                                <button type="submit" className="model-action" disabled={audioModeLocked || doubaoCredentialBusy || !doubaoAppId.trim()}>
+                                  {doubaoCredentialBusy ? t('settings.verifying') : t('settings.verifyAndSave')}
+                                </button>
+                              </div>
+                              {doubaoError && <p className="provider-key-error" role="alert">{doubaoError}</p>}
+                              <p className="provider-key-privacy"><ShieldCheck size={13} aria-hidden="true" /> {t('settings.doubaoPrivacy')}</p>
+                            </form>
+                          )}
+                        </div>
                       )}
 
                       {transcriptionConfig.asr.provider === 'local' && (
@@ -790,11 +907,11 @@ export function SettingsSheet({
                         disabled={audioModeLocked}
                       >
                         <legend className="sr-only">{t('settings.diarizationLocation')}</legend>
-                        <label className={transcriptionConfig.diarization.provider === 'deepgram' ? 'recognition-engine-selected' : ''}>
+                        <label className={transcriptionConfig.diarization.provider === 'deepgram' || transcriptionConfig.diarization.provider === 'doubao' ? 'recognition-engine-selected' : ''}>
                           <input
                             type="radio"
                             name="diarization-location"
-                            checked={transcriptionConfig.diarization.provider === 'deepgram'}
+                            checked={transcriptionConfig.diarization.provider === 'deepgram' || transcriptionConfig.diarization.provider === 'doubao'}
                             onChange={() => changeDiarizationLocation('cloud')}
                           />
                           <Cloud size={16} aria-hidden="true" />
@@ -822,22 +939,32 @@ export function SettingsSheet({
                         </label>
                       </fieldset>
 
-                      {transcriptionConfig.diarization.provider === 'deepgram' && (
+                      {(transcriptionConfig.diarization.provider === 'deepgram' || transcriptionConfig.diarization.provider === 'doubao') && (
                         <fieldset
                           className="cloud-provider-options provider-second-level"
                           aria-label={t('settings.diarizationProvider')}
                           disabled={audioModeLocked}
                         >
                           <legend>{t('settings.diarizationProvider')}</legend>
-                          <label className="cloud-provider-selected">
+                          <label className={transcriptionConfig.diarization.provider === 'deepgram' ? 'cloud-provider-selected' : ''}>
                             <input
                               type="radio"
                               name="diarization-cloud-provider"
-                              checked
-                              onChange={() => changeDiarizationLocation('cloud')}
+                              checked={transcriptionConfig.diarization.provider === 'deepgram'}
+                              onChange={() => changeDiarizationProvider('deepgram')}
                             />
                             <span><strong>Deepgram</strong><small>{t('settings.deepgramNoLocalModel')}</small></span>
                             {deepgramCredential.configured ? <em>{t('common.ready')}</em> : <Check size={14} aria-hidden="true" />}
+                          </label>
+                          <label className={transcriptionConfig.diarization.provider === 'doubao' ? 'cloud-provider-selected' : ''}>
+                            <input
+                              type="radio"
+                              name="diarization-cloud-provider"
+                              checked={transcriptionConfig.diarization.provider === 'doubao'}
+                              onChange={() => changeDiarizationProvider('doubao')}
+                            />
+                            <span><strong>Doubao</strong><small>{t('settings.doubaoNoLocalModel')}</small></span>
+                            {doubaoCredential.configured ? <em>{t('common.ready')}</em> : transcriptionConfig.diarization.provider === 'doubao' && <Check size={14} aria-hidden="true" />}
                           </label>
                         </fieldset>
                       )}

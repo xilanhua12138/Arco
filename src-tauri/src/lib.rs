@@ -5,6 +5,8 @@ pub mod deepgram;
 mod deepgram_credentials;
 #[cfg(target_os = "macos")]
 mod dock_icon;
+pub mod doubao;
+pub mod doubao_credentials;
 pub mod elevenlabs;
 mod elevenlabs_credentials;
 mod listening_shortcut;
@@ -72,6 +74,7 @@ use agent::{AgentRunner, AgentStreamUpdate};
 use audio_setup::AudioSetupTester;
 use capture::{CaptureConfig, CaptureManager, CaptureResume, CaptureSecrets};
 use deepgram_credentials::DeepgramCredentialStatus;
+use doubao_credentials::DoubaoCredentialStatus;
 use elevenlabs_credentials::ElevenLabsCredentialStatus;
 use meeting_output::{
     generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
@@ -489,6 +492,31 @@ fn open_elevenlabs_console(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+fn doubao_credential_status() -> DoubaoCredentialStatus {
+    doubao_credentials::status()
+}
+
+#[tauri::command]
+async fn save_doubao_credentials(
+    app_id: String,
+    access_token: String,
+) -> Result<DoubaoCredentialStatus, String> {
+    doubao_credentials::save_verified_credentials(&app_id, &access_token).await
+}
+
+#[tauri::command(async)]
+fn remove_doubao_credentials() -> Result<DoubaoCredentialStatus, String> {
+    doubao_credentials::remove_credentials()
+}
+
+#[tauri::command(async)]
+fn open_doubao_console(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://console.volcengine.com/speech/app", None::<&str>)
+        .map_err(|error| format!("Could not open the Volcengine Speech console: {error}"))
+}
+
+#[tauri::command(async)]
 fn capture_status(state: tauri::State<'_, AppState>) -> CaptureState {
     state.capture.status()
 }
@@ -570,6 +598,13 @@ fn start_capture(
         },
         elevenlabs: if transcription.asr.provider == "elevenlabs" {
             elevenlabs_credentials::load_api_key()?
+        } else {
+            None
+        },
+        doubao: if transcription.asr.provider == "doubao"
+            || transcription.diarization.provider == "doubao"
+        {
+            doubao_credentials::load_credentials()?
         } else {
             None
         },
@@ -858,6 +893,10 @@ pub fn run() {
             save_elevenlabs_api_key,
             remove_elevenlabs_api_key,
             open_elevenlabs_console,
+            doubao_credential_status,
+            save_doubao_credentials,
+            remove_doubao_credentials,
+            open_doubao_console,
             capture_status,
             test_audio_setup,
             relaunch_app,

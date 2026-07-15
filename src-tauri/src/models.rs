@@ -176,6 +176,11 @@ impl TranscriptionConfig {
                     return Err("ElevenLabs ASR requires model scribe-v2-realtime".into());
                 }
             }
+            "doubao" => {
+                if self.asr.model != "bigmodel" {
+                    return Err("Doubao ASR requires model bigmodel".into());
+                }
+            }
             "local" => {
                 const MODELS: &[&str] = &[
                     "nemotron-speech-3.5-streaming",
@@ -210,6 +215,7 @@ impl TranscriptionConfig {
             self.diarization.model.as_deref(),
         ) {
             ("deepgram", Some("latest")) => {}
+            ("doubao", Some("bigmodel")) => {}
             (
                 "local",
                 Some(
@@ -223,6 +229,12 @@ impl TranscriptionConfig {
             ("deepgram", model) => {
                 return Err(format!(
                     "Deepgram diarization requires model latest, got {}",
+                    model.unwrap_or("none")
+                ))
+            }
+            ("doubao", model) => {
+                return Err(format!(
+                    "Doubao diarization requires model bigmodel, got {}",
                     model.unwrap_or("none")
                 ))
             }
@@ -341,6 +353,42 @@ mod transcription_config_tests {
         let mut wrong_diarizer = valid;
         wrong_diarizer.diarization.model = Some("latest".into());
         assert!(wrong_diarizer.validate().is_err());
+    }
+
+    #[test]
+    fn doubao_requires_bigmodel_and_can_compose_with_independent_diarization() {
+        let valid = TranscriptionConfig {
+            asr: AsrConfig {
+                provider: "doubao".into(),
+                model: "bigmodel".into(),
+                language: "zh-CN".into(),
+            },
+            diarization: DiarizationConfig {
+                provider: "local".into(),
+                model: Some("sortformer-streaming".into()),
+            },
+        };
+        assert!(valid.validate().is_ok());
+
+        let mut wrong_model = valid;
+        wrong_model.asr.model = "nova-3".into();
+        assert_eq!(
+            wrong_model.validate(),
+            Err("Doubao ASR requires model bigmodel".into())
+        );
+
+        let built_in = TranscriptionConfig {
+            asr: AsrConfig {
+                provider: "doubao".into(),
+                model: "bigmodel".into(),
+                language: "zh-CN".into(),
+            },
+            diarization: DiarizationConfig {
+                provider: "doubao".into(),
+                model: Some("bigmodel".into()),
+            },
+        };
+        assert!(built_in.validate().is_ok());
     }
 }
 

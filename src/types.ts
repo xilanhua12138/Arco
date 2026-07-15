@@ -182,7 +182,7 @@ export interface AudioSetupCheck {
   microphone: AudioSourceCheck
 }
 
-export type TranscriptionProviderId = 'deepgram' | 'elevenlabs' | 'local'
+export type TranscriptionProviderId = 'deepgram' | 'elevenlabs' | 'doubao' | 'local'
 
 export type LocalTranscriptionModelId =
   | 'nemotron-speech-3.5-streaming'
@@ -192,7 +192,7 @@ export type LocalTranscriptionModelId =
   | 'whisper-medium'
   | 'whisper-large'
 
-export type TranscriptionModelId = 'nova-3' | 'scribe-v2-realtime' | LocalTranscriptionModelId
+export type TranscriptionModelId = 'nova-3' | 'scribe-v2-realtime' | 'bigmodel' | LocalTranscriptionModelId
 
 export type TranscriptionLanguage = 'auto' | 'zh-CN' | 'en-US'
 
@@ -202,8 +202,8 @@ export type LocalDiarizationModelId =
   | 'lseend-ami-streaming'
   | 'lseend-dihard3-streaming'
 
-export type DiarizationProviderId = 'deepgram' | 'local' | 'none'
-export type RemoteDiarizationModelId = 'latest'
+export type DiarizationProviderId = 'deepgram' | 'doubao' | 'local' | 'none'
+export type RemoteDiarizationModelId = 'latest' | 'bigmodel'
 export type DiarizationModelId = RemoteDiarizationModelId | LocalDiarizationModelId
 
 export interface AsrConfig {
@@ -246,6 +246,12 @@ export interface DeepgramCredentialStatus {
 }
 
 export interface ElevenLabsCredentialStatus {
+  configured: boolean
+  verified: boolean
+  message: string | null
+}
+
+export interface DoubaoCredentialStatus {
   configured: boolean
   verified: boolean
   message: string | null

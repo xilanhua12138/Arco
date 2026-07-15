@@ -37,7 +37,7 @@ The UI uses whitespace, type scale, row rhythm, and one-pixel dividers before ad
 ## Material hierarchy
 
 1. **Native window glass:** the outer window may use macOS Liquid Glass on macOS 26+ and Vibrancy on older supported systems.
-2. **Glass controls:** navigation, the capture control island, and transient drawers/sheets may use a tinted translucent material with a thin inner highlight.
+2. **Glass controls:** AppKit owns the Liquid Glass substrate for navigation and floating utility windows. WebView controls on top use restrained transparent fills; they never draw a second simulated glass layer.
 3. **Reading surface:** transcript and Agent prose use a stable, high-opacity surface. Long-form text never sits directly on a changing glass background.
 4. **Content rows:** use dividers and spacing by default. Add a card only when the content is a genuinely bounded object.
 
@@ -46,14 +46,14 @@ Glass must remain visibly subordinate to the transcript. Blur is not hierarchy b
 ## Tokens
 
 - Color system: one Typeless-derived light neutral and alpha palette in `src/index.css`; Arco does not follow the operating system's dark appearance.
-- Ambient depth: the main page stage uses Arco's light ambient wash plus a locally masked 8px dot field. The texture may show around reading surfaces, never through transcript or Agent prose.
+- Ambient depth: `NSGlassEffectView` supplies the dynamic environment color, lensing, and texture on macOS 26+. The WebView does not simulate those effects with gradients, dot fields, or backdrop filters; it only reveals the native material around stable reading surfaces.
 - Brand: near-black for primary controls; cobalt is a sparse semantic color for evidence links and selected context.
 - Recording red: state only, never brand decoration.
 - Neutrals: slightly blue paper and near-black ink tones in one stable light appearance.
 - Geometry baseline: 210px rail, 8px outer inset, 16–24px page gutter, a 3:2 Transcript/Agent split on Current, 1080px maximum width for History, and a 32px native title-bar clearance.
 - Radii: 8px navigation and field controls, 10px grouped content, 12px settings sheet, 14px recording HUD, and 16–20px window/sidebar material. Pills only for status and compact global actions.
 - Motion: 180–260ms, opacity and transform, ease-out. No bounce or decorative streaming animation.
-- Shadows: stable reading surfaces use no outer shadow. Native HUD and Agent windows keep only a one-pixel inner highlight and defer the outer shadow to macOS; browser sheets use the restrained sheet token.
+- Shadows: stable reading surfaces use no outer shadow. Native HUD and Agent windows defer their material edge and outer shadow entirely to macOS; browser-only content sheets use the restrained sheet token.
 - Primary type: Avenir Next with explicit PingFang SC and system fallbacks; SF Mono is reserved for timestamps, paths, and runtime identifiers. Page titles are 36/40 at weight 600; transcript copy is 14/22; navigation is 14/16.
 - Metadata: 10–12px with sufficient contrast for operational state; monospace is reserved for paths and runtime identifiers.
 

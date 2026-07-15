@@ -1,7 +1,7 @@
 {
   "name": "arco",
   "private": true,
-  "version": "0.2.10",
+  "version": "0.2.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,8 +10,9 @@
     "test:recorder": "bash native/build-recorder.sh /tmp/arco-recorder-selftest && /tmp/arco-recorder-selftest --self-test",
     "build:deepgram": "bash native/build-deepgram-transcriber.sh",
     "build:elevenlabs": "bash native/build-elevenlabs-transcriber.sh",
+    "build:doubao": "bash native/build-doubao-transcriber.sh",
     "build:transcriber": "bash native/build-local-transcriber.sh",
-    "build:native": "pnpm build:recorder && pnpm build:deepgram && pnpm build:elevenlabs && pnpm build:transcriber",
+    "build:native": "pnpm build:recorder && pnpm build:deepgram && pnpm build:elevenlabs && pnpm build:doubao && pnpm build:transcriber",
     "icon:generate": "swift native/generate-app-icon.swift public/arco-icon.png public/arco-app-icon.png && tauri icon public/arco-app-icon.png && cp src-tauri/icons/32x32.png public/favicon.png && cp src-tauri/icons/ios/AppIcon-60x60@3x.png public/apple-touch-icon.png",
     "test:transcriber": "swift run --package-path native/local-transcriber -c debug arco-transcription-selftest",
     "desktop": "pnpm build:native && tauri dev",
