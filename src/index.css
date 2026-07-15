@@ -12,11 +12,12 @@
   -webkit-font-smoothing: antialiased;
   color-scheme: light;
 
+  --surface-stage-base: #f5f8fa;
   --surface-stage: rgb(255 255 255 / 6%);
-  --surface-document: rgb(255 255 255 / 93%);
+  --surface-document: #fbfcfd;
   --surface-sheet-content: rgb(255 255 255 / 68%);
   --surface-raised: rgb(255 255 255 / 82%);
-  --surface-subtle: rgb(248 250 252 / 91%);
+  --surface-subtle: #f3f6f8;
   --surface-sidebar: rgb(241 248 252 / 16%);
   --surface-hover: rgb(119 119 119 / 7%);
   --surface-selected: rgb(255 255 255 / 42%);
@@ -26,10 +27,10 @@
   --surface-settings-shell: rgb(248 250 252 / 99%);
   --surface-settings-navigation: rgb(244 248 251 / 98%);
   --surface-settings-content: rgb(255 255 255 / 99%);
-  --ink-strong: #111;
-  --ink: rgb(17 17 17 / 75%);
-  --ink-muted: rgb(17 17 17 / 62%);
-  --ink-faint: rgb(17 17 17 / 48%);
+  --ink-strong: #171a1f;
+  --ink: #343a43;
+  --ink-muted: #56616d;
+  --ink-faint: #667481;
   --line: rgb(119 119 119 / 18%);
   --line-thin: rgb(119 119 119 / 7%);
   --line-strong: rgb(119 119 119 / 30%);
@@ -43,11 +44,18 @@
   --success: #008770;
   --warning: #9a5b00;
   --scrim: rgb(0 0 0 / 50%);
+  --stage-ambient-wash: radial-gradient(ellipse 78% 64% at 14% 8%, rgb(111 201 236 / 28%) 0%, transparent 72%), radial-gradient(ellipse 58% 52% at 88% 12%, rgb(187 174 238 / 18%) 0%, transparent 76%), radial-gradient(ellipse 62% 56% at 88% 94%, rgb(242 166 144 / 20%) 0%, transparent 74%);
+  --stage-matrix-wash: linear-gradient(112deg, rgb(100 201 238 / 24%) 0%, rgb(137 204 244 / 14%) 34%, rgb(177 157 240 / 14%) 64%, rgb(249 169 145 / 20%) 100%);
+  --stage-dot: rgb(78 94 111 / 28%);
   --stage-frame: rgb(206 225 238 / 18%);
   --surface-inner-highlight: rgb(255 255 255 / 94%);
   --surface-edge-highlight: rgb(255 255 255 / 76%);
   --shadow-material: 0 2px 2px rgb(17 17 17 / 3%), 0 4px 8px -2px rgb(17 17 17 / 5%), 0 12px 20px -6px rgb(17 17 17 / 10%);
   --shadow-sheet: 0 2px 8px -4px rgb(17 17 17 / 12%), 0 20px 44px -18px rgb(17 17 17 / 28%);
+  --motion-press: 110ms;
+  --motion-hover: 160ms;
+  --motion-state: 220ms;
+  --motion-sheet: 260ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --z-sticky: 10;
   --z-panel: 20;

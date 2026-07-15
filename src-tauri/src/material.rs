@@ -7,7 +7,6 @@ enum NativeMaterial {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSurface {
-    Main,
     Hud,
     Agent,
 }
@@ -25,7 +24,6 @@ fn material_profile(surface: NativeSurface) -> MaterialProfile {
     use window_vibrancy::NSGlassEffectViewStyle;
 
     let (radius, active_fallback) = match surface {
-        NativeSurface::Main => (20.0, false),
         NativeSurface::Hud => (14.0, true),
         NativeSurface::Agent => (16.0, true),
     };
@@ -80,6 +78,16 @@ fn macos_product_version() -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn liquid_glass_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        macos_product_version().ok().is_some_and(|version| {
+            material_for_macos_version(Some(&version)) == NativeMaterial::LiquidGlass
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn apply_vibrancy_fallback(window: &tauri::WebviewWindow, active: bool) {
     use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
@@ -95,11 +103,6 @@ fn apply_vibrancy_fallback(window: &tauri::WebviewWindow, active: bool) {
     ) {
         log::warn!("Arco could not apply the macOS vibrancy fallback: {error}");
     }
-}
-
-#[cfg(target_os = "macos")]
-pub fn apply_native_material(window: &tauri::WebviewWindow) {
-    apply_material(window, NativeSurface::Main);
 }
 
 #[cfg(target_os = "macos")]
@@ -183,10 +186,6 @@ mod tests {
     #[test]
     fn every_surface_uses_regular_glass_to_avoid_clear_overlay_compositor_saturation() {
         assert_eq!(
-            material_profile(NativeSurface::Main).style,
-            NSGlassEffectViewStyle::Regular
-        );
-        assert_eq!(
             material_profile(NativeSurface::Hud).style,
             NSGlassEffectViewStyle::Regular
         );
@@ -197,15 +196,20 @@ mod tests {
     }
 
     #[test]
+    fn main_window_leaves_glass_to_the_native_shell_instead_of_the_whole_webview() {
+        let app_source = include_str!("lib.rs");
+        assert!(!app_source.contains("material::apply_native_material(&window)"));
+        assert!(app_source.contains("sync_native_shell"));
+    }
+
+    #[test]
     fn native_glass_radii_are_concentric_with_each_window_surface() {
-        assert_eq!(material_profile(NativeSurface::Main).radius, 20.0);
         assert_eq!(material_profile(NativeSurface::Hud).radius, 14.0);
         assert_eq!(material_profile(NativeSurface::Agent).radius, 16.0);
     }
 
     #[test]
     fn floating_surfaces_keep_the_vibrancy_fallback_active() {
-        assert!(!material_profile(NativeSurface::Main).active_fallback);
         assert!(material_profile(NativeSurface::Hud).active_fallback);
         assert!(material_profile(NativeSurface::Agent).active_fallback);
     }

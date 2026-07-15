@@ -1,5 +1,5 @@
 import { AlertTriangle, Radio, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import './App.css'
 import { HistoryPage } from './components/HistoryPage'
@@ -9,6 +9,8 @@ import { NotesPage } from './components/NotesPage'
 import { Onboarding } from './components/Onboarding'
 import { ProviderSetup } from './components/ProviderSetup'
 import { SettingsSheet } from './components/SettingsSheet'
+import { NativeOverlayVisibilityProvider } from './components/NativeOverlayVisibility'
+import { PlatformNativeShell } from './components/PlatformNativeShell'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { TranscriptPane } from './components/TranscriptPane'
@@ -111,6 +113,34 @@ function App() {
   const activeMeetingDisplayTitle = activeMeeting
     ? activeMeeting.title?.trim() || t('common.untitledMeeting')
     : t('common.currentMeeting')
+  const nativeShellModeLabel = displayedAudioMode === 'both'
+    ? t('capture.mode.hybrid')
+    : displayedAudioMode === 'system'
+      ? t('capture.mode.online')
+      : t('capture.mode.room')
+  const nativeShellCaptureLabel = arco.capture.phase === 'recording'
+    ? t('capture.stop')
+    : arco.capture.phase === 'starting'
+      ? t('common.starting')
+      : arco.capture.phase === 'stopping'
+        ? t('common.stopping')
+        : t(page === 'review' ? 'capture.continue' : 'capture.start')
+  const nativeShellStatusLabel = arco.capture.phase === 'recording'
+    ? t('common.listening')
+    : arco.capture.phase === 'starting'
+      ? t('capture.starting')
+      : arco.capture.phase === 'stopping'
+        ? t('capture.stopping')
+        : t('capture.ready')
+  const nativeShellLabels = useMemo(() => ({
+    current: t('nav.current'),
+    history: t('nav.history'),
+    notes: t('nav.notes'),
+    settings: t('common.settings'),
+    ready: nativeShellStatusLabel,
+    audioMode: nativeShellModeLabel,
+    captureAction: nativeShellCaptureLabel,
+  }), [nativeShellCaptureLabel, nativeShellModeLabel, nativeShellStatusLabel, t])
 
   const changeAudioMode = (mode: AudioMode) => {
     setAudioMode(mode)
@@ -244,8 +274,12 @@ function App() {
   const showPage = async (nextPage: AppPage) => {
     setSettingsOpen(false)
     if (nextPage === 'notes') {
-      await refreshSavedNotes(notesQuery)
-      loadedNotesQueryRef.current = notesQuery
+      setPage(nextPage)
+      if (loadedNotesQueryRef.current !== notesQuery) {
+        loadedNotesQueryRef.current = notesQuery
+        void refreshSavedNotes(notesQuery)
+      }
+      return
     }
     if (
       nextPage === 'current' &&
@@ -539,6 +573,17 @@ function App() {
     setProviderSetupOpen(true)
   }
 
+  const openSettings = () => {
+    returnFocusRef.current = 'settings-trigger'
+    setSettingsPage('general')
+    setSettingsOpen(true)
+    void refreshStorageSettings()
+    void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
+    void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
+    void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
+    void refreshDoubaoCredential().catch((cause) => console.warn('Could not read Doubao credential status', cause))
+  }
+
   const renderAgentDock = (meeting: MeetingDetail | null) => (
     <InsightPanel
       meeting={meeting}
@@ -617,8 +662,21 @@ function App() {
   }
 
   return (
-    <div className="app-shell consumer-shell">
-      <Sidebar
+    <NativeOverlayVisibilityProvider visible={!settingsOpen && !providerSetupOpen}>
+    <div className={`app-shell consumer-shell ${arco.isDesktop ? 'consumer-shell-native' : ''}`}>
+      {arco.isDesktop ? (
+        <PlatformNativeShell
+          visible={!settingsOpen}
+          page={page}
+          capturePhase={arco.capture.phase}
+          captureEnabled={!['starting', 'stopping'].includes(arco.capture.phase)}
+          captureActionVisible={page !== 'current' || arco.capture.phase === 'recording'}
+          labels={nativeShellLabels}
+          onChangePage={(nextPage) => void showPage(nextPage)}
+          onToggleCapture={() => void toggleListening(page === 'review' ? arco.meeting?.summary.id : undefined)}
+          onOpenSettings={openSettings}
+        />
+      ) : <Sidebar
         page={page}
         meeting={
           page === 'review'
@@ -634,17 +692,8 @@ function App() {
         onToggleCapture={async (resumeMeetingId) => {
           await toggleListening(resumeMeetingId)
         }}
-          onOpenSettings={() => {
-          returnFocusRef.current = 'settings-trigger'
-          setSettingsPage('general')
-            setSettingsOpen(true)
-            void refreshStorageSettings()
-            void refreshTranscriptionModels().catch((cause) => console.warn('Could not read local speech models', cause))
-            void refreshDeepgramCredential().catch((cause) => console.warn('Could not read Deepgram credential status', cause))
-            void refreshElevenLabsCredential().catch((cause) => console.warn('Could not read ElevenLabs credential status', cause))
-            void refreshDoubaoCredential().catch((cause) => console.warn('Could not read Doubao credential status', cause))
-        }}
-      />
+          onOpenSettings={openSettings}
+      />}
 
       <section className="page-stage">
         <div className="page-drag-space" data-tauri-drag-region />
@@ -861,6 +910,7 @@ function App() {
       )}
 
     </div>
+    </NativeOverlayVisibilityProvider>
   )
 }
 

@@ -136,16 +136,19 @@ describe('Arco consumer conversation workspace', () => {
     render(<App />)
 
     const idle = await screen.findByRole('region', { name: 'Start listening' })
-    expect(within(idle).getByRole('heading', { name: 'Start listening' })).toBeVisible()
+    expect(within(idle).queryByRole('heading', { name: 'Start listening' })).not.toBeInTheDocument()
     expect(within(idle).queryByText('Start a new meeting when you are ready. Its live transcript and Agent will appear here.')).not.toBeInTheDocument()
     const shortcuts = within(idle).getByRole('region', { name: 'Shortcuts' })
     expect([...shortcuts.querySelectorAll('kbd')].map((key) => key.textContent)).toEqual(['⌘', '⇧', 'Space', '⌘', 'K'])
     expect(within(idle).getByRole('region', { name: 'On this Mac' })).toHaveTextContent('0')
     expect(screen.queryByRole('heading', { name: 'Transcript' })).not.toBeInTheDocument()
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
+    const startButton = within(idle).getByRole('button', { name: 'Start listening' })
+    const audioButton = within(idle).getByRole('button', { name: 'Next meeting audio' })
     expect(screen.getAllByRole('button', { name: 'Start listening' })).toHaveLength(1)
+    expect(startButton.nextElementSibling).toBe(audioButton.parentElement)
 
-    await user.click(within(idle).getByRole('button', { name: 'Start listening' }))
+    await user.click(startButton)
     expect(startCapture).toHaveBeenCalledWith('both', expect.any(Object))
     expect(await findAgentWorkspace()).toBeVisible()
   })
@@ -503,6 +506,27 @@ describe('Arco consumer conversation workspace', () => {
     expect(within(agent).getByRole('button', { name: 'Saved note' })).toBeVisible()
   })
 
+  it('opens Notes immediately while persisted notes load in the background', async () => {
+    const user = userEvent.setup()
+    let resolveNotes!: (notes: Awaited<ReturnType<typeof arcoBridge.listNotes>>) => void
+    const pendingNotes = new Promise<Awaited<ReturnType<typeof arcoBridge.listNotes>>>((resolve) => {
+      resolveNotes = resolve
+    })
+    const listNotes = vi.spyOn(arcoBridge, 'listNotes').mockReturnValue(pendingNotes)
+
+    render(<App />)
+    const notesTrigger = await screen.findByRole('button', { name: 'Open saved notes' })
+    await user.click(notesTrigger)
+
+    try {
+      expect(screen.queryByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
+      expect(notesTrigger).toHaveAttribute('aria-current', 'page')
+      expect(listNotes).toHaveBeenCalledWith('')
+    } finally {
+      await act(async () => resolveNotes([]))
+    }
+  })
+
   it('collects saved Agent answers in Notes and opens their source meeting', async () => {
     const user = userEvent.setup()
     const savedTurn = {
@@ -538,8 +562,8 @@ describe('Arco consumer conversation workspace', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Notes' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open saved notes' })).toHaveAttribute('aria-current', 'page')
-    expect(await screen.findByRole('button', { name: pastA.title })).toBeVisible()
-    expect(screen.getByText(savedTurn.question)).toBeVisible()
+    expect(await screen.findByRole('button', { name: `Open meeting: ${pastA.title}` })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Note title' })).toHaveValue(savedTurn.question)
     expect(screen.getByRole('textbox', { name: 'Markdown note' })).toHaveValue(savedTurn.answer)
     expect(screen.queryByRole('main', { name: 'Ask Arco' })).not.toBeInTheDocument()
 
@@ -551,7 +575,7 @@ describe('Arco consumer conversation workspace', () => {
     await user.type(screen.getByRole('textbox', { name: 'Search notes' }), 'release')
     await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith('release'))
 
-    await user.click(screen.getByRole('button', { name: pastA.title }))
+    await user.click(screen.getByRole('button', { name: `Open meeting: ${pastA.title}` }))
     expect(await screen.findByRole('heading', { level: 1, name: pastA.title })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open meeting history' })).toHaveAttribute('aria-current', 'page')
   })
@@ -589,7 +613,6 @@ describe('Arco consumer conversation workspace', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Meeting for this note' }), 'demo-live')
     await user.type(screen.getByRole('textbox', { name: 'Note title' }), 'Interview follow-ups')
     await user.type(screen.getByRole('textbox', { name: 'Markdown note' }), '- Ask about the rollout\n- Confirm the owner')
-    await user.click(screen.getByRole('button', { name: 'Save note' }))
 
     await waitFor(() => expect(saveNote).toHaveBeenCalledWith({
       id: null,

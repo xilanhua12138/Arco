@@ -1,6 +1,6 @@
 [package]
 name = "Arco"
-version = "0.2.11"
+version = "0.2.12"
 description = "AI-native meeting copilot powered by the user's local agent CLI"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -65,7 +65,7 @@ urlencoding = "2.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.7.1"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSBitmapImageRep", "NSColor", "NSImage", "NSImageRep", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSBitmapImageRep", "NSButton", "NSButtonCell", "NSCell", "NSColor", "NSControl", "NSGlassEffectView", "NSImage", "NSImageRep", "NSResponder", "NSSearchField", "NSTextField", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
 security-framework = "3.2"
 

@@ -9,6 +9,8 @@ import {
 } from 'lucide-react'
 import type { AudioMode, CaptureState, MeetingSummary } from '../types'
 import { useI18n } from '../i18n/i18n'
+import { PlatformActionButton } from './PlatformActionButton'
+import { PlatformGlassSurface } from './PlatformGlassSurface'
 
 type AppPage = 'current' | 'history' | 'notes' | 'review'
 
@@ -106,9 +108,12 @@ export function Sidebar({
 
       <div className="sidebar-spacer" />
 
-      <section
+      <PlatformGlassSurface
+        nativeId="sidebar-capture"
         className={`capture-card ${recording ? 'capture-card-live' : ''}`}
-        aria-label={t('capture.audioLabel', { mode: mode.label, source: mode.sourceLabel })}
+        cornerRadius={16}
+        tone={recording ? 'accent' : 'elevated'}
+        ariaLabel={t('capture.audioLabel', { mode: mode.label, source: mode.sourceLabel })}
       >
         <div className="capture-card-heading">
           <span className="capture-card-icon" aria-hidden="true">
@@ -121,31 +126,35 @@ export function Sidebar({
         </div>
 
         {showCaptureAction && (
-          <button
-            type="button"
+          <PlatformActionButton
+            nativeId="capture-toggle"
             className={`capture-card-button ${recording ? 'capture-card-button-stop' : ''}`}
-            onClick={() => onToggleCapture(page === 'review' ? meeting?.id : undefined)}
+            label={captureLabel}
+            symbol={recording ? 'stop.fill' : 'waveform'}
+            variant="prominent"
+            onPress={() => onToggleCapture(page === 'review' ? meeting?.id : undefined)}
             disabled={busy}
-            aria-label={captureLabel}
           >
             {recording ? <Square size={12} fill="currentColor" /> : <Waves size={15} />}
             {captureLabel}
-          </button>
+          </PlatformActionButton>
         )}
-      </section>
+      </PlatformGlassSurface>
 
       <footer className="sidebar-utilities">
-        <button
+        <PlatformActionButton
+          nativeId="settings-open"
           id="settings-trigger"
-          type="button"
           className="sidebar-settings-button"
-          onClick={onOpenSettings}
-          aria-label={t('nav.openSettings')}
-          aria-haspopup="dialog"
+          label={t('nav.openSettings')}
+          symbol="slider.horizontal.3"
+          variant="toolbar"
+          onPress={onOpenSettings}
+          ariaHasPopup="dialog"
         >
-          <Settings2 size={18} />
+          <Settings2 size={14} />
           <span>{t('common.settings')}</span>
-        </button>
+        </PlatformActionButton>
       </footer>
     </aside>
   )
