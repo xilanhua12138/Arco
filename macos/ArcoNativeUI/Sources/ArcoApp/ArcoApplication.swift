@@ -272,6 +272,12 @@ private final class NativeApplicationRuntime {
         windowCoordinator.canShowAgent = { [weak store] in
             store?.capture.phase == .recording && store?.capture.activeMeetingId != nil
         }
+        windowCoordinator.onHUDPresented = { [weak recordingHUDModel] in
+            recordingHUDModel?.startMonitoring()
+        }
+        windowCoordinator.onHUDHidden = { [weak recordingHUDModel] in
+            recordingHUDModel?.stopMonitoring()
+        }
         windowCoordinator.onAgentFocused = { [weak agentOverlayModel] in
             Task { @MainActor in await agentOverlayModel?.refresh() }
         }

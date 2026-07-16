@@ -1,6 +1,4 @@
 import ArcoNativeUI
-import Foundation
-import Observation
 import SwiftUI
 
 private enum HUDSourcePalette {
@@ -9,113 +7,6 @@ private enum HUDSourcePalette {
         green: 17 / 255,
         blue: 17 / 255
     )
-}
-
-@MainActor
-@Observable
-final class RecordingHUDModel {
-    private(set) var capture = CaptureState(
-        phase: .starting,
-        activeMeetingId: nil,
-        startedAt: nil,
-        message: nil,
-        mode: nil,
-        transcriptPath: nil,
-        error: nil,
-        transcription: nil
-    )
-    private(set) var now = Date()
-    private(set) var saving = false
-    private(set) var saved = false
-
-    private let readCapture: () async throws -> CaptureState
-    private let stopCapture: () async throws -> CaptureState
-    private let onStopped: @MainActor () -> Void
-
-    init(
-        readCapture: @escaping () async throws -> CaptureState,
-        stopCapture: @escaping () async throws -> CaptureState,
-        onStopped: @escaping @MainActor () -> Void
-    ) {
-        self.readCapture = readCapture
-        self.stopCapture = stopCapture
-        self.onStopped = onStopped
-    }
-
-    func pollCapture() async {
-        while !Task.isCancelled {
-            do {
-                let next = try await readCapture()
-                let reusedForNewRecording = saved && next.phase == .recording
-                if !saving && (!saved || reusedForNewRecording) {
-                    capture = next
-                    if reusedForNewRecording { saved = false }
-                }
-            } catch {
-                capture.phase = .error
-            }
-
-            do {
-                try await Task.sleep(for: .milliseconds(700))
-            } catch {
-                return
-            }
-        }
-    }
-
-    func runClock() async {
-        while !Task.isCancelled {
-            now = Date()
-            do {
-                try await Task.sleep(for: .seconds(1))
-            } catch {
-                return
-            }
-        }
-    }
-
-    func stop() async {
-        guard !saving, !saved else { return }
-        saving = true
-        capture.phase = .stopping
-        defer {
-            saving = false
-            // The old stop_capture command hid both owned windows whether the
-            // capture stop succeeded or failed.
-            onStopped()
-        }
-        do {
-            capture = try await stopCapture()
-            saved = true
-        } catch {
-            capture.phase = .error
-        }
-    }
-
-    var elapsed: String {
-        guard let raw = capture.startedAt,
-              let started = Self.parseDate(raw) else { return "00:00" }
-        let total = max(0, Int(now.timeIntervalSince(started)))
-        let hours = total / 3_600
-        let minutes = total % 3_600 / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    var controlsLocked: Bool {
-        saving || saved || capture.phase == .starting || capture.phase == .stopping
-    }
-
-    private static func parseDate(_ raw: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let value = formatter.date(from: raw) { return value }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: raw)
-    }
 }
 
 struct RecordingHUDView: View {
@@ -169,8 +60,6 @@ struct RecordingHUDView: View {
         .background(ArcoWindowDragRegion())
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
-        .task { await model.pollCapture() }
-        .task { await model.runClock() }
     }
 
     private var status: some View {

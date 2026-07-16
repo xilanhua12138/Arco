@@ -121,6 +121,30 @@ private final class LockedBox<Value>: @unchecked Sendable {
     }
 }
 
+private actor DelayedFirstHUDCapture {
+    private var reads = 0
+    private var firstRead: CheckedContinuation<CaptureState, Never>?
+
+    func read() async -> CaptureState {
+        reads += 1
+        if reads == 1 {
+            return await withCheckedContinuation { continuation in
+                firstRead = continuation
+            }
+        }
+        return capture(phase: .recording, meetingId: "fresh", message: "fresh")
+    }
+
+    func readCount() -> Int { reads }
+
+    func releaseFirstRead() {
+        firstRead?.resume(
+            returning: capture(phase: .recording, meetingId: "stale", message: "stale")
+        )
+        firstRead = nil
+    }
+}
+
 @MainActor
 private final class TestCaptureSurfaces: CaptureSurfaceCoordinating {
     var failToShow = false
@@ -182,18 +206,32 @@ private func detail(id: String, lineCount: Int = 6, live: Bool = false) -> Meeti
 private func capture(
     phase: CapturePhase,
     meetingId: String? = nil,
-    mode: AudioMode? = nil
+    mode: AudioMode? = nil,
+    message: String? = nil
 ) -> CaptureState {
     CaptureState(
         phase: phase,
         activeMeetingId: meetingId,
         startedAt: meetingId == nil ? nil : "2026-07-16T09:00:00+08:00",
-        message: nil,
+        message: message,
         mode: mode,
         transcriptPath: meetingId.map { "/tmp/\($0).md" },
         error: nil,
         transcription: .default
     )
+}
+
+@MainActor
+private func eventually(
+    attempts: Int = 80,
+    interval: Duration = .milliseconds(5),
+    _ predicate: () async -> Bool
+) async -> Bool {
+    for _ in 0..<attempts {
+        if await predicate() { return true }
+        try? await Task.sleep(for: interval)
+    }
+    return await predicate()
 }
 
 private func note(id: String, title: String) -> NoteDocument {
@@ -823,6 +861,104 @@ private func testHUDFailureRollsBackCapture() async {
 }
 
 @MainActor
+private func testHUDMonitoringLifecycleIsExplicitAndRestartable() async {
+    let reads = LockedBox(0)
+    let model = RecordingHUDModel(
+        readCapture: {
+            reads.mutate { $0 += 1 }
+            return capture(phase: .recording, meetingId: "live")
+        },
+        stopCapture: { capture(phase: .idle) },
+        onStopped: {},
+        capturePollInterval: .milliseconds(120),
+        clockInterval: .milliseconds(120)
+    )
+
+    model.startMonitoring()
+    expectTrue(model.isMonitoring, "Presenting the HUD starts its owned monitoring tasks")
+    let performedFirstRead = await eventually { reads.read { $0 } == 1 }
+    expectTrue(
+        performedFirstRead,
+        "Starting HUD monitoring performs the first capture read"
+    )
+
+    model.startMonitoring()
+    try? await Task.sleep(for: .milliseconds(40))
+    expect(
+        reads.read { $0 },
+        1,
+        "Calling startMonitoring twice is idempotent and does not create a second poller"
+    )
+
+    let continuedPolling = await eventually(attempts: 40, interval: .milliseconds(5)) {
+        reads.read { $0 } >= 2
+    }
+    expectTrue(
+        continuedPolling,
+        "An active HUD continues polling at its configured cadence"
+    )
+
+    model.stopMonitoring()
+    expectTrue(!model.isMonitoring, "Hiding the HUD synchronously cancels monitoring ownership")
+    let readsWhenHidden = reads.read { $0 }
+    try? await Task.sleep(for: .milliseconds(160))
+    expect(
+        reads.read { $0 },
+        readsWhenHidden,
+        "A hidden HUD performs no further capture-status reads"
+    )
+
+    model.startMonitoring()
+    expectTrue(model.isMonitoring, "Re-presenting the reusable HUD restarts monitoring")
+    let resumedPolling = await eventually { reads.read { $0 } > readsWhenHidden }
+    expectTrue(
+        resumedPolling,
+        "Restarted HUD monitoring resumes capture-status reads"
+    )
+    model.stopMonitoring()
+}
+
+@MainActor
+private func testHUDMonitoringRejectsLatePreviousGeneration() async {
+    let captures = DelayedFirstHUDCapture()
+    let model = RecordingHUDModel(
+        readCapture: { await captures.read() },
+        stopCapture: { capture(phase: .idle) },
+        onStopped: {},
+        capturePollInterval: .seconds(30),
+        clockInterval: .seconds(30)
+    )
+
+    model.startMonitoring()
+    let firstGenerationStarted = await eventually { await captures.readCount() == 1 }
+    expectTrue(
+        firstGenerationStarted,
+        "The first HUD generation begins its capture read"
+    )
+    model.stopMonitoring()
+    model.startMonitoring()
+    let secondGenerationStarted = await eventually { await captures.readCount() == 2 }
+    expectTrue(
+        secondGenerationStarted,
+        "A new HUD generation can start while the cancelled read is still returning"
+    )
+    let currentGenerationApplied = await eventually { model.capture.message == "fresh" }
+    expectTrue(
+        currentGenerationApplied,
+        "The new HUD generation applies its current capture state"
+    )
+
+    await captures.releaseFirstRead()
+    try? await Task.sleep(for: .milliseconds(30))
+    expect(
+        model.capture.message,
+        "fresh",
+        "A late result from the hidden HUD generation cannot overwrite current state"
+    )
+    model.stopMonitoring()
+}
+
+@MainActor
 private func testAgentStreamingIsRequestScoped() async {
     let backend = ScriptedBackend()
     backend.on("run_agent") { arguments in
@@ -1229,6 +1365,8 @@ testMeetingStatisticsContracts()
 await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
 await testHUDFailureRollsBackCapture()
+await testHUDMonitoringLifecycleIsExplicitAndRestartable()
+await testHUDMonitoringRejectsLatePreviousGeneration()
 await testAgentStreamingIsRequestScoped()
 await testHistoryDebounceCannotOverwriteClearedQuery()
 await testNotesUnmountCancelsSearchAutosaveAndLocalState()

@@ -56,6 +56,8 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     private(set) var agentWindow: NSPanel?
 
     var canShowAgent: @MainActor () -> Bool = { false }
+    var onHUDPresented: @MainActor () -> Void = {}
+    var onHUDHidden: @MainActor () -> Void = {}
     var onAgentFocused: @MainActor () -> Void = {}
     var onSurfaceError: @MainActor (Error) -> Void = { _ in }
 
@@ -166,10 +168,12 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         )
         // Preserve show-without-focus behavior. The panel is still
         // focusable and accepts its Stop / Ask Arco controls on first click.
+        onHUDPresented()
         hud.orderFrontRegardless()
     }
 
     func releaseCaptureSurfaces() {
+        onHUDHidden()
         hudWindow?.orderOut(nil)
         agentWindow?.orderOut(nil)
     }
@@ -234,7 +238,12 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     // MARK: - NSWindowDelegate
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if sender === hudWindow || sender === agentWindow {
+        if sender === hudWindow {
+            onHUDHidden()
+            sender.orderOut(nil)
+            return false
+        }
+        if sender === agentWindow {
             sender.orderOut(nil)
             return false
         }
