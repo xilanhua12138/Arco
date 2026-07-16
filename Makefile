@@ -7,6 +7,7 @@ build:
 test:
 	./native/verify-native-ui.sh
 	cargo test --manifest-path rust/arco-core/Cargo.toml --all-targets --all-features -- --test-threads=1
+	cargo build --manifest-path rust/arco-core/Cargo.toml --lib
 	@set -e; for product in \
 		ArcoNativeUIContractTests \
 		ArcoMarkdownContractTests \
