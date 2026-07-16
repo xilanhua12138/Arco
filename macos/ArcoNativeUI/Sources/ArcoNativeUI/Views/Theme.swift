@@ -1,0 +1,514 @@
+import AppKit
+import SwiftUI
+
+/// The presentation layer's translation contract. Callers own the selected
+/// locale; views only ask for the same keys used by the original application.
+public typealias ArcoTranslate = (_ key: String, _ parameters: [String: String]) -> String
+
+/// Literal SwiftUI counterparts of the original color tokens.
+public enum ArcoNativeColors {
+    public static let surfaceStageBase = Color(red: 245 / 255, green: 248 / 255, blue: 250 / 255)
+    public static let surfaceStage = Color.white.opacity(0.06)
+    public static let surfaceDocument = Color(red: 251 / 255, green: 252 / 255, blue: 253 / 255)
+    public static let surfaceSheetContent = Color.white.opacity(0.68)
+    public static let surfaceRaised = Color.white.opacity(0.82)
+    public static let surfaceSubtle = Color(red: 243 / 255, green: 246 / 255, blue: 248 / 255)
+    public static let surfaceSidebar = Color(red: 241 / 255, green: 248 / 255, blue: 252 / 255).opacity(0.16)
+    public static let surfaceHover = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.07)
+    public static let surfaceSelected = Color.white.opacity(0.42)
+    public static let surfaceNavigation = Color(red: 241 / 255, green: 248 / 255, blue: 252 / 255).opacity(0.14)
+    public static let surfacePopover = Color.white.opacity(0.94)
+    public static let surfaceControlFill = Color.white.opacity(0.24)
+    public static let surfaceSettingsShell = Color(red: 248 / 255, green: 250 / 255, blue: 252 / 255).opacity(0.99)
+    public static let surfaceSettingsNavigation = Color(red: 244 / 255, green: 248 / 255, blue: 251 / 255).opacity(0.98)
+    public static let surfaceSettingsContent = Color.white.opacity(0.99)
+
+    public static let inkStrong = Color(red: 23 / 255, green: 26 / 255, blue: 31 / 255)
+    public static let ink = Color(red: 52 / 255, green: 58 / 255, blue: 67 / 255)
+    public static let inkMuted = Color(red: 86 / 255, green: 97 / 255, blue: 109 / 255)
+    public static let inkFaint = Color(red: 102 / 255, green: 116 / 255, blue: 129 / 255)
+
+    public static let line = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.18)
+    public static let lineThin = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.07)
+    public static let lineStrong = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.30)
+
+    public static let action = Color.black.opacity(0.87)
+    public static let actionHover = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    public static let actionInk = Color.white
+    public static let brand = Color(red: 31 / 255, green: 93 / 255, blue: 242 / 255)
+    public static let brandSoft = Color(red: 52 / 255, green: 107 / 255, blue: 255 / 255).opacity(0.10)
+    public static let record = Color(red: 236 / 255, green: 15 / 255, blue: 56 / 255)
+    public static let recordSoft = Color(red: 236 / 255, green: 15 / 255, blue: 56 / 255).opacity(0.10)
+    public static let success = Color(red: 0 / 255, green: 135 / 255, blue: 112 / 255)
+    public static let warning = Color(red: 154 / 255, green: 91 / 255, blue: 0 / 255)
+    public static let scrim = Color.black.opacity(0.50)
+    public static let stageFrame = Color(red: 206 / 255, green: 225 / 255, blue: 238 / 255).opacity(0.18)
+    public static let stageDot = Color(red: 78 / 255, green: 94 / 255, blue: 111 / 255).opacity(0.28)
+    public static let surfaceInnerHighlight = Color.white.opacity(0.94)
+    public static let surfaceEdgeHighlight = Color.white.opacity(0.76)
+}
+
+public extension View {
+    /// macOS 26 Liquid Glass with the same regular-material fallback used by
+    /// Arco's former AppKit bridge on older systems.
+    @ViewBuilder
+    func arcoLiquidGlass<S: Shape>(
+        in shape: S,
+        interactive: Bool = false
+    ) -> some View {
+        if #available(macOS 26.0, *) {
+            if interactive {
+                self.glassEffect(.regular.interactive(), in: shape)
+            } else {
+                self.glassEffect(.regular, in: shape)
+            }
+        } else {
+            self
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.stroke(Color.white.opacity(0.28), lineWidth: 0.75))
+        }
+    }
+}
+
+struct ArcoSpinningRefreshIcon: View {
+    let active: Bool
+    var size: CGFloat = 14
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !active)) { timeline in
+            let duration = accessibilityReduceMotion ? 1.4 : 0.8
+            let phase = active
+                ? timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: duration) / duration
+                : 0
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: size))
+                .rotationEffect(.degrees(phase * 360))
+        }
+    }
+}
+
+/// Point-for-point constants from App.css and native_shell.rs. Keeping these
+/// values named makes the Swift layout auditable against the source UI rather
+/// than deriving a new visual system during the port.
+public enum ArcoLayoutMetrics {
+    public struct WorkspaceColumnWidths: Equatable, Sendable {
+        public var transcript: CGFloat
+        public var agent: CGFloat
+    }
+
+    public static let windowInset: CGFloat = 8
+    public static let sidebarWidth: CGFloat = 210
+    public static let sidebarStageGap: CGFloat = 8
+    public static let sidebarCornerRadius: CGFloat = 20
+    public static let pageCornerRadius: CGFloat = 20
+    public static let titlebarClearance: CGFloat = 32
+    public static let sidebarTitlebarClearance: CGFloat = 44
+    public static let pageBottomPadding: CGFloat = 16
+    public static let workspacePadding: CGFloat = 10
+    public static let workspaceGap: CGFloat = 10
+    public static let workspaceCornerRadius: CGFloat = 16
+    public static let compactViewportBreakpoint: CGFloat = 1_024
+    public static let workspaceStackedViewportBreakpoint: CGFloat = 900
+    public static let idleMediumViewportBreakpoint: CGFloat = 1_100
+    public static let idleStackedViewportBreakpoint: CGFloat = 880
+
+    public static func currentPageHorizontalPadding(viewportWidth: CGFloat) -> CGFloat {
+        viewportWidth <= compactViewportBreakpoint ? 12 : 16
+    }
+
+    /// Reproduces `minmax(minimum, 3fr) minmax(minimum, 2fr)` from App.css.
+    /// When the 2fr track reaches its minimum, CSS Grid gives the remaining
+    /// available width to the 3fr track instead of independently clamping both.
+    public static func workspaceColumnWidths(
+        contentWidth: CGFloat,
+        compactColumns: Bool
+    ) -> WorkspaceColumnWidths {
+        let transcriptMinimum: CGFloat = compactColumns ? 390 : 420
+        let agentMinimum: CGFloat = compactColumns ? 300 : 320
+        let minimumTotal = transcriptMinimum + agentMinimum
+
+        guard contentWidth >= minimumTotal else {
+            return WorkspaceColumnWidths(
+                transcript: transcriptMinimum,
+                agent: agentMinimum
+            )
+        }
+
+        let proportionalAgent = contentWidth * 0.4
+        let agent = max(agentMinimum, proportionalAgent)
+        return WorkspaceColumnWidths(
+            transcript: contentWidth - agent,
+            agent: agent
+        )
+    }
+
+    public static func historyPageHorizontalPadding(viewportWidth: CGFloat) -> CGFloat {
+        viewportWidth <= compactViewportBreakpoint ? 20 : 24
+    }
+
+    public static func notesPageHorizontalPadding(viewportWidth: CGFloat) -> CGFloat {
+        viewportWidth <= compactViewportBreakpoint ? 20 : 16
+    }
+}
+
+/// Native counterpart of the source `data-tauri-drag-region` strips. It owns
+/// no pixels: it only forwards the gesture to AppKit, while controls layered
+/// outside the strip keep their normal hit targets.
+public struct ArcoWindowDragRegion: View {
+    public init() {}
+
+    public var body: some View {
+        if #available(macOS 15.0, *) {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+        } else {
+            ArcoLegacyWindowDragRegion()
+        }
+    }
+}
+
+private struct ArcoLegacyWindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { DragRegionView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class DragRegionView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+    }
+}
+
+/// These values are copied from ArcoGlassControls.swift. They intentionally do
+/// not reuse the CSS palette: the established native controls use Apple's glass
+/// with these stronger native tints on macOS 26.
+public enum ArcoNativeGlassPalette {
+    public static let action = Color(red: 0.02, green: 0.49, blue: 1.0)
+    public static let recording = Color(red: 0.92, green: 0.12, blue: 0.22)
+    public static let shellBase = Color(red: 0.96, green: 0.98, blue: 0.99)
+    public static let ink = Color(red: 0.09, green: 0.10, blue: 0.12)
+    public static let secondaryInk = Color(red: 0.31, green: 0.35, blue: 0.40)
+}
+
+public enum ArcoGlassSurfaceTone: Sendable {
+    case neutral
+    case accent
+    case elevated
+
+    fileprivate var tint: Color? {
+        switch self {
+        case .neutral: nil
+        case .accent: Color(red: 0.24, green: 0.55, blue: 0.95).opacity(0.10)
+        case .elevated: Color.white.opacity(0.08)
+        }
+    }
+}
+
+private struct ArcoActiveAppearanceModifier: ViewModifier {
+    var isActive: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.environment(\.appearsActive, isActive)
+        } else {
+            content.environment(\.controlActiveState, isActive ? .key : .inactive)
+        }
+    }
+}
+
+private extension View {
+    func arcoActiveAppearance(_ isActive: Bool) -> some View {
+        modifier(ArcoActiveAppearanceModifier(isActive: isActive))
+    }
+}
+
+/// Direct SwiftUI form of the source glass-surface contract. The material is
+/// the content's actual background rather than a separately hosted layer.
+public struct ArcoGlassSurface<Content: View>: View {
+    private let cornerRadius: CGFloat
+    private let tone: ArcoGlassSurfaceTone
+    private let interactive: Bool
+    private let content: Content
+
+    public init(
+        cornerRadius: CGFloat,
+        tone: ArcoGlassSurfaceTone,
+        interactive: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.cornerRadius = cornerRadius
+        self.tone = tone
+        self.interactive = interactive
+        self.content = content()
+    }
+
+    public var body: some View {
+        content.background { glass }
+    }
+
+    @ViewBuilder private var glass: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 12) {
+                Color.clear
+                    .glassEffect(
+                        .regular.tint(tone.tint).interactive(interactive),
+                        in: shape
+                    )
+            }
+            .arcoActiveAppearance(true)
+            .allowsHitTesting(false)
+        } else {
+            Color.clear
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.26), lineWidth: 0.75))
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+public enum ArcoNativeActionVariant: Sendable {
+    case prominent
+    case standard
+    case toolbar
+}
+
+/// Direct SwiftUI form of ArcoGlassActionRoot. Its system typography, hover
+/// motion, shapes, and blue native tint are preserved verbatim from the old
+/// AppKit overlay implementation.
+public struct ArcoNativeActionButton: View {
+    private let title: String
+    private let symbol: String
+    private let variant: ArcoNativeActionVariant
+    private let enabled: Bool
+    private let tint: Color
+    private let action: () -> Void
+    @State private var isHovered = false
+
+    public init(
+        title: String,
+        symbol: String,
+        variant: ArcoNativeActionVariant,
+        enabled: Bool = true,
+        tint: Color = ArcoNativeGlassPalette.action,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.symbol = symbol
+        self.variant = variant
+        self.enabled = enabled
+        self.tint = tint
+        self.action = action
+    }
+
+    public var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 8) { nativeAction }
+            } else {
+                fallbackAction
+            }
+        }
+        .disabled(!enabled)
+        .arcoActiveAppearance(true)
+        .allowsHitTesting(enabled)
+    }
+
+    @available(macOS 26.0, *)
+    @ViewBuilder private var nativeAction: some View {
+        Group {
+            switch variant {
+            case .toolbar:
+                actionButton {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .contentShape(Circle())
+                .glassEffect(.regular.interactive(), in: Circle())
+            case .prominent:
+                actionButton {
+                    Label(title, systemImage: symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 13)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .contentShape(Capsule())
+                .glassEffect(.regular.tint(tint).interactive(), in: Capsule())
+            case .standard:
+                actionButton {
+                    Label(title, systemImage: symbol)
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .contentShape(Capsule())
+                .glassEffect(.regular.interactive(), in: Capsule())
+            }
+        }
+        .scaleEffect(isHovered ? 1.018 : 1)
+        .offset(y: isHovered ? -1 : 0)
+        .onHover { isHovered = $0 }
+        .animation(.smooth(duration: 0.18), value: isHovered)
+    }
+
+    @ViewBuilder private var fallbackAction: some View {
+        switch variant {
+        case .toolbar:
+            actionButton {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .contentShape(Circle())
+            .background(.regularMaterial, in: Circle())
+            .overlay(Circle().strokeBorder(.white.opacity(0.28), lineWidth: 0.75))
+        case .prominent:
+            actionButton {
+                Label(title, systemImage: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 13)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .contentShape(Capsule())
+            .background(Color.accentColor, in: Capsule())
+        case .standard:
+            actionButton {
+                Label(title, systemImage: symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .contentShape(Capsule())
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 0.75))
+        }
+    }
+
+    private func actionButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
+        Button(action: action, label: label)
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+    }
+}
+
+/// Font construction and the fixed product scale from the original UI.
+public enum ArcoTypography {
+    public static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom("Avenir Next", size: size).weight(weight)
+    }
+
+    public static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom("SFMono-Regular", size: size).weight(weight)
+    }
+
+    public static let pageTitle = sans(36, weight: .semibold)
+    public static let surfaceTitle = sans(16, weight: .semibold)
+    public static let emptyTitle = sans(20, weight: .semibold)
+    public static let body = sans(14)
+    public static let bodyStrong = sans(14, weight: .medium)
+    public static let metadata = sans(12)
+    public static let small = sans(11)
+    public static let tiny = sans(10)
+}
+
+/// The original React surface uses Lucide 1.24.0. Keeping the same 24-point
+/// SVG nodes avoids silently swapping product icons for visually different
+/// SF Symbols during the native migration.
+public enum ArcoLucideSymbol: Sendable {
+    case arrowDown
+    case arrowLeft
+    case arrowUp
+    case audioLines
+    case audioWaveform
+    case bookOpenText
+    case bookmark
+    case check
+    case chevronRight
+    case circleAlert
+    case copy
+    case fileSearch
+    case fileText
+    case folderOpen
+    case info
+    case link2
+    case pencil
+    case plus
+    case x
+
+    fileprivate var nodes: String {
+        switch self {
+        case .arrowDown:
+            #"<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>"#
+        case .arrowLeft:
+            #"<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>"#
+        case .arrowUp:
+            #"<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>"#
+        case .audioLines:
+            #"<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>"#
+        case .audioWaveform:
+            #"<path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/>"#
+        case .bookOpenText:
+            #"<path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/>"#
+        case .bookmark:
+            #"<path d="M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z"/>"#
+        case .check:
+            #"<path d="M20 6 9 17l-5-5"/>"#
+        case .chevronRight:
+            #"<path d="m9 18 6-6-6-6"/>"#
+        case .circleAlert:
+            #"<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>"#
+        case .copy:
+            #"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
+        case .fileSearch:
+            #"<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><circle cx="11.5" cy="14.5" r="2.5"/><path d="M13.3 16.3 15 18"/>"#
+        case .fileText:
+            #"<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>"#
+        case .folderOpen:
+            #"<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>"#
+        case .info:
+            #"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#
+        case .link2:
+            #"<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>"#
+        case .pencil:
+            #"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#
+        case .plus:
+            #"<path d="M5 12h14"/><path d="M12 5v14"/>"#
+        case .x:
+            #"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#
+        }
+    }
+}
+
+public struct ArcoLucideIcon: View {
+    public let symbol: ArcoLucideSymbol
+    public let size: CGFloat
+    public let strokeWidth: CGFloat
+
+    public init(_ symbol: ArcoLucideSymbol, size: CGFloat, strokeWidth: CGFloat = 2) {
+        self.symbol = symbol
+        self.size = size
+        self.strokeWidth = strokeWidth
+    }
+
+    public var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .renderingMode(.template)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    private var image: NSImage {
+        let svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="\(strokeWidth)" stroke-linecap="round" stroke-linejoin="round">\(symbol.nodes)</svg>
+        """
+        let image = svg.data(using: .utf8).flatMap(NSImage.init(data:)) ?? NSImage(size: NSSize(width: 24, height: 24))
+        image.isTemplate = true
+        return image
+    }
+}

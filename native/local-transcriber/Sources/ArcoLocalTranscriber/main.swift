@@ -1,9 +1,12 @@
 import ArcoTranscriptionCore
+import Darwin
 import Foundation
 
 @main
 struct ArcoLocalTranscriberMain {
     static func main() async {
+        let parentMonitor = startParentMonitor()
+        defer { parentMonitor?.cancel() }
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else {
@@ -187,6 +190,29 @@ struct ArcoLocalTranscriberMain {
     private static func signalReady() throws {
         guard let path = ProcessInfo.processInfo.environment["ARCO_READY_FILE"], !path.isEmpty else { return }
         try Data("ready\n".utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    private static func startParentMonitor() -> Task<Void, Never>? {
+        guard
+            let rawParentPID = ProcessInfo.processInfo.environment["ARCO_PARENT_PID"],
+            let parentPID = pid_t(rawParentPID),
+            parentPID > 1
+        else {
+            return nil
+        }
+
+        return Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                if kill(parentPID, 0) == -1, errno == ESRCH {
+                    FileHandle.standardError.write(
+                        Data("Arco parent process exited; stopping local model worker.\n".utf8)
+                    )
+                    Foundation.exit(70)
+                }
+            }
+        }
     }
 
 }

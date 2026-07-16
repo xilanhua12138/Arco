@@ -24,9 +24,9 @@ swiftc "$NATIVE_DIR/recorder.swift" -o "$OUTPUT" \
   -Xlinker "$NATIVE_DIR/recorder-Info.plist"
 "$NATIVE_DIR/codesign-local.sh" "$OUTPUT" app.arco.desktop
 
-# Tauri bundles this staging directory as `Resources/native`. Keeping the
-# runtime payload separate avoids shipping tests, bytecode caches, and build
-# helpers with the application.
+# The native app packages this staging directory as `Resources/native`.
+# Keeping the runtime payload separate avoids shipping tests, caches, and
+# build helpers with the application.
 if [ "$OUTPUT" = "$NATIVE_DIR/recorder" ]; then
   RUNTIME_DIR="$NATIVE_DIR/runtime"
   mkdir -p "$RUNTIME_DIR"

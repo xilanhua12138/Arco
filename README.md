@@ -33,7 +33,7 @@ When that local CLI is signed in with your Codex or Claude subscription, Arco us
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
-The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the native audio, Deepgram, and ElevenLabs runtimes; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
+The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
 
 ## Live context, not another meeting dashboard
 
@@ -101,7 +101,7 @@ By default, transcripts and meeting state live at:
 
 - macOS 14 or newer
 - Apple Silicon recommended for on-device models
-- Node.js 22+, pnpm, Rust, and the Swift toolchain
+- Rust and the Xcode/Swift 6 toolchain
 - Codex CLI or Claude Code for Agent features
 
 ### Run from source
@@ -109,21 +109,19 @@ By default, transcripts and meeting state live at:
 ```bash
 git clone https://github.com/xilanhua12138/Arco.git
 cd Arco
-pnpm install
-pnpm build:native
-pnpm desktop
-```
-
-For a UI-only browser preview:
-
-```bash
-pnpm dev
+./native/build-recorder.sh
+./native/build-deepgram-transcriber.sh
+./native/build-elevenlabs-transcriber.sh
+./native/build-doubao-transcriber.sh
+./native/build-local-transcriber.sh
+ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
+open build/Arco.app
 ```
 
 To create the same locally signed macOS archive used for preview releases:
 
 ```bash
-pnpm desktop:package
+./native/package-local-app.sh
 ```
 
 The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
@@ -152,27 +150,28 @@ See [`SKILL.md`](./SKILL.md) for its commands and requirements. The desktop app 
 ## Verify the source
 
 ```bash
-pnpm lint
-pnpm test
-pnpm build
-pnpm test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml
-pnpm design:detect
-pnpm desktop:package
+cargo test --manifest-path rust/arco-core/Cargo.toml
+cargo build --manifest-path rust/arco-core/Cargo.toml --lib
+swift build --package-path macos/ArcoNativeUI
+swift run --package-path macos/ArcoNativeUI ArcoNativeUIContractTests
+swift run --package-path macos/ArcoNativeUI ArcoPreferencesContractTests
+swift run --package-path macos/ArcoNativeUI ArcoLocalizationContractTests
+ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
+./native/package-local-app.sh
 ```
 
 ## Architecture
 
-- **Tauri + Rust** owns windows, storage, capture lifecycle, Deepgram, Doubao, and ElevenLabs streaming, credentials, Agent processes, and native session bindings.
-- **React + TypeScript** renders the main workspace, History, Settings, onboarding, and global Agent surfaces.
-- **Swift** captures macOS audio and runs the on-device transcription pipeline.
+- **SwiftUI** renders the main workspace, History, Settings, onboarding, recording HUD, global Agent window, and every Liquid Glass surface/control. AppKit is limited to native window/panel lifecycle, global shortcuts, and system pickers.
+- **Rust static library + C ABI** runs in the Arco process and owns storage, capture orchestration, credentials, provider routing, Agent lifecycle, and native session bindings.
+- **Managed worker processes** isolate the recorder, cloud transcription helpers, and the FluidAudio/SwiftWhisper/Nemotron local pipeline so a model crash or memory spike does not take down the UI process. Codex and Claude remain external CLI processes.
 - **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers and saved notes.
 
 Read [PRODUCT.md](./PRODUCT.md), [DESIGN.md](./DESIGN.md), [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), and [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md) for the detailed contracts.
 
 ## Acknowledgements
 
-Special thanks to [FluidVoice](https://github.com/altic-dev/FluidVoice) for showing how fast, private, on-device voice software can feel native on macOS and for informing Arco's local model and provider matrix. Arco does not copy or redistribute FluidVoice's GPL-3.0 source; the dependency and license boundaries are documented in [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md).
+Special thanks to [FluidVoice](https://github.com/altic-dev/FluidVoice) for showing how fast, private, on-device voice software can feel native on macOS and for informing Arco's local model and provider matrix. FluidVoice is an inspiration boundary only: Arco does not copy or redistribute its GPL-3.0 source, and no FluidVoice library is linked into the main app. Arco's direct FluidAudio and SwiftWhisper dependencies live only in the isolated local-transcriber worker; the complete dependency and license boundaries are documented in [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md).
 
 ## Contributing
 

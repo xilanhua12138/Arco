@@ -32,7 +32,7 @@
 
 从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases) 下载最新 Apple Silicon `.dmg`，打开后把 `Arco.app` 拖到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
 
-当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含原生音频与 Rust Deepgram 运行时；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 音频与说话人 → 识别**并主动选择后下载。
+当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含录音器、云转写 helper 和本地转写 worker；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 音频与说话人 → 识别**并主动选择后下载。
 
 ## 实时上下文，而不是另一个会议仪表盘
 
@@ -97,7 +97,7 @@ Arco 本地优先并完全开源。默认数据位置：
 
 - macOS 14 或更高版本
 - 本地模型推荐 Apple Silicon
-- Node.js 22+、pnpm、Rust 与 Swift 工具链
+- Rust 与 Xcode/Swift 6 工具链
 - Agent 功能需要 Codex CLI 或 Claude Code
 
 ### 从源码运行
@@ -105,21 +105,19 @@ Arco 本地优先并完全开源。默认数据位置：
 ```bash
 git clone https://github.com/xilanhua12138/Arco.git
 cd Arco
-pnpm install
-pnpm build:native
-pnpm desktop
-```
-
-仅预览前端：
-
-```bash
-pnpm dev
+./native/build-recorder.sh
+./native/build-deepgram-transcriber.sh
+./native/build-elevenlabs-transcriber.sh
+./native/build-doubao-transcriber.sh
+./native/build-local-transcriber.sh
+ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
+open build/Arco.app
 ```
 
 生成与预览版 Release 相同的本地 ad-hoc 签名压缩包：
 
 ```bash
-pnpm desktop:package
+./native/package-local-app.sh
 ```
 
 安装镜像与校验文件位于 `artifacts/Arco-macos-<arch>.dmg` 和 `artifacts/Arco-macos-<arch>.dmg.sha256`。未来面向普通用户的正式版本会补充 Developer ID 签名与 Apple 公证。
@@ -148,27 +146,28 @@ bash bin/init.sh
 ## 验证源码
 
 ```bash
-pnpm lint
-pnpm test
-pnpm build
-pnpm test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml
-pnpm design:detect
-pnpm desktop:package
+cargo test --manifest-path rust/arco-core/Cargo.toml
+cargo build --manifest-path rust/arco-core/Cargo.toml --lib
+swift build --package-path macos/ArcoNativeUI
+swift run --package-path macos/ArcoNativeUI ArcoNativeUIContractTests
+swift run --package-path macos/ArcoNativeUI ArcoPreferencesContractTests
+swift run --package-path macos/ArcoNativeUI ArcoLocalizationContractTests
+ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
+./native/package-local-app.sh
 ```
 
 ## 技术架构
 
-- **Tauri + Rust**：窗口、本地存储、采集生命周期、Deepgram、豆包与 ElevenLabs 流式连接、凭证、Agent 进程与原生 session 绑定。
-- **React + TypeScript**：主工作区、历史、设置、Onboarding 与全局 Agent 浮层。
-- **Swift**：macOS 音频采集与本地转写链路。
+- **SwiftUI**：呈现主工作区、历史、设置、Onboarding、录音 HUD、全局 Agent 窗口以及全部 Liquid Glass 表面和控件。AppKit 只负责原生窗口/面板生命周期、全局快捷键和系统选择器。
+- **Rust staticlib + C ABI**：在 Arco 主进程内负责存储、采集编排、凭证、Provider 路由、Agent 生命周期与原生 session 绑定。
+- **受管 worker 进程**：录音器、云转写 helper、FluidAudio/SwiftWhisper/Nemotron 本地链路与主 UI 进程隔离，避免模型崩溃或内存峰值直接带崩界面。Codex 与 Claude 仍是外部 CLI 进程。
 - **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答、用户保存的笔记分开存储。
 
 详细约束见 [PRODUCT.md](./PRODUCT.md)、[DESIGN.md](./DESIGN.md)、[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) 与 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
 
 ## 致谢
 
-特别感谢 [FluidVoice](https://github.com/altic-dev/FluidVoice) 展示了高速、隐私友好、完全在设备端运行的 macOS 语音体验，并为 Arco 的本地模型与 Provider 设计提供了重要启发。Arco 没有复制或分发 FluidVoice 的 GPL-3.0 源码；依赖与许可证边界详见 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
+特别感谢 [FluidVoice](https://github.com/altic-dev/FluidVoice) 展示了高速、隐私友好、完全在设备端运行的 macOS 语音体验，并为 Arco 的本地模型与 Provider 设计提供了重要启发。FluidVoice 仅是设计启发边界：Arco 没有复制或分发其 GPL-3.0 源码，主程序也没有链接 FluidVoice 库。Arco 直接依赖的 FluidAudio 与 SwiftWhisper 只存在于隔离的本地转写 worker 中；完整依赖与许可证边界详见 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
 
 ## 参与贡献
 

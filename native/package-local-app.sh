@@ -6,9 +6,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TARGET_DIR=$(cd "$ROOT/src-tauri" && cargo metadata --format-version 1 --no-deps \
-  | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory))')
-APP="$TARGET_DIR/release/bundle/macos/Arco.app"
+APP="$ROOT/build/Arco.app"
 ARTIFACT_DIR="$ROOT/artifacts"
 ARCH=$(uname -m)
 OUTPUT="$ARTIFACT_DIR/Arco-macos-$ARCH.dmg"
@@ -38,8 +36,12 @@ trap cleanup EXIT HUP INT TERM
 
 cd "$ROOT"
 if [ "${ARCO_PACKAGE_SKIP_BUILD:-0}" != "1" ]; then
-  rm -rf "$APP"
-  pnpm tauri build --bundles app
+  "$ROOT/native/build-recorder.sh"
+  "$ROOT/native/build-deepgram-transcriber.sh"
+  "$ROOT/native/build-elevenlabs-transcriber.sh"
+  "$ROOT/native/build-doubao-transcriber.sh"
+  "$ROOT/native/build-local-transcriber.sh"
+  "$ROOT/native/build-native-app.sh"
 fi
 
 if [ ! -x "$APP/Contents/MacOS/Arco" ]; then

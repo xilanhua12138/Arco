@@ -1,15 +1,6 @@
 # Logs
 logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
 *.local
 .env
 .env.*
@@ -23,22 +14,16 @@ native/__pycache__/
 __pycache__/
 *.pyc
 native/**/.build/
-test-results/
-playwright-report/
+macos/ArcoNativeUI/.build/
+rust/arco-core/target/
+/build/
 artifacts/
-src-tauri/target/
 .agents/
 .codex/
 .impeccable/
-.cargo/
+.cargo/*
+!.cargo/config.toml
 tmp/
-public/arco-ambient-light.svg
-public/arco-icon-black-transparent*.png
-public/arco-icon-neutral-transparent-v5.png
-public/arco-icon-typeless-style-v4.png
-public/arco-icon.svg
-public/favicon.svg
-public/icons.svg
 
 # Editor directories and files
 .vscode/*

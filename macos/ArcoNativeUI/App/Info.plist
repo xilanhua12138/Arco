@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>Arco</string>
+  <key>CFBundleExecutable</key>
+  <string>Arco</string>
+  <key>CFBundleIconFile</key>
+  <string>Arco</string>
+  <key>CFBundleIdentifier</key>
+  <string>app.arco.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Arco</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.2.13</string>
+  <key>CFBundleVersion</key>
+  <string>0.2.13</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.productivity</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Arco uses the microphone to transcribe people speaking in the room during a meeting.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Arco captures system audio so remote meeting participants can be included in the transcript.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Arco captures system audio so remote meeting participants can be included in the transcript.</string>
+</dict>
+</plist>

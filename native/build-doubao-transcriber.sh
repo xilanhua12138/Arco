@@ -4,11 +4,14 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NATIVE_DIR="$ROOT/native"
 RUNTIME_DIR="$NATIVE_DIR/runtime"
-TARGET_DIR=$(cd "$ROOT/src-tauri" && cargo metadata --format-version 1 --no-deps \
-  | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory))')
+TARGET_DIR=${CARGO_TARGET_DIR:-"$ROOT/rust/arco-core/target"}
 
 mkdir -p "$RUNTIME_DIR"
-cargo build --manifest-path "$ROOT/src-tauri/Cargo.toml" --release --features doubao-sidecar --bin arco-doubao-transcriber
+CARGO_TARGET_DIR="$TARGET_DIR" cargo build \
+  --manifest-path "$ROOT/rust/arco-core/Cargo.toml" \
+  --release \
+  --features doubao-worker \
+  --bin arco-doubao-transcriber
 cp "$TARGET_DIR/release/arco-doubao-transcriber" "$RUNTIME_DIR/arco-doubao-transcriber"
 "$NATIVE_DIR/codesign-local.sh" \
   "$RUNTIME_DIR/arco-doubao-transcriber" \

@@ -4,36 +4,36 @@ Arco supports online, in-person, and hybrid meetings without pretending that an 
 
 ## Provider boundary
 
-The frontend persists one validated config with independent ASR and diarization providers:
+The SwiftUI settings store persists one validated config with independent ASR and diarization providers:
 
-```ts
-type TranscriptionConfig = {
-  asr: {
-    provider: 'deepgram' | 'doubao' | 'elevenlabs' | 'local'
-    model:
-      | 'nova-3'
-      | 'bigmodel'
-      | 'scribe-v2-realtime'
-      | 'nemotron-speech-3.5-streaming'
-      | 'whisper-tiny' | 'whisper-base' | 'whisper-small'
-      | 'whisper-medium' | 'whisper-large'
-    language: 'auto' | 'zh-CN' | 'en-US'
-  }
-  diarization:
-    | { provider: 'deepgram', model: 'latest' }
-    | { provider: 'doubao', model: 'bigmodel' }
-    | { provider: 'local', model:
-        | 'sortformer-streaming'
-        | 'pyannote-wespeaker-streaming'
-        | 'lseend-ami-streaming'
-        | 'lseend-dihard3-streaming' }
-    | { provider: 'none', model: null }
+```swift
+struct TranscriptionConfiguration: Codable {
+    var asr: ASRConfiguration
+    var diarization: DiarizationConfiguration
 }
 ```
 
+The concrete enums preserve the existing provider/model values: Deepgram `nova-3`, Doubao `bigmodel`, ElevenLabs `scribe-v2-realtime`, local Nemotron/Whisper variants, Deepgram or Doubao diarization, the four local diarizers, and `none`. Language remains `auto`, `zh-CN`, or `en-US`.
+
 Rust validates each provider/model pair independently and resolves a pipeline through a `TranscriberCatalog`. Each worker definition owns its executable, fixed arguments, credential requirement, and readiness timeout. The capture manager does not know inference APIs: it starts the resolved workers in owned process groups, supplies the live PCM stream, and waits for every one-use ready-file.
 
-The local sidecar has two deliberately smaller boundaries: `LocalTranscriptionProvider` for Nemotron/Whisper and a standalone streaming diarization runner for FluidAudio. If both selections are local, Arco fuses them in one process and loads their models once. In a mixed pipeline, the ASR side reads the shared streaming speaker timeline while the diarization side updates it. Model status, download, removal, and inference are separate commands, so capture never silently downloads models or mutates its model set.
+The local worker has two deliberately smaller boundaries: `LocalTranscriptionProvider` for Nemotron/Whisper and a standalone streaming diarization runner for FluidAudio. If both selections are local, Arco fuses them in one worker process and loads their models once. In a mixed pipeline, the ASR side reads the shared streaming speaker timeline while the diarization side updates it. Model status, download, removal, and inference are separate commands, so capture never silently downloads models or mutates its model set.
+
+## Process and memory isolation
+
+Swift statically links `libarco_core.a` and calls it through Arco's C ABI. That library contains the control plane and shared Rust provider support code, but provider streaming executes in owned helpers and the heavy local speech frameworks are absent from both `Arco` and `libarco_core.a`.
+
+| Process | Contains | Failure boundary |
+|---|---|---|
+| `Arco` | SwiftUI/AppKit UI + in-process Rust control plane | Product state, windows, storage, and orchestration |
+| `recorder` | ScreenCaptureKit + AVAudioEngine | Audio capture callbacks and PCM production |
+| Rust cloud helpers | Deepgram, Doubao, or ElevenLabs streaming client | Provider stream, reconnect, and bounded audio queue |
+| `arco-local-transcriber` | FluidAudio, SwiftWhisper/whisper.cpp, Nemotron, VAD, and local diarizers | Model loading, inference, native crashes, and model-memory pressure |
+| `codex` / `claude` | User-installed external CLI | Agent request and provider-native session |
+
+The Rust control plane starts helpers in exact owned process groups and retains their PIDs. Recording becomes visible only after every selected worker emits its ready signal. Stop, startup timeout, provider failure, app shutdown, or a worker crash targets that process tree; exiting `arco-local-transcriber` lets macOS reclaim its complete address space and loaded model memory. A local-engine crash or out-of-memory kill therefore fails the active capture contract without directly crashing the SwiftUI process. Arco does not keep a hidden persistent model host after capture ends.
+
+FluidVoice is not an executable or library dependency and is not statically linked into `Arco`. It informed the product/model matrix only. Arco directly depends on Apache-2.0 FluidAudio and MIT SwiftWhisper inside `arco-local-transcriber`, never inside the main app or `libarco_core.a`.
 
 ## Capture layout
 
@@ -66,7 +66,7 @@ Mixed local/remote use works in both directions. For example, ElevenLabs ASR can
 
 ## On-device ASR
 
-The bundled Swift sidecar provides:
+The bundled Swift local-transcriber worker provides:
 
 | Model | Runtime | Intended use |
 |---|---|---|
@@ -77,11 +77,11 @@ The bundled Swift sidecar provides:
 | Whisper Medium | SwiftWhisper/whisper.cpp | Higher accuracy with greater memory/latency |
 | Whisper Large v3 | SwiftWhisper/whisper.cpp | Highest-quality, heaviest Whisper option |
 
-Each stereo channel has an independent stateful Silero VAD stream through FluidAudio's Core ML `VadManager`. The meeting profile keeps 200 ms speech padding, requires 500 ms before an utterance is persisted, finalizes after 600 ms of model-confirmed silence, and force-splits continuous speech at 30 seconds so noise or a long monologue cannot grow the ASR buffer without bound. The sidecar incrementally consumes the live stream, transcribes finalized utterances, and writes the shared Markdown adapter with audio-relative start/end metadata. Nemotron uses its token timing envelope; Whisper preserves its returned segment timings. Arco currently persists finalized local segments rather than exposing unstable interim text.
+Each stereo channel has an independent stateful Silero VAD stream through FluidAudio's Core ML `VadManager`. The meeting profile keeps 200 ms speech padding, requires 500 ms before an utterance is persisted, finalizes after 600 ms of model-confirmed silence, and force-splits continuous speech at 30 seconds so noise or a long monologue cannot grow the ASR buffer without bound. The worker incrementally consumes the live stream, transcribes finalized utterances, and writes the shared Markdown adapter with audio-relative start/end metadata. Nemotron uses its token timing envelope; Whisper preserves its returned segment timings. Arco currently persists finalized local segments rather than exposing unstable interim text.
 
 Models live under `~/Library/Application Support/Arco/models/`. Every local ASR model has the shared Silero VAD Core ML bundle as a required dependency; `prepare` installs it through the same visible model-progress flow, while `stream` loads it in offline mode and fails clearly if the bundle is missing or corrupt. Capture never downloads VAD implicitly. Whisper downloads are staged, checked against their exact expected byte size, and atomically moved into place. Nemotron, Silero VAD, Sortformer, Pyannote + WeSpeaker, and LS-EEND use FluidAudio's model manifests/caches plus Arco-owned installation checks or markers. Each local worker emits its ready signal only after its selected models are loaded.
 
-The implementation depends directly on Apache-2.0 FluidAudio and MIT SwiftWhisper. FluidVoice informed the product/model matrix, but its GPL-3.0 source is not copied into Arco.
+The local worker depends directly on Apache-2.0 FluidAudio and MIT SwiftWhisper. FluidVoice informed the product/model matrix, but its GPL-3.0 source is not copied into Arco and no FluidVoice artifact is linked into the main program.
 
 ## On-device streaming speaker separation
 
@@ -98,7 +98,7 @@ Sortformer uses the palettized `fastV2_1` model on CPU + Neural Engine. Pyannote
 
 Each backend returns finalized history plus a revisable tentative edge. Arco appends only new finalized intervals and replaces the tentative edge on every update, avoiding stale-hypothesis double counting. The standalone diarizer atomically publishes a versioned timeline for both channels as the meeting continues. A separate ASR worker waits up to 1.5 seconds for timeline coverage for each finalized segment, then chooses the speaker slot with the greatest temporal overlap. It never waits until capture stops to rewrite the transcript.
 
-Local workers have a five-minute readiness ceiling and the capture remains visibly `Starting` until every selected worker is ready. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service should keep the diarizer warm across meetings and amortize that per-process load.
+Local workers have a five-minute readiness ceiling and the capture remains visibly `Starting` until every selected worker is ready. Once ready, diarization consumes the live stream incrementally. A future persistent local-model service could keep the diarizer warm across meetings and amortize that per-process load, but it must remain an independently terminable process with explicit memory and crash isolation.
 
 The identity key remains `(channel, speaker)`:
 
@@ -176,13 +176,13 @@ Primary references:
 
 ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not currently expose speaker diarization or dual-channel transcription, so it is registered as an ASR provider, not a diarization provider.
 
-- Arco opens one realtime WebSocket for each active source. `system` sends only channel 0, `mic` sends only channel 1, and `both` sends each channel through its own connection.
+- The ElevenLabs helper opens one realtime WebSocket for each active source. `system` sends only channel 0, `mic` sends only channel 1, and `both` sends each channel through its own connection.
 - With diarization off, realtime commits receive one source label per channel: `Remote 1` or `In room 1`. These are location labels, not detected speaker identities.
 - With Deepgram or a local streaming diarizer selected, each finalized ElevenLabs segment reads the shared timeline and receives the dominant overlapping speaker label.
 - Audio is streamed only while the meeting is active. Arco does not buffer meeting audio for a later ElevenLabs batch pass and does not replace the transcript after capture stops.
 - Speaker attribution remains incremental; Arco does not run a stop-time batch pass or replace the transcript after capture stops.
 
-The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned sidecar environment.
+The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned helper environment.
 
 Primary references:
 

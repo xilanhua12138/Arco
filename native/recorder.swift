@@ -316,7 +316,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     private func installTerminationHandlers() {
-        // Tauri stops its owned helper with SIGTERM. Convert that signal into
+        // Arco stops its owned helper with SIGTERM. Convert that signal into
         // an orderly teardown so Core Audio does not retain stale tap/privacy
         // attribution after the helper disappears.
         installTerminationSignalHandler(SIGTERM)
