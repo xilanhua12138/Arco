@@ -325,6 +325,10 @@ expect(
     1,
     "Toggling the transcript must keep one stable Agent panel identity so draft questions and context state survive"
 )
+expectTrue(
+    agentWorkspace.contains(".background(ArcoNativeColors.surfaceDocument.opacity(0.92))"),
+    "Agent workspace must keep one high-opacity reading substrate when the floating panel loses focus"
+)
 let contextMenu = sourceSection(
     insight,
     from: "private var contextMenu: some View",
