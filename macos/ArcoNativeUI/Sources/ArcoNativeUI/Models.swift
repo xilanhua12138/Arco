@@ -451,6 +451,31 @@ public struct AgentSource: Codable, Equatable, Identifiable, Sendable {
     public var id: String { "\(kind):\(reference)" }
 }
 
+public struct AgentToolActivity: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var kind: String
+    public var name: String
+    public var status: String
+    public var detail: String?
+    public var output: String?
+
+    public init(
+        id: String,
+        kind: String,
+        name: String,
+        status: String,
+        detail: String?,
+        output: String?
+    ) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.status = status
+        self.detail = detail
+        self.output = output
+    }
+}
+
 public struct AgentTurn: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var meetingId: String
@@ -458,6 +483,8 @@ public struct AgentTurn: Codable, Equatable, Identifiable, Sendable {
     public var question: String
     public var answer: String
     public var sources: [AgentSource]
+    public var toolActivities: [AgentToolActivity]
+    public var workDurationMs: UInt64?
     public var contextScope: String
     public var createdAt: String
     public var savedAsNote: Bool
@@ -479,7 +506,9 @@ public struct AgentTurn: Codable, Equatable, Identifiable, Sendable {
         noteId: String?,
         usedFallback: Bool,
         providerSessionId: String?,
-        providerTurnId: String?
+        providerTurnId: String?,
+        toolActivities: [AgentToolActivity] = [],
+        workDurationMs: UInt64? = nil
     ) {
         self.id = id
         self.meetingId = meetingId
@@ -487,6 +516,8 @@ public struct AgentTurn: Codable, Equatable, Identifiable, Sendable {
         self.question = question
         self.answer = answer
         self.sources = sources
+        self.toolActivities = toolActivities
+        self.workDurationMs = workDurationMs
         self.contextScope = contextScope
         self.createdAt = createdAt
         self.savedAsNote = savedAsNote
@@ -494,6 +525,30 @@ public struct AgentTurn: Codable, Equatable, Identifiable, Sendable {
         self.usedFallback = usedFallback
         self.providerSessionId = providerSessionId
         self.providerTurnId = providerTurnId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, meetingId, provider, question, answer, sources, toolActivities, workDurationMs, contextScope
+        case createdAt, savedAsNote, noteId, usedFallback, providerSessionId, providerTurnId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        meetingId = try values.decode(String.self, forKey: .meetingId)
+        provider = try values.decode(ProviderID.self, forKey: .provider)
+        question = try values.decode(String.self, forKey: .question)
+        answer = try values.decode(String.self, forKey: .answer)
+        sources = try values.decode([AgentSource].self, forKey: .sources)
+        toolActivities = try values.decodeIfPresent([AgentToolActivity].self, forKey: .toolActivities) ?? []
+        workDurationMs = try values.decodeIfPresent(UInt64.self, forKey: .workDurationMs)
+        contextScope = try values.decode(String.self, forKey: .contextScope)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        savedAsNote = try values.decode(Bool.self, forKey: .savedAsNote)
+        noteId = try values.decodeIfPresent(String.self, forKey: .noteId)
+        usedFallback = try values.decodeIfPresent(Bool.self, forKey: .usedFallback) ?? false
+        providerSessionId = try values.decodeIfPresent(String.self, forKey: .providerSessionId)
+        providerTurnId = try values.decodeIfPresent(String.self, forKey: .providerTurnId)
     }
 }
 
@@ -503,13 +558,22 @@ public struct AgentStreamEvent: Codable, Equatable, Sendable {
     public var meetingId: String
     public var phase: String?
     public var answer: String?
+    public var tool: AgentToolActivity?
 
-    public init(type: String, requestId: String, meetingId: String, phase: String?, answer: String?) {
+    public init(
+        type: String,
+        requestId: String,
+        meetingId: String,
+        phase: String?,
+        answer: String?,
+        tool: AgentToolActivity? = nil
+    ) {
         self.type = type
         self.requestId = requestId
         self.meetingId = meetingId
         self.phase = phase
         self.answer = answer
+        self.tool = tool
     }
 }
 
@@ -519,6 +583,8 @@ public struct AgentStreamingTurn: Equatable, Sendable {
     public var question: String
     public var phase: String
     public var answer: String
+    public var toolActivities: [AgentToolActivity] = []
+    public var startedAt: Date
 }
 
 public struct AskAgentInput: Equatable, Sendable {

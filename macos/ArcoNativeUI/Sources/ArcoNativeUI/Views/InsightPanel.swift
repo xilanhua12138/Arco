@@ -12,6 +12,19 @@ public enum InsightPanelLayout: Sendable {
 }
 
 @_spi(Testing)
+public enum InsightAgentWorkPresentation {
+    public static func durationLabel(milliseconds: UInt64) -> String {
+        let totalSeconds = milliseconds / 1_000
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 { return "\(hours)h \(minutes)m \(seconds)s" }
+        if minutes > 0 { return "\(minutes)m \(seconds)s" }
+        return "\(seconds)s"
+    }
+}
+
+@_spi(Testing)
 public enum InsightSourceLayout {
     public static func composerHeight(for layout: InsightPanelLayout) -> CGFloat {
         switch layout {
@@ -310,12 +323,24 @@ public struct InsightPanelView: View {
                         .lineSpacing(2.4)
                         .padding(.bottom, 10)
                         .accessibilityAddTraits(.isHeader)
-                    if let streaming = activeStreamingTurn, !streaming.answer.isEmpty {
-                        MarkdownContentView(
-                            streaming.answer,
-                            compact: measuredWidth <= 340,
-                            overlayParagraphs: layout == .agentOverlay
+                    if let streaming = activeStreamingTurn {
+                        AgentWorkDisclosure(
+                            activities: streaming.toolActivities,
+                            running: true,
+                            startedAt: streaming.startedAt,
+                            durationMs: nil,
+                            emptyLabel: streamingStatus,
+                            translate: translate
                         )
+                        .padding(.bottom, 10)
+
+                        if !streaming.answer.isEmpty {
+                            MarkdownContentView(
+                                streaming.answer,
+                                compact: measuredWidth <= 340,
+                                overlayParagraphs: layout == .agentOverlay
+                            )
+                        }
                     } else {
                         ThinkingIndicator(label: streamingStatus)
                     }
@@ -463,6 +488,18 @@ public struct InsightPanelView: View {
                 .lineSpacing(2.4)
                 .padding(.bottom, 6)
                 .accessibilityAddTraits(.isHeader)
+
+            if reply.workDurationMs != nil || !reply.toolActivities.isEmpty {
+                AgentWorkDisclosure(
+                    activities: reply.toolActivities,
+                    running: false,
+                    startedAt: nil,
+                    durationMs: reply.workDurationMs,
+                    emptyLabel: nil,
+                    translate: translate
+                )
+                .padding(.bottom, 10)
+            }
 
             MarkdownContentView(
                 reply.answer,
@@ -887,6 +924,269 @@ private struct ThinkingIndicator: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
+    }
+}
+
+private struct AgentWorkDisclosure: View {
+    let activities: [AgentToolActivity]
+    let running: Bool
+    let startedAt: Date?
+    let durationMs: UInt64?
+    let emptyLabel: String?
+    let translate: ArcoTranslate
+
+    @State private var expanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        activities: [AgentToolActivity],
+        running: Bool,
+        startedAt: Date?,
+        durationMs: UInt64?,
+        emptyLabel: String?,
+        translate: @escaping ArcoTranslate
+    ) {
+        self.activities = activities
+        self.running = running
+        self.startedAt = startedAt
+        self.durationMs = durationMs
+        self.emptyLabel = emptyLabel
+        self.translate = translate
+        self._expanded = State(initialValue: running)
+    }
+
+    private var canExpand: Bool { !activities.isEmpty || (running && emptyLabel != nil) }
+    private var hasRunningTools: Bool { activities.contains { $0.status == "running" } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if running {
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    disclosureButton(label: workLabel(at: timeline.date))
+                }
+            } else {
+                disclosureButton(label: workLabel(at: Date()))
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if activities.isEmpty, let emptyLabel {
+                        ThinkingIndicator(label: emptyLabel)
+                            .padding(.vertical, 4)
+                    }
+                    ForEach(activities) { activity in
+                        AgentToolActivityRow(activity: activity, translate: translate)
+                    }
+                }
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            ArcoNativeColors.lineThin.frame(height: 1)
+        }
+        .onChange(of: hasRunningTools) { wasRunning, isRunning in
+            if isRunning {
+                setExpanded(true)
+            } else if wasRunning {
+                setExpanded(false)
+            }
+        }
+        .onChange(of: running) { wasRunning, isRunning in
+            if wasRunning && !isRunning { setExpanded(false) }
+        }
+    }
+
+    private func disclosureButton(label: String) -> some View {
+        Button {
+            guard canExpand else { return }
+            toggleExpanded()
+        } label: {
+            HStack(spacing: 7) {
+                Text(label)
+                    .font(ArcoTypography.sans(12, weight: .medium))
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .lineLimit(1)
+                if canExpand {
+                    ArcoLucideIcon(.chevronRight, size: 13, strokeWidth: 1.8)
+                        .foregroundStyle(ArcoNativeColors.inkFaint)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                Spacer(minLength: 0)
+                if activities.contains(where: { $0.status == "failed" }) {
+                    ArcoLucideIcon(.circleAlert, size: 13)
+                        .foregroundStyle(ArcoNativeColors.warning)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canExpand)
+        .accessibilityLabel(label)
+        .accessibilityValue(expanded ? translate("agent.work.expanded", [:]) : translate("agent.work.collapsed", [:]))
+    }
+
+    private func workLabel(at now: Date) -> String {
+        if running {
+            let elapsed = max(0, now.timeIntervalSince(startedAt ?? now))
+            let milliseconds = UInt64(min(elapsed * 1_000, Double(UInt64.max)))
+            guard milliseconds >= 1_000 else { return translate("agent.work.processing", [:]) }
+            return translate("agent.work.processingFor", [
+                "time": InsightAgentWorkPresentation.durationLabel(milliseconds: milliseconds)
+            ])
+        }
+        return translate("agent.work.completed", [
+            "time": InsightAgentWorkPresentation.durationLabel(milliseconds: durationMs ?? 0)
+        ])
+    }
+
+    private func toggleExpanded() { setExpanded(!expanded) }
+
+    private func setExpanded(_ value: Bool) {
+        if reduceMotion {
+            expanded = value
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { expanded = value }
+        }
+    }
+}
+
+private struct AgentToolActivityRow: View {
+    let activity: AgentToolActivity
+    let translate: ArcoTranslate
+
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var hasDetails: Bool { activity.detail != nil || activity.output != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard hasDetails else { return }
+                if reduceMotion {
+                    expanded.toggle()
+                } else {
+                    withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        ArcoLucideIcon(kindIcon, size: 13, strokeWidth: 1.8)
+                            .foregroundStyle(ArcoNativeColors.inkMuted)
+                        Text(previewLabel)
+                            .font(activity.kind == "command" ? ArcoTypography.mono(11) : ArcoTypography.small)
+                            .foregroundStyle(ArcoNativeColors.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(ArcoNativeColors.surfaceSubtle)
+                    .clipShape(Capsule())
+                    .overlay { Capsule().stroke(ArcoNativeColors.lineThin, lineWidth: 1) }
+
+                    statusView
+                    Spacer(minLength: 0)
+                    if hasDetails {
+                        ArcoLucideIcon(.chevronRight, size: 12, strokeWidth: 1.8)
+                            .foregroundStyle(ArcoNativeColors.inkFaint)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetails)
+            .accessibilityLabel("\(activity.name), \(statusLabel)")
+            .accessibilityValue(expanded ? translate("agent.work.expanded", [:]) : translate("agent.work.collapsed", [:]))
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 9) {
+                    if let detail = activity.detail {
+                        toolDetail(title: translate("agent.tool.input", [:]), text: detail)
+                    }
+                    if let output = activity.output {
+                        toolDetail(title: translate("agent.tool.output", [:]), text: output)
+                    }
+                }
+                .padding(.top, 7)
+                .padding(.leading, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        HStack(spacing: 5) {
+            switch activity.status {
+            case "running":
+                ArcoSpinningRefreshIcon(active: true, size: 11)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+            case "failed":
+                ArcoLucideIcon(.circleAlert, size: 12)
+                    .foregroundStyle(ArcoNativeColors.warning)
+            default:
+                ArcoLucideIcon(.check, size: 12)
+                    .foregroundStyle(ArcoNativeColors.success)
+            }
+            Text(statusLabel)
+                .font(ArcoTypography.small)
+                .foregroundStyle(activity.status == "failed" ? ArcoNativeColors.warning : ArcoNativeColors.inkMuted)
+                .lineLimit(1)
+        }
+    }
+
+    private var statusLabel: String {
+        switch activity.status {
+        case "running": translate("agent.tool.running", [:])
+        case "failed": translate("agent.tool.failed", [:])
+        default: translate("agent.tool.completed", [:])
+        }
+    }
+
+    private var previewLabel: String {
+        guard let detail = activity.detail else { return activity.name }
+        if activity.kind == "command" { return detail.replacingOccurrences(of: "\n", with: " ") }
+        guard detail.first == "{",
+              let data = detail.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return activity.name }
+        for key in ["file_path", "path", "query", "pattern"] {
+            if let value = object[key] as? String, !value.isEmpty {
+                return "\(activity.name) · \(value)"
+            }
+        }
+        return activity.name
+    }
+
+    private var kindIcon: ArcoLucideSymbol {
+        switch activity.kind {
+        case "read": .bookOpenText
+        case "search", "web": .fileSearch
+        case "file", "command": .fileText
+        default: .link2
+        }
+    }
+
+    private func toolDetail(title: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(ArcoTypography.sans(9, weight: .semibold))
+                .foregroundStyle(ArcoNativeColors.inkFaint)
+                .tracking(0.35)
+                .textCase(.uppercase)
+            Text(text)
+                .font(ArcoTypography.mono(10))
+                .foregroundStyle(ArcoNativeColors.ink)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ArcoNativeColors.surfaceSubtle)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 

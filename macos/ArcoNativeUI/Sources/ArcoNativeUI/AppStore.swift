@@ -365,7 +365,9 @@ public final class ArcoStore {
             meetingId: input.meetingId,
             question: question,
             phase: "starting",
-            answer: ""
+            answer: "",
+            toolActivities: [],
+            startedAt: Date()
         )
         error = nil
         defer {
@@ -912,6 +914,16 @@ public final class ArcoStore {
                 agentStreamingTurn?.phase = phase
             } else if stream.type == "answer", let answer = stream.answer {
                 agentStreamingTurn?.answer = answer
+            } else if stream.type == "tool", var tool = stream.tool {
+                agentStreamingTurn?.phase = "using-tools"
+                if let index = agentStreamingTurn?.toolActivities.firstIndex(where: { $0.id == tool.id }) {
+                    let previous = agentStreamingTurn?.toolActivities[index]
+                    tool.detail = tool.detail ?? previous?.detail
+                    tool.output = tool.output ?? previous?.output
+                    agentStreamingTurn?.toolActivities[index] = tool
+                } else {
+                    agentStreamingTurn?.toolActivities.append(tool)
+                }
             }
         case "arco:transcription-model-progress":
             if let status = try? event.decode(TranscriptionModelStatus.self) {

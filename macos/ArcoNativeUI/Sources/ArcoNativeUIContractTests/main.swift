@@ -1,4 +1,4 @@
-import ArcoNativeUI
+@_spi(Testing) import ArcoNativeUI
 import Foundation
 
 private var failures: [String] = []
@@ -834,7 +834,44 @@ private func testAgentStreamingIsRequestScoped() async {
                 requestId: requestId,
                 meetingId: "meeting",
                 phase: "using-tools",
-                answer: nil
+                answer: nil,
+                tool: nil
+            )
+        )
+        try backend.emit(
+            "arco:agent-stream",
+            payload: AgentStreamEvent(
+                type: "tool",
+                requestId: requestId,
+                meetingId: "meeting",
+                phase: nil,
+                answer: nil,
+                tool: AgentToolActivity(
+                    id: "call-1",
+                    kind: "command",
+                    name: "Command",
+                    status: "running",
+                    detail: "rg AgentTurn",
+                    output: nil
+                )
+            )
+        )
+        try backend.emit(
+            "arco:agent-stream",
+            payload: AgentStreamEvent(
+                type: "tool",
+                requestId: requestId,
+                meetingId: "meeting",
+                phase: nil,
+                answer: nil,
+                tool: AgentToolActivity(
+                    id: "call-1",
+                    kind: "command",
+                    name: "Command",
+                    status: "completed",
+                    detail: "rg AgentTurn",
+                    output: "Models.swift:454"
+                )
             )
         )
         try await Task.sleep(for: .milliseconds(5))
@@ -845,7 +882,8 @@ private func testAgentStreamingIsRequestScoped() async {
                 requestId: requestId,
                 meetingId: "meeting",
                 phase: nil,
-                answer: "streamed"
+                answer: "streamed",
+                tool: nil
             )
         )
         try await Task.sleep(for: .milliseconds(30))
@@ -862,7 +900,18 @@ private func testAgentStreamingIsRequestScoped() async {
             noteId: nil,
             usedFallback: false,
             providerSessionId: nil,
-            providerTurnId: nil
+            providerTurnId: nil,
+            toolActivities: [
+                AgentToolActivity(
+                    id: "call-1",
+                    kind: "command",
+                    name: "Command",
+                    status: "completed",
+                    detail: "rg AgentTurn",
+                    output: "Models.swift:454"
+                )
+            ],
+            workDurationMs: 259_000
         ))
     }
     let store = ArcoStore(backend: backend)
@@ -878,11 +927,53 @@ private func testAgentStreamingIsRequestScoped() async {
     try? await Task.sleep(for: .milliseconds(20))
     expect(store.agentStreamingTurn?.phase, "using-tools", "Agent status stream updates only the active request")
     expect(store.agentStreamingTurn?.answer, "streamed", "Agent answer stream updates the active request")
+    expect(
+        store.agentStreamingTurn?.toolActivities,
+        [
+            AgentToolActivity(
+                id: "call-1",
+                kind: "command",
+                name: "Command",
+                status: "completed",
+                detail: "rg AgentTurn",
+                output: "Models.swift:454"
+            )
+        ],
+        "Agent tool updates merge by call ID instead of duplicating start and completion"
+    )
     expect(await ask.value, true, "Agent request resolves successfully")
     expect(store.agentTurnsByMeeting["meeting"]?.map(\.id), ["turn"], "Final Agent turn appends to its meeting")
+    expect(
+        store.agentTurnsByMeeting["meeting"]?.first?.toolActivities.map(\.id),
+        ["call-1"],
+        "Completed Agent turns retain their bounded tool activity history"
+    )
+    expect(
+        store.agentTurnsByMeeting["meeting"]?.first?.workDurationMs,
+        259_000,
+        "Completed Agent turns retain the work duration used by the collapsed summary"
+    )
     expect(store.agentStreamingTurn, nil, "Completed Agent request clears transient stream state")
     expectTrue(!store.agentRunning, "Completed Agent request clears running state")
     store.dispose()
+}
+
+@MainActor
+private func testLegacyAgentTurnDecodesWithoutToolActivity() {
+    let legacy = #"{"id":"legacy","meetingId":"meeting","provider":"codex","question":"Q","answer":"A","sources":[],"contextScope":"transcript","createdAt":"2026-07-16T09:00:00+08:00","savedAsNote":false,"noteId":null,"usedFallback":false,"providerSessionId":null,"providerTurnId":null}"#
+    let turn = try? JSONDecoder().decode(AgentTurn.self, from: Data(legacy.utf8))
+    expect(turn?.toolActivities, [], "Legacy persisted Agent turns decode with an empty tool history")
+    expect(turn?.workDurationMs, nil, "Legacy persisted Agent turns decode without a synthetic duration")
+    expect(
+        InsightAgentWorkPresentation.durationLabel(milliseconds: 259_000),
+        "4m 19s",
+        "Completed Agent work uses the same compact minute/second duration shape as Codex"
+    )
+    expect(
+        InsightAgentWorkPresentation.durationLabel(milliseconds: 3_723_000),
+        "1h 2m 3s",
+        "Long Agent work durations preserve hours without dropping seconds"
+    )
 }
 
 @MainActor
@@ -1230,6 +1321,7 @@ await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
 await testHUDFailureRollsBackCapture()
 await testAgentStreamingIsRequestScoped()
+testLegacyAgentTurnDecodesWithoutToolActivity()
 await testHistoryDebounceCannotOverwriteClearedQuery()
 await testNotesUnmountCancelsSearchAutosaveAndLocalState()
 await testSettingsUnmountAndShortcutErrorIsolation()
