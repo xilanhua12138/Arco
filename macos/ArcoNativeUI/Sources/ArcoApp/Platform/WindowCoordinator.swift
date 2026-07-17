@@ -180,6 +180,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     func showCaptureHUD() throws {
         let hud = try ensureHUDWindow()
+        let wasVisible = hud.isVisible
         guard let screen = preferredScreen(for: hud) else {
             throw WindowCoordinatorError.noAvailableDisplay
         }
@@ -189,7 +190,9 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         )
         // Preserve show-without-focus behavior. The panel is still
         // focusable and accepts its Stop / Ask Arco controls on first click.
-        onHUDPresented()
+        if !wasVisible {
+            onHUDPresented()
+        }
         hud.orderFrontRegardless()
     }
 

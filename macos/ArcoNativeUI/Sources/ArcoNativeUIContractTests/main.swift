@@ -941,6 +941,11 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
     }
     try? await Task.sleep(for: .milliseconds(10))
     expect(store.capture.phase, .starting, "Capture exposes the original optimistic starting phase")
+    expect(
+        surfaces.showCount,
+        1,
+        "The first click presents the starting HUD before provider startup finishes"
+    )
     expect((await start.value)?.phase, .recording, "Capture enters recording after backend start")
     expect(surfaces.showCount, 1, "Recording opens one reusable HUD")
 
@@ -1010,7 +1015,7 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
 }
 
 @MainActor
-private func testHUDFailureRollsBackCapture() async {
+private func testHUDFailurePreventsCaptureStart() async {
     let backend = ScriptedBackend()
     let surfaces = TestCaptureSurfaces()
     surfaces.failToShow = true
@@ -1022,13 +1027,48 @@ private func testHUDFailureRollsBackCapture() async {
     expect(result, nil, "HUD failure rejects capture start")
     expect(
         store.error,
-        "recording HUD could not open; capture was stopped: HUD failed",
-        "HUD failure reports successful capture rollback"
+        "recording HUD could not open; capture was not started: HUD failed",
+        "HUD failure explains that audio capture never started"
     )
-    expect(backend.callNames(), ["start_capture", "stop_capture"], "HUD failure immediately stops the backend pipeline")
-    expect(store.capture.phase, .error, "HUD rollback leaves the visible capture state in error")
+    expect(backend.callNames(), [], "HUD failure does not launch an invisible audio pipeline")
+    expect(store.capture.phase, .error, "HUD failure leaves the visible capture state in error")
     expect(surfaces.releaseCount, 1, "Partially opened capture surfaces are released")
     store.dispose()
+}
+
+@MainActor
+private func testProviderStartFailureReleasesOptimisticHUD() async {
+    let backend = ScriptedBackend()
+    let surfaces = TestCaptureSurfaces()
+    backend.on("start_capture") { _ in
+        throw BackendTransportError.backend("provider handshake failed")
+    }
+    let store = ArcoStore(backend: backend, captureSurfaces: surfaces)
+
+    let result = await store.toggleCapture(mode: .both, transcription: .default)
+    expect(result, nil, "A failed provider start rejects capture")
+    expect(surfaces.showCount, 1, "Provider startup begins with immediate HUD feedback")
+    expect(surfaces.releaseCount, 1, "Provider startup failure removes the optimistic HUD")
+    expect(store.capture.phase, .error, "Provider startup failure is visible in capture state")
+    expect(store.error, "provider handshake failed", "Provider startup failure preserves its actionable error")
+    expect(backend.callNames(), ["start_capture"], "Provider failure does not dispatch a redundant stop")
+    store.dispose()
+}
+
+@MainActor
+private func testReusedHUDResetsSavedStateForFirstClickFeedback() async {
+    let model = RecordingHUDModel(
+        readCapture: { capture(phase: .recording, meetingId: "next") },
+        stopCapture: { capture(phase: .idle) },
+        onStopped: {}
+    )
+
+    await model.stop()
+    expectTrue(model.saved, "A completed HUD keeps its saved acknowledgement while hidden")
+    model.prepareForCaptureStart()
+    expectTrue(!model.saved, "The next first click clears the previous session's saved acknowledgement")
+    expectTrue(!model.saving, "The next first click clears the previous session's saving state")
+    expect(model.capture.phase, .starting, "A reused HUD immediately renders the new starting state")
 }
 
 @MainActor
@@ -1797,7 +1837,9 @@ testMeetingStatisticsContracts()
 testMeetingTitleRefreshPolicyUsesFiveMinuteWindows()
 await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
-await testHUDFailureRollsBackCapture()
+await testHUDFailurePreventsCaptureStart()
+await testProviderStartFailureReleasesOptimisticHUD()
+await testReusedHUDResetsSavedStateForFirstClickFeedback()
 await testHUDMonitoringLifecycleIsExplicitAndRestartable()
 await testHUDMonitoringRejectsLatePreviousGeneration()
 await testHUDMonitoringSkipsEqualCaptureSnapshots()

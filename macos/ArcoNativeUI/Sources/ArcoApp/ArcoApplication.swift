@@ -39,7 +39,7 @@ private final class ArcoApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationShouldHandleReopen(
@@ -273,6 +273,7 @@ private final class NativeApplicationRuntime {
             store?.capture.phase == .recording && store?.capture.activeMeetingId != nil
         }
         windowCoordinator.onHUDPresented = { [weak recordingHUDModel] in
+            recordingHUDModel?.prepareForCaptureStart()
             recordingHUDModel?.startMonitoring()
         }
         windowCoordinator.onHUDHidden = { [weak recordingHUDModel] in
@@ -339,6 +340,7 @@ private final class NativeApplicationRuntime {
         store.dispose()
         windowCoordinator.releaseCaptureSurfaces()
         try? shortcutController.unregister()
+        backend.shutdown()
     }
 }
 

@@ -81,6 +81,17 @@ expectTrue(!geometry.isEmpty, "Window geometry source contract must resolve the 
 expectTrue(!application.isEmpty, "Native application runtime source contract must resolve the migrated source")
 expectTrue(!insight.isEmpty, "Shared Agent interaction source contract must resolve the migrated source")
 
+expectTrue(
+    application.contains("applicationShouldTerminateAfterLastWindowClosed")
+        && application.contains("applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {\n        false\n    }"),
+    "Closing the main window must hide it without quitting the audio-owning Arco process"
+)
+expectTrue(
+    sourceSection(application, from: "func shutdown()", until: "}\n}\n\nprivate struct AgentOverlayHostView")
+        .contains("backend.shutdown()"),
+    "An explicit app quit must synchronously destroy the Rust runtime so an active transcript is finalized as interrupted"
+)
+
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
 expectTrue(
     hud.contains(".frame(width: 368, height: 56)"),
@@ -437,6 +448,12 @@ expectTrue(
 expectTrue(
     appearsBefore("onHUDPresented()", "hud.orderFrontRegardless()", in: showHUD),
     "HUD monitoring must start immediately before the reusable panel is presented"
+)
+expectTrue(
+    showHUD.contains("let wasVisible = hud.isVisible")
+        && showHUD.contains("if !wasVisible")
+        && showHUD.contains("onHUDPresented()"),
+    "Repeated recording snapshots must not restart an already visible HUD lifecycle"
 )
 expectTrue(
     appearsBefore("onHUDHidden()", "hudWindow?.orderOut(nil)", in: releaseHUD),
