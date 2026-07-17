@@ -165,23 +165,32 @@ struct AgentOverlaySurfaceView: View {
     }
 
     private var header: some View {
-        Group {
+        GeometryReader { geometry in
             if transcriptVisible {
-                GeometryReader { geometry in
-                    HStack(spacing: 0) {
-                        agentHeader
-                            .frame(width: geometry.size.width * 3 / 5)
-                        transcriptHeader
-                            .frame(width: geometry.size.width * 2 / 5)
-                    }
+                HStack(spacing: 0) {
+                    agentHeader
+                        .frame(
+                            width: geometry.size.width * 3 / 5,
+                            height: geometry.size.height,
+                            alignment: .center
+                        )
+                        .background(ArcoWindowDragRegion())
+                    transcriptHeader
+                        .frame(
+                            width: geometry.size.width * 2 / 5,
+                            height: geometry.size.height,
+                            alignment: .center
+                        )
+                        .background(ArcoWindowDragRegion())
+                }
+            } else {
+                agentHeader
                     .frame(
                         width: geometry.size.width,
                         height: geometry.size.height,
                         alignment: .center
                     )
-                }
-            } else {
-                agentHeader
+                    .background(ArcoWindowDragRegion())
             }
         }
         .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 0.5) }
@@ -212,8 +221,6 @@ struct AgentOverlaySurfaceView: View {
         }
         .padding(.leading, 16)
         .padding(.trailing, 11)
-        .frame(maxHeight: .infinity, alignment: .center)
-        .background(ArcoWindowDragRegion())
     }
 
     private var transcriptHeader: some View {
@@ -252,8 +259,6 @@ struct AgentOverlaySurfaceView: View {
         }
         .padding(.leading, 14)
         .padding(.trailing, 11)
-        .frame(maxHeight: .infinity, alignment: .center)
-        .background(ArcoWindowDragRegion())
     }
 
     private var closeButton: some View {

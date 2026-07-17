@@ -161,15 +161,14 @@ expect(
     2,
     "Expanded Agent header and workspace must both preserve the source 2fr transcript track"
 )
-expectTrue(
-    agent.contains("width: geometry.size.width,")
-        && agent.contains("height: geometry.size.height,")
-        && agent.contains("alignment: .center"),
-    "Expanded Agent header must fill its complete 52-point GeometryReader height instead of leaving an empty lower strip"
+expect(
+    agent.components(separatedBy: "height: geometry.size.height").count - 1,
+    3,
+    "Collapsed and expanded Agent header columns must each receive the complete 52-point GeometryReader height"
 )
 expectTrue(
-    agent.contains(".frame(maxHeight: .infinity, alignment: .center)"),
-    "Expanded Agent header columns must remain vertically centered across the complete toolbar height"
+    !agent.contains(".frame(maxHeight: .infinity, alignment: .center)"),
+    "Agent header centering must use an explicit finite column height instead of an unresolved infinite-height proposal"
 )
 expectTrue(
     agent.contains("model.snapshot.capture.phase == .recording")
