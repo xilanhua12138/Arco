@@ -105,6 +105,20 @@ expectTrue(
     "Composer must use the fixed source height rather than growing to a third line"
 )
 expectTrue(
+    insightSource.contains(".padding(.leading, InsightSourceLayout.textContainerInset)"),
+    "Composer placeholder must share AppKit's text-container inset so the caret stays before the first glyph"
+)
+expectTrue(
+    insightSource.contains(".background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)"),
+    "Agent-overlay composer must inherit the stable workspace surface instead of drawing an opaque rectangle"
+)
+expectTrue(
+    insightSource.contains(".foregroundStyle(sendButtonForeground)")
+        && insightSource.contains(".background(sendButtonBackground)")
+        && !insightSource.contains(".opacity(sendDisabled ? 0.3 : 1)"),
+    "Disabled send action must keep an explicit visible glyph instead of fading the whole control"
+)
+expectTrue(
     !insightSource.contains("maxHeight: layout == .agentOverlay ? 40 : 63"),
     "Main composer must not retain the migration-only 63pt growth allowance"
 )

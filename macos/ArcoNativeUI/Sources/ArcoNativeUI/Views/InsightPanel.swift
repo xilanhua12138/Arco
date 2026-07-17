@@ -26,6 +26,10 @@ public enum InsightAgentWorkPresentation {
 
 @_spi(Testing)
 public enum InsightSourceLayout {
+    /// SwiftUI's macOS TextEditor keeps AppKit's default line-fragment padding.
+    /// The separately rendered placeholder must start at the same x-coordinate.
+    public static let textContainerInset: CGFloat = 5
+
     public static func composerHeight(for layout: InsightPanelLayout) -> CGFloat {
         switch layout {
         case .main: 42
@@ -669,6 +673,7 @@ public struct InsightPanelView: View {
                         .font(ArcoTypography.body)
                         .foregroundStyle(ArcoNativeColors.inkMuted)
                         .padding(.top, 1)
+                        .padding(.leading, InsightSourceLayout.textContainerInset)
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: questionBinding)
@@ -708,14 +713,13 @@ public struct InsightPanelView: View {
                     Task { @MainActor in await submit() }
                 } label: {
                     ArcoLucideIcon(.arrowUp, size: 16)
-                        .foregroundStyle(ArcoNativeColors.actionInk)
+                        .foregroundStyle(sendButtonForeground)
                         .frame(width: 32, height: 32)
-                        .background(ArcoNativeColors.action)
+                        .background(sendButtonBackground)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(sendDisabled)
-                .opacity(sendDisabled ? 0.3 : 1)
                 .accessibilityLabel(translate("agent.send", [:]))
             }
             .padding(.top, 8)
@@ -724,7 +728,7 @@ public struct InsightPanelView: View {
         .padding(.vertical, layout == .agentOverlay ? 11 : 0)
         .padding(.top, layout == .agentOverlay ? 0 : 12)
         .padding(.bottom, layout == .agentOverlay ? 0 : 16)
-        .background(ArcoNativeColors.surfaceDocument)
+        .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)
         .overlay(alignment: .top) { ArcoNativeColors.lineThin.frame(height: 1) }
         .padding(.horizontal, layout == .agentOverlay ? 16 : 0)
         .padding(.bottom, layout == .agentOverlay ? 16 : 0)
@@ -858,6 +862,14 @@ public struct InsightPanelView: View {
             || meeting == nil
             || runtime?.available != true
             || workspaceMissing
+    }
+
+    private var sendButtonForeground: Color {
+        sendDisabled ? ArcoNativeColors.inkMuted : ArcoNativeColors.actionInk
+    }
+
+    private var sendButtonBackground: Color {
+        sendDisabled ? ArcoNativeColors.surfaceSubtle : ArcoNativeColors.action
     }
 
     @MainActor

@@ -298,6 +298,7 @@ struct AgentOverlaySurfaceView: View {
                 }
             }
         }
+        .background(ArcoNativeColors.surfaceDocument.opacity(0.92))
     }
 
     @ViewBuilder
