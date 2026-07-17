@@ -1,5 +1,6 @@
 use crate::models::{
-    AgentReply, AgentRunOutput, AgentSource, MeetingDetail, ProviderConnectionTest, RuntimeStatus,
+    AgentReply, AgentRunOutput, AgentSource, AgentToolActivity, MeetingDetail,
+    ProviderConnectionTest, RuntimeStatus,
 };
 use crate::paths::home_dir;
 use crate::process::{configure_process_group, terminate_process_tree};
@@ -12,7 +13,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
@@ -21,6 +22,8 @@ const MAX_AGENT_OUTPUT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CONNECTION_TEST_OUTPUT_BYTES: u64 = 64 * 1024;
 const MAX_QUESTION_CHARS: usize = 8_000;
 const MAX_TRANSCRIPT_CHARS: usize = 160_000;
+const MAX_TOOL_DETAIL_CHARS: usize = 4_096;
+const MAX_TOOL_OUTPUT_CHARS: usize = 8_192;
 const AGENT_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CONNECTION_TEST_TIMEOUT: Duration = Duration::from_secs(90);
@@ -53,6 +56,7 @@ impl ProcessOutputPolicy {
 pub enum AgentStreamUpdate {
     Phase(&'static str),
     Answer(String),
+    Tool(AgentToolActivity),
 }
 
 #[derive(Clone, Debug)]
@@ -296,6 +300,7 @@ impl AgentRunner {
         resume_session_id: Option<&str>,
         on_update: Option<Box<dyn FnMut(AgentStreamUpdate) + Send>>,
     ) -> Result<AgentRunOutput, String> {
+        let run_started_at = Instant::now();
         validate_provider(provider)?;
         if let Some(session_id) = resume_session_id {
             validate_native_session_id(session_id)?;
@@ -346,9 +351,11 @@ impl AgentRunner {
         } else {
             None
         };
+        let streamed_tools = Arc::new(Mutex::new(Vec::<AgentToolActivity>::new()));
         let output = if let Some(mut on_update) = on_update {
             let provider = provider.to_string();
             let mut claude_stream = (provider == "claude").then(ClaudeStreamParser::default);
+            let collected_tools = streamed_tools.clone();
             run_process_streamed(
                 &binary,
                 &args,
@@ -366,6 +373,11 @@ impl AgentRunner {
                         _ => None,
                     };
                     if let Some(update) = update {
+                        if let AgentStreamUpdate::Tool(tool) = &update {
+                            if let Ok(mut tools) = collected_tools.lock() {
+                                merge_tool_activity(&mut tools, tool.clone());
+                            }
+                        }
                         on_update(update);
                     }
                 },
@@ -406,11 +418,19 @@ impl AgentRunner {
         if let Some(source) = context.source {
             sources.push(source);
         }
+        let tool_activities = streamed_tools
+            .lock()
+            .map(|tools| tools.clone())
+            .unwrap_or_default();
         Ok(AgentRunOutput {
             reply: AgentReply {
                 provider: provider.to_string(),
                 answer,
                 sources,
+                tool_activities,
+                work_duration_ms: Some(
+                    run_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64
+                ),
                 created_at: Local::now().to_rfc3339(),
             },
             provider_session_id: parsed.provider_session_id,
@@ -593,15 +613,21 @@ fn parse_codex_stream_update(line: &str) -> Result<Option<AgentStreamUpdate>, St
     let event: serde_json::Value = serde_json::from_str(line)
         .map_err(|_| "Codex CLI returned an invalid streaming event".to_string())?;
     let event_type = event.get("type").and_then(serde_json::Value::as_str);
-    let item_type = event
-        .get("item")
+    let item = event.get("item");
+    let item_type = item
         .and_then(|item| item.get("type"))
         .and_then(serde_json::Value::as_str);
     let update = match (event_type, item_type) {
         (Some("turn.started"), _) => Some(AgentStreamUpdate::Phase("analyzing")),
-        (Some("item.started"), Some("command_execution" | "mcp_tool_call" | "web_search")) => {
-            Some(AgentStreamUpdate::Phase("using-tools"))
-        }
+        (
+            Some("item.started" | "item.completed"),
+            Some(
+                "command_execution" | "mcp_tool_call" | "web_search" | "file_change"
+                | "dynamic_tool_call",
+            ),
+        ) => item
+            .and_then(|item| codex_tool_activity(event_type.unwrap_or_default(), item))
+            .map(AgentStreamUpdate::Tool),
         (Some("item.started" | "item.updated"), Some("reasoning" | "todo_list")) => {
             Some(AgentStreamUpdate::Phase("analyzing"))
         }
@@ -618,10 +644,115 @@ fn parse_codex_stream_update(line: &str) -> Result<Option<AgentStreamUpdate>, St
     Ok(update)
 }
 
+fn codex_tool_activity(event_type: &str, item: &serde_json::Value) -> Option<AgentToolActivity> {
+    let id = item.get("id")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let item_type = item.get("type")?.as_str()?;
+    let (kind, name, detail, output) = match item_type {
+        "command_execution" => (
+            "command".to_string(),
+            "Command".to_string(),
+            item.get("command").and_then(tool_value_text),
+            item.get("aggregated_output")
+                .or_else(|| item.get("output"))
+                .and_then(tool_value_text),
+        ),
+        "mcp_tool_call" => {
+            let server = item.get("server").and_then(serde_json::Value::as_str);
+            let tool = item
+                .get("tool")
+                .or_else(|| item.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("MCP tool");
+            let name = server
+                .filter(|server| !server.trim().is_empty())
+                .map(|server| format!("{} · {tool}", server.trim()))
+                .unwrap_or_else(|| tool.to_string());
+            let output = item
+                .get("error")
+                .filter(|value| !value.is_null())
+                .or_else(|| item.get("result"))
+                .and_then(tool_value_text);
+            (
+                "mcp".to_string(),
+                name,
+                item.get("arguments")
+                    .or_else(|| item.get("input"))
+                    .and_then(compact_tool_json),
+                output,
+            )
+        }
+        "web_search" => (
+            "web".to_string(),
+            "Web search".to_string(),
+            item.get("query").and_then(tool_value_text),
+            item.get("result").and_then(tool_value_text),
+        ),
+        "file_change" => (
+            "file".to_string(),
+            "File changes".to_string(),
+            item.get("changes")
+                .or_else(|| item.get("patch"))
+                .and_then(compact_tool_json),
+            item.get("output").and_then(tool_value_text),
+        ),
+        "dynamic_tool_call" => (
+            "tool".to_string(),
+            item.get("tool")
+                .or_else(|| item.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Tool")
+                .to_string(),
+            item.get("arguments")
+                .or_else(|| item.get("input"))
+                .and_then(compact_tool_json),
+            item.get("error")
+                .filter(|value| !value.is_null())
+                .or_else(|| item.get("result"))
+                .and_then(tool_value_text),
+        ),
+        _ => return None,
+    };
+    let failed = item
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|status| matches!(status, "failed" | "error"))
+        || item
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|code| code != 0)
+        || item.get("error").is_some_and(|error| !error.is_null());
+    let status = if event_type == "item.started" {
+        "running"
+    } else if failed {
+        "failed"
+    } else {
+        "completed"
+    };
+    Some(AgentToolActivity {
+        id: id.to_string(),
+        kind,
+        name: bounded_tool_text(&name, MAX_TOOL_DETAIL_CHARS).unwrap_or_else(|| "Tool".into()),
+        status: status.into(),
+        detail: detail.and_then(|value| bounded_tool_text(&value, MAX_TOOL_DETAIL_CHARS)),
+        output: output.and_then(|value| bounded_tool_text(&value, MAX_TOOL_OUTPUT_CHARS)),
+    })
+}
+
+#[derive(Clone, Debug)]
+struct PendingClaudeTool {
+    activity: AgentToolActivity,
+    input_json: String,
+}
+
 #[derive(Default)]
 struct ClaudeStreamParser {
     answer: String,
     phase: Option<&'static str>,
+    tool_ids_by_index: HashMap<u64, String>,
+    tools: HashMap<String, PendingClaudeTool>,
 }
 
 impl ClaudeStreamParser {
@@ -631,6 +762,111 @@ impl ClaudeStreamParser {
         }
         self.phase = Some(phase);
         Some(AgentStreamUpdate::Phase(phase))
+    }
+
+    fn start_tool(
+        &mut self,
+        index: Option<u64>,
+        block: &serde_json::Value,
+    ) -> Option<AgentStreamUpdate> {
+        let block_type = block.get("type").and_then(serde_json::Value::as_str);
+        if !matches!(block_type, Some("tool_use" | "server_tool_use")) {
+            return None;
+        }
+        let name = block
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Tool")
+            .trim();
+        let id = block
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| index.map(|index| format!("claude-tool-{index}")))?;
+        if self.tools.contains_key(&id) {
+            return None;
+        }
+        let input = block.get("input");
+        let detail = input.and_then(compact_tool_json);
+        let input_json = input
+            .filter(|value| !value.is_null() && !is_empty_json(value))
+            .and_then(|value| serde_json::to_string(value).ok())
+            .unwrap_or_default();
+        let activity = AgentToolActivity {
+            id: id.clone(),
+            kind: claude_tool_kind(name).into(),
+            name: bounded_tool_text(name, MAX_TOOL_DETAIL_CHARS).unwrap_or_else(|| "Tool".into()),
+            status: "running".into(),
+            detail,
+            output: None,
+        };
+        if let Some(index) = index {
+            self.tool_ids_by_index.insert(index, id.clone());
+        }
+        self.tools.insert(
+            id,
+            PendingClaudeTool {
+                activity: activity.clone(),
+                input_json,
+            },
+        );
+        self.phase = Some("using-tools");
+        Some(AgentStreamUpdate::Tool(activity))
+    }
+
+    fn update_tool_input(
+        &mut self,
+        index: Option<u64>,
+        partial: &str,
+    ) -> Option<AgentStreamUpdate> {
+        let id = self.tool_ids_by_index.get(&index?)?.clone();
+        let pending = self.tools.get_mut(&id)?;
+        pending.input_json.push_str(partial);
+        pending.activity.detail = compact_partial_tool_json(&pending.input_json);
+        self.phase = Some("using-tools");
+        Some(AgentStreamUpdate::Tool(pending.activity.clone()))
+    }
+
+    fn finish_tool(&mut self, block: &serde_json::Value) -> Option<AgentStreamUpdate> {
+        if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_result") {
+            return None;
+        }
+        let id = block
+            .get("tool_use_id")
+            .and_then(serde_json::Value::as_str)?
+            .to_string();
+        let is_error = block
+            .get("is_error")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let output = block.get("content").and_then(tool_value_text);
+        let mut activity = self
+            .tools
+            .get(&id)
+            .map(|pending| pending.activity.clone())
+            .unwrap_or_else(|| AgentToolActivity {
+                id: id.clone(),
+                kind: "tool".into(),
+                name: "Tool".into(),
+                status: "running".into(),
+                detail: None,
+                output: None,
+            });
+        activity.status = if is_error { "failed" } else { "completed" }.into();
+        activity.output = output.and_then(|value| bounded_tool_text(&value, MAX_TOOL_OUTPUT_CHARS));
+        if let Some(pending) = self.tools.get_mut(&id) {
+            pending.activity = activity.clone();
+        } else {
+            self.tools.insert(
+                id,
+                PendingClaudeTool {
+                    activity: activity.clone(),
+                    input_json: String::new(),
+                },
+            );
+        }
+        Some(AgentStreamUpdate::Tool(activity))
     }
 
     fn parse_line(&mut self, line: &str) -> Result<Option<AgentStreamUpdate>, String> {
@@ -650,15 +886,15 @@ impl ClaudeStreamParser {
                         self.phase_update("analyzing")
                     }
                     Some("content_block_start") => {
-                        let content_type = stream_event
+                        let index = stream_event
+                            .and_then(|event| event.get("index"))
+                            .and_then(serde_json::Value::as_u64);
+                        stream_event
                             .and_then(|event| event.get("content_block"))
-                            .and_then(|content| content.get("type"))
-                            .and_then(serde_json::Value::as_str);
-                        if matches!(content_type, Some("tool_use" | "server_tool_use")) {
-                            self.phase_update("using-tools")
-                        } else {
-                            None
-                        }
+                            .and_then(|block| {
+                                self.start_tool(index, block)
+                                    .or_else(|| self.finish_tool(block))
+                            })
                     }
                     Some("content_block_delta") => {
                         let delta = stream_event.and_then(|event| event.get("delta"));
@@ -674,7 +910,15 @@ impl ClaudeStreamParser {
                                     self.answer.push_str(text);
                                     AgentStreamUpdate::Answer(self.answer.clone())
                                 }),
-                            Some("input_json_delta") => self.phase_update("using-tools"),
+                            Some("input_json_delta") => {
+                                let index = stream_event
+                                    .and_then(|event| event.get("index"))
+                                    .and_then(serde_json::Value::as_u64);
+                                delta
+                                    .and_then(|delta| delta.get("partial_json"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .and_then(|partial| self.update_tool_input(index, partial))
+                            }
                             _ => None,
                         }
                     }
@@ -687,15 +931,13 @@ impl ClaudeStreamParser {
                     .get("message")
                     .and_then(|message| message.get("content"))
                     .and_then(serde_json::Value::as_array);
-                if content.is_some_and(|blocks| {
-                    blocks.iter().any(|block| {
-                        matches!(
-                            block.get("type").and_then(serde_json::Value::as_str),
-                            Some("tool_use" | "server_tool_use")
-                        )
-                    })
+                if let Some(tool) = content.and_then(|blocks| {
+                    blocks
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, block)| self.start_tool(Some(index as u64), block))
                 }) {
-                    self.phase_update("using-tools")
+                    Some(tool)
                 } else {
                     let answer = claude_assistant_text(&event).unwrap_or_default();
                     if answer.is_empty() || answer == self.answer {
@@ -706,11 +948,106 @@ impl ClaudeStreamParser {
                     }
                 }
             }
+            Some("user") => event
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|blocks| blocks.iter().find_map(|block| self.finish_tool(block))),
             Some("result") => self.phase_update("finalizing"),
             _ => None,
         };
         Ok(update)
     }
+}
+
+fn merge_tool_activity(tools: &mut Vec<AgentToolActivity>, update: AgentToolActivity) {
+    if let Some(existing) = tools.iter_mut().find(|tool| tool.id == update.id) {
+        *existing = update;
+    } else {
+        tools.push(update);
+    }
+}
+
+fn claude_tool_kind(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "read" => "read",
+        "grep" | "glob" | "search" => "search",
+        "websearch" | "web_search" | "webfetch" | "web_fetch" => "web",
+        "bash" | "shell" | "command" => "command",
+        "edit" | "write" | "notebookedit" => "file",
+        _ => "tool",
+    }
+}
+
+fn compact_partial_tool_json(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .as_ref()
+        .and_then(compact_tool_json)
+        .or_else(|| bounded_tool_text(raw, MAX_TOOL_DETAIL_CHARS))
+}
+
+fn compact_tool_json(value: &serde_json::Value) -> Option<String> {
+    if value.is_null() || is_empty_json(value) {
+        return None;
+    }
+    if let Some(text) = value.as_str() {
+        return bounded_tool_text(text, MAX_TOOL_DETAIL_CHARS);
+    }
+    serde_json::to_string(value)
+        .ok()
+        .and_then(|value| bounded_tool_text(&value, MAX_TOOL_DETAIL_CHARS))
+}
+
+fn is_empty_json(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(serde_json::Map::is_empty)
+        || value.as_array().is_some_and(Vec::is_empty)
+}
+
+fn tool_value_text(value: &serde_json::Value) -> Option<String> {
+    let text = match value {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(tool_value_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Object(object) => {
+            if let Some(text) = object
+                .get("message")
+                .or_else(|| object.get("text"))
+                .or_else(|| object.get("content"))
+                .and_then(tool_value_text)
+            {
+                text
+            } else {
+                serde_json::to_string(value).ok()?
+            }
+        }
+        _ => value.to_string(),
+    };
+    bounded_tool_text(&text, MAX_TOOL_OUTPUT_CHARS)
+}
+
+fn bounded_tool_text(value: &str, max_chars: usize) -> Option<String> {
+    let cleaned = value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    if cleaned.chars().count() <= max_chars {
+        return Some(cleaned.to_string());
+    }
+    let mut bounded = cleaned
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    bounded.push('…');
+    Some(bounded)
 }
 
 fn claude_assistant_text(event: &serde_json::Value) -> Option<String> {
@@ -1095,8 +1432,7 @@ fn safe_cli_args(
             };
             let mut args = [
                 "--print",
-                "--permission-mode",
-                "plan",
+                "--dangerously-skip-permissions",
                 "--tools",
                 tools,
                 "--output-format",
@@ -1965,7 +2301,42 @@ mod tests {
                 r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"cat private.txt","status":"in_progress"}}"#,
             )
             .unwrap(),
-            Some(AgentStreamUpdate::Phase("using-tools"))
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "item_1".into(),
+                kind: "command".into(),
+                name: "Command".into(),
+                status: "running".into(),
+                detail: Some("cat private.txt".into()),
+                output: None,
+            }))
+        );
+        assert_eq!(
+            parse_codex_stream_update(
+                r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat private.txt","aggregated_output":"notes\n","exit_code":0,"status":"completed"}}"#,
+            )
+            .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "item_1".into(),
+                kind: "command".into(),
+                name: "Command".into(),
+                status: "completed".into(),
+                detail: Some("cat private.txt".into()),
+                output: Some("notes".into()),
+            }))
+        );
+        assert_eq!(
+            parse_codex_stream_update(
+                r#"{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"github","tool":"search_code","arguments":{"query":"AgentTurn"},"error":{"message":"not connected"},"status":"failed"}}"#,
+            )
+            .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "item_3".into(),
+                kind: "mcp".into(),
+                name: "github · search_code".into(),
+                status: "failed".into(),
+                detail: Some(r#"{"query":"AgentTurn"}"#.into()),
+                output: Some("not connected".into()),
+            }))
         );
         assert_eq!(
             parse_codex_stream_update(
@@ -2004,6 +2375,13 @@ mod tests {
             .iter()
             .any(|argument| argument == "--include-partial-messages"));
         assert!(args.iter().any(|argument| argument == "--verbose"));
+        assert!(args
+            .iter()
+            .any(|argument| argument == "--dangerously-skip-permissions"));
+        assert!(!args.iter().any(|argument| argument == "--permission-mode"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--tools", "Read,Glob,Grep"]));
     }
 
     #[test]
@@ -2045,7 +2423,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_partial_stream_accumulates_text_and_reports_tool_phases() {
+    fn claude_partial_stream_accumulates_text_and_tracks_interleaved_tools() {
         let mut stream = ClaudeStreamParser::default();
 
         assert_eq!(
@@ -2081,10 +2459,77 @@ mod tests {
         assert_eq!(
             stream
                 .parse_line(
-                    r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}"#,
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"id":"toolu_read","type":"tool_use","name":"Read","input":{}}}}"#,
                 )
                 .unwrap(),
-            Some(AgentStreamUpdate::Phase("using-tools"))
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "toolu_read".into(),
+                kind: "read".into(),
+                name: "Read".into(),
+                status: "running".into(),
+                detail: None,
+                output: None,
+            }))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"README.md\"}"}}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "toolu_read".into(),
+                kind: "read".into(),
+                name: "Read".into(),
+                status: "running".into(),
+                detail: Some(r#"{"file_path":"README.md"}"#.into()),
+                output: None,
+            }))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"id":"toolu_search","type":"tool_use","name":"Grep","input":{"pattern":"AgentTurn"}}}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "toolu_search".into(),
+                kind: "search".into(),
+                name: "Grep".into(),
+                status: "running".into(),
+                detail: Some(r#"{"pattern":"AgentTurn"}"#.into()),
+                output: None,
+            }))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r##"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_read","content":"# Arco","is_error":false}]}}"##,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "toolu_read".into(),
+                kind: "read".into(),
+                name: "Read".into(),
+                status: "completed".into(),
+                detail: Some(r#"{"file_path":"README.md"}"#.into()),
+                output: Some("# Arco".into()),
+            }))
+        );
+        assert_eq!(
+            stream
+                .parse_line(
+                    r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_search","content":[{"type":"text","text":"permission denied"}],"is_error":true}]}}"#,
+                )
+                .unwrap(),
+            Some(AgentStreamUpdate::Tool(AgentToolActivity {
+                id: "toolu_search".into(),
+                kind: "search".into(),
+                name: "Grep".into(),
+                status: "failed".into(),
+                detail: Some(r#"{"pattern":"AgentTurn"}"#.into()),
+                output: Some("permission denied".into()),
+            }))
         );
         assert_eq!(
             stream
@@ -2092,6 +2537,39 @@ mod tests {
                 .unwrap(),
             Some(AgentStreamUpdate::Phase("finalizing"))
         );
+    }
+
+    #[test]
+    fn codex_stream_ignores_unknown_items_and_bounds_tool_output() {
+        assert_eq!(
+            parse_codex_stream_update(
+                r#"{"type":"item.started","item":{"id":"item_unknown","type":"image_generation","prompt":"ignore"}}"#,
+            )
+            .unwrap(),
+            None
+        );
+
+        let oversized = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 100);
+        let line = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_large",
+                "type": "command_execution",
+                "command": "rg AgentTurn",
+                "aggregated_output": oversized,
+                "exit_code": 0,
+                "status": "completed"
+            }
+        })
+        .to_string();
+        let Some(AgentStreamUpdate::Tool(tool)) = parse_codex_stream_update(&line).unwrap() else {
+            panic!("completed command should produce a bounded tool update");
+        };
+        assert_eq!(
+            tool.output.as_deref().unwrap().chars().count(),
+            MAX_TOOL_OUTPUT_CHARS
+        );
+        assert!(tool.output.as_deref().unwrap().ends_with('…'));
     }
 
     #[test]

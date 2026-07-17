@@ -952,6 +952,8 @@ fn new_persisted_turn(
         question: question.to_string(),
         answer: reply.answer.clone(),
         sources: reply.sources.clone(),
+        tool_activities: reply.tool_activities.clone(),
+        work_duration_ms: reply.work_duration_ms,
         context_scope: context_scope.to_string(),
         created_at: reply.created_at.clone(),
         saved_as_note: false,

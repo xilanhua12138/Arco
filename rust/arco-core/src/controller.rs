@@ -617,6 +617,7 @@ impl Controller {
                 meeting_id: meeting_id.clone(),
                 phase: Some("starting".into()),
                 answer: None,
+                tool: None,
             },
         );
         let events = self.events.clone();
@@ -637,6 +638,7 @@ impl Controller {
                         meeting_id: stream_meeting_id.clone(),
                         phase: Some(phase.into()),
                         answer: None,
+                        tool: None,
                     },
                     AgentStreamUpdate::Answer(answer) => AgentStreamEvent {
                         event_type: "answer".into(),
@@ -644,6 +646,15 @@ impl Controller {
                         meeting_id: stream_meeting_id.clone(),
                         phase: None,
                         answer: Some(answer),
+                        tool: None,
+                    },
+                    AgentStreamUpdate::Tool(tool) => AgentStreamEvent {
+                        event_type: "tool".into(),
+                        request_id: stream_request_id.clone(),
+                        meeting_id: stream_meeting_id.clone(),
+                        phase: None,
+                        answer: None,
+                        tool: Some(tool),
                     },
                 };
                 events.emit(

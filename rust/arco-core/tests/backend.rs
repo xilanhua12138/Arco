@@ -9,8 +9,8 @@ use arco_core::meeting_output::{
 use arco_core::meeting_state::MeetingStateStore;
 use arco_core::meetings::{parse_meeting, MeetingStore};
 use arco_core::models::{
-    AgentReply, AgentRunOutput, AgentSource, AsrConfig, DiarizationConfig, MeetingSummary,
-    ProviderConnectionTest, TranscriptionConfig,
+    AgentReply, AgentRunOutput, AgentSource, AgentToolActivity, AsrConfig, DiarizationConfig,
+    MeetingSummary, ProviderConnectionTest, TranscriptionConfig,
 };
 use arco_core::notes::{materialize_legacy_agent_notes, NoteStore, NotesStorage};
 use arco_core::process::{configure_process_group, terminate_process_tree};
@@ -33,6 +33,8 @@ fn persisted_reply(provider: &str, answer: &str) -> AgentReply {
             label: "Product sync".into(),
             reference: "local:meeting-20260710-101500.md".into(),
         }],
+        tool_activities: vec![],
+        work_duration_ms: None,
         created_at: "2026-07-10T10:17:00+08:00".into(),
     }
 }
@@ -1432,13 +1434,18 @@ fn meeting_state_persists_agent_turn_and_saved_note_across_reloads() {
     let meeting_id = "local:meeting-20260710-101500.md";
     let store = MeetingStateStore::new(state_dir.clone());
 
+    let mut reply = persisted_reply("codex", "Ship the native app.");
+    reply.tool_activities = vec![AgentToolActivity {
+        id: "item_1".into(),
+        kind: "command".into(),
+        name: "Command".into(),
+        status: "completed".into(),
+        detail: Some("rg AgentTurn".into()),
+        output: Some("Models.swift:454".into()),
+    }];
+    reply.work_duration_ms = Some(259_000);
     let turn = store
-        .append_agent_turn(
-            meeting_id,
-            "What did we decide?",
-            "transcript",
-            &persisted_reply("codex", "Ship the native app."),
-        )
+        .append_agent_turn(meeting_id, "What did we decide?", "transcript", &reply)
         .unwrap();
 
     assert!(turn.id.starts_with("turn-"));
@@ -1448,6 +1455,8 @@ fn meeting_state_persists_agent_turn_and_saved_note_across_reloads() {
     assert_eq!(turn.answer, "Ship the native app.");
     assert_eq!(turn.context_scope, "transcript");
     assert_eq!(turn.created_at, "2026-07-10T10:17:00+08:00");
+    assert_eq!(turn.tool_activities, reply.tool_activities);
+    assert_eq!(turn.work_duration_ms, Some(259_000));
     assert!(!turn.saved_as_note);
 
     let saved = store.set_saved(meeting_id, &turn.id, true).unwrap();

@@ -426,10 +426,27 @@ pub struct AgentSource {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentToolActivity {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentReply {
     pub provider: String,
     pub answer: String,
     pub sources: Vec<AgentSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_activities: Vec<AgentToolActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_duration_ms: Option<u64>,
     pub created_at: String,
 }
 
@@ -444,6 +461,8 @@ pub struct AgentStreamEvent {
     pub phase: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<AgentToolActivity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -473,6 +492,10 @@ pub struct PersistedAgentTurn {
     pub question: String,
     pub answer: String,
     pub sources: Vec<AgentSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_activities: Vec<AgentToolActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_duration_ms: Option<u64>,
     pub context_scope: String,
     pub created_at: String,
     pub saved_as_note: bool,
