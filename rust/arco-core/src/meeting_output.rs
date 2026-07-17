@@ -21,8 +21,38 @@ pub fn generate_meeting_output_once(
     prompt: &str,
     active_path: Option<&Path>,
 ) -> Result<GeneratedMeetingArtifact, String> {
+    generate_meeting_output(
+        output_run_lock,
+        runner,
+        meetings,
+        meeting_state,
+        provider,
+        meeting_id,
+        kind,
+        prompt,
+        active_path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn generate_meeting_output(
+    output_run_lock: &Mutex<()>,
+    runner: &AgentRunner,
+    meetings: &MeetingStore,
+    meeting_state: &MeetingStateStore,
+    provider: &str,
+    meeting_id: &str,
+    kind: &str,
+    prompt: &str,
+    active_path: Option<&Path>,
+    regenerate: bool,
+) -> Result<GeneratedMeetingArtifact, String> {
     validate_provider(provider)?;
     validate_kind(kind)?;
+    if regenerate && kind != "title" {
+        return Err("only generated meeting titles can be regenerated".into());
+    }
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err("meeting output prompt cannot be empty".into());
@@ -36,14 +66,19 @@ pub fn generate_meeting_output_once(
     let _guard = output_run_lock
         .lock()
         .map_err(|_| "meeting output coordinator is unavailable".to_string())?;
+    if regenerate && meeting_state.has_manual_title(meeting_id)? {
+        return Err("generated meeting title cannot replace a manual title".into());
+    }
     let meeting = meetings.read(meeting_id, active_path)?;
     let artifacts = meeting_state.meeting_artifacts(meeting_id)?;
-    if let Some(existing) = match kind {
-        "title" => artifacts.title,
-        "summary" => artifacts.summary,
-        _ => unreachable!("kind was validated before acquiring the output lock"),
-    } {
-        return Ok(existing);
+    if !regenerate {
+        if let Some(existing) = match kind {
+            "title" => artifacts.title,
+            "summary" => artifacts.summary,
+            _ => unreachable!("kind was validated before acquiring the output lock"),
+        } {
+            return Ok(existing);
+        }
     }
 
     let canonical_cwd = runner.working_directory(OUTPUT_CONTEXT_SCOPE, None)?;
@@ -81,15 +116,26 @@ pub fn generate_meeting_output_once(
             )
         }
     };
-    meeting_state.commit_meeting_artifact(
-        meeting_id,
-        kind,
-        OUTPUT_CONTEXT_SCOPE,
-        &canonical_cwd,
-        &output,
-        &value,
-        expected_session_id,
-    )
+    if regenerate {
+        meeting_state.replace_generated_title_artifact(
+            meeting_id,
+            OUTPUT_CONTEXT_SCOPE,
+            &canonical_cwd,
+            &output,
+            &value,
+            expected_session_id,
+        )
+    } else {
+        meeting_state.commit_meeting_artifact(
+            meeting_id,
+            kind,
+            OUTPUT_CONTEXT_SCOPE,
+            &canonical_cwd,
+            &output,
+            &value,
+            expected_session_id,
+        )
+    }
 }
 
 pub fn read_meeting_with_artifacts(

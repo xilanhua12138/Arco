@@ -14,6 +14,23 @@ public final class NoopCaptureSurfaceCoordinator: CaptureSurfaceCoordinating {
     public func releaseCaptureSurfaces() {}
 }
 
+public enum MeetingTitleRefreshPolicy {
+    public static let interval: TimeInterval = 5 * 60
+
+    public static func bucket(startedAt: String?, now: Date) -> Int? {
+        guard let startedAt else { return nil }
+        let standard = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions.insert(.withFractionalSeconds)
+        guard let start = fractional.date(from: startedAt) ?? standard.date(from: startedAt) else {
+            return nil
+        }
+        let elapsed = now.timeIntervalSince(start)
+        guard elapsed >= interval else { return nil }
+        return Int(elapsed / interval)
+    }
+}
+
 @MainActor
 @Observable
 public final class ArcoStore {
@@ -58,15 +75,23 @@ public final class ArcoStore {
     private let translate: ArcoTranslate
     private let loadProviderConfiguration: @MainActor () -> ProviderConfiguration
     private let loadGenerationSettings: @MainActor () -> GenerationSettings
+    private let now: @MainActor () -> Date
 
     private var selectedReference: String?
     private var activeCaptureReference: String?
     private var meetingReference: MeetingDetail?
+    private var liveMeetingReference: MeetingDetail?
     private var meetingQuery = ""
     private var noteQuery = ""
     private var noteRequest = 0
     private var selectionRequest = 0
-    private var generationClaims: [String: Task<Void, Never>] = [:]
+    private struct GenerationClaim {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var generationClaims: [String: GenerationClaim] = [:]
+    private var liveTitleRefreshBuckets: [String: Int] = [:]
     private var liveMeetingRevisions: [String: String] = [:]
     private var pollTask: Task<Void, Never>?
     private var disposed = false
@@ -85,13 +110,15 @@ public final class ArcoStore {
         },
         loadGenerationSettings: @escaping @MainActor () -> GenerationSettings = {
             .default
-        }
+        },
+        now: @escaping @MainActor () -> Date = Date.init
     ) {
         self.backend = backend
         self.captureSurfaces = captureSurfaces
         self.translate = translate
         self.loadProviderConfiguration = loadProviderConfiguration
         self.loadGenerationSettings = loadGenerationSettings
+        self.now = now
         backend.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in
                 await self?.handle(event)
@@ -160,6 +187,9 @@ public final class ArcoStore {
             guard selectionRequest == request else { return false }
             selectedReference = id
             meetingReference = next
+            if id == activeCaptureReference {
+                liveMeetingReference = next
+            }
             selectedMeetingId = id
             meeting = next
             agentTurnsByMeeting[id] = turns
@@ -776,20 +806,34 @@ public final class ArcoStore {
     @discardableResult
     private func generateMeetingOutputIfNeeded(
         _ targetMeeting: MeetingDetail,
-        kind: MeetingOutputKind
+        kind: MeetingOutputKind,
+        regenerateTitle: Bool = false
     ) async -> Bool {
         let claim = "\(targetMeeting.summary.id):\(kind.rawValue)"
         if let existing = generationClaims[claim] {
-            await existing.value
+            await existing.task.value
+            if generationClaims[claim]?.id == existing.id {
+                generationClaims[claim] = nil
+            }
+            if kind == .title, regenerateTitle {
+                return await generateMeetingOutputIfNeeded(
+                    targetMeeting,
+                    kind: kind,
+                    regenerateTitle: true
+                )
+            }
             return false
         }
         let settings = loadGenerationSettings()
         let rule = kind == .title ? settings.title : settings.summary
         guard rule.enabled else { return false }
         if kind == .title {
-            guard targetMeeting.lines.count >= 6,
-                  targetMeeting.summary.title == nil,
-                  targetMeeting.summary.titleGenerationStatus == "idle" else { return false }
+            guard !targetMeeting.lines.isEmpty else { return false }
+            if !regenerateTitle {
+                guard targetMeeting.lines.count >= 6,
+                      targetMeeting.summary.title == nil,
+                      targetMeeting.summary.titleGenerationStatus == "idle" else { return false }
+            }
         } else {
             guard !targetMeeting.lines.isEmpty,
                   targetMeeting.summary.summaryGenerationStatus == "idle" else { return false }
@@ -801,6 +845,7 @@ public final class ArcoStore {
         guard route.available, let provider = route.provider else { return false }
         let prompt = rule.promptOverride
             ?? (kind == .title ? arcoDefaultTitlePrompt : arcoDefaultSummaryPrompt)
+        let claimId = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -811,6 +856,7 @@ public final class ArcoStore {
                         "provider": .string(provider.rawValue),
                         "kind": .string(kind.rawValue),
                         "prompt": .string(prompt),
+                        "regenerate": .bool(kind == .title && regenerateTitle),
                     ]
                 )
             } catch {
@@ -818,23 +864,41 @@ public final class ArcoStore {
             }
             await refreshMeetingOutput(targetMeeting.summary.id)
         }
-        generationClaims[claim] = task
+        generationClaims[claim] = GenerationClaim(id: claimId, task: task)
         await task.value
+        if generationClaims[claim]?.id == claimId {
+            generationClaims[claim] = nil
+        }
         return true
     }
 
     private func generateStoppedMeetingOutputs(_ targetMeeting: MeetingDetail) async {
-        _ = await generateMeetingOutputIfNeeded(targetMeeting, kind: .title)
+        _ = await generateMeetingOutputIfNeeded(
+            targetMeeting,
+            kind: .title,
+            regenerateTitle: true
+        )
         _ = await generateMeetingOutputIfNeeded(targetMeeting, kind: .summary)
     }
 
     private func triggerLiveTitleGenerationIfNeeded() {
         guard capture.phase == .recording,
               let activeId = capture.activeMeetingId,
-              meeting?.summary.id == activeId,
-              let meeting else { return }
+              let targetMeeting = liveMeetingReference ?? meeting,
+              targetMeeting.summary.id == activeId else { return }
+        guard let bucket = MeetingTitleRefreshPolicy.bucket(
+            startedAt: capture.startedAt,
+            now: now()
+        ) else { return }
+        let previousBucket = liveTitleRefreshBuckets[activeId] ?? 0
+        guard bucket > previousBucket else { return }
+        liveTitleRefreshBuckets[activeId] = bucket
         Task { @MainActor [weak self] in
-            _ = await self?.generateMeetingOutputIfNeeded(meeting, kind: .title)
+            _ = await self?.generateMeetingOutputIfNeeded(
+                targetMeeting,
+                kind: .title,
+                regenerateTitle: true
+            )
         }
     }
 
@@ -844,6 +908,20 @@ public final class ArcoStore {
         activeCaptureReference = next.activeMeetingId
         guard capture != next else { return }
         capture = next
+        if next.phase == .recording,
+           let activeId = next.activeMeetingId,
+           meetingReference?.summary.id == activeId {
+            liveMeetingReference = meetingReference
+        }
+        if previousPhase == .recording, next.phase != .recording {
+            captureSurfaces.releaseCaptureSurfaces()
+        }
+        if let previousId,
+           previousId != next.activeMeetingId
+            || (previousPhase == .recording && next.phase != .recording) {
+            liveTitleRefreshBuckets[previousId] = nil
+            liveMeetingReference = nil
+        }
         if previousPhase != next.phase || previousId != next.activeMeetingId {
             updateLivePolling()
         }
@@ -876,6 +954,7 @@ public final class ArcoStore {
                         liveMeetingRevisions[activeMeetingId] = revision
                     }
                     if let nextMeeting = snapshot.meeting {
+                        liveMeetingReference = nextMeeting
                         if activeMeeting != nextMeeting.summary {
                             activeMeeting = nextMeeting.summary
                         }
@@ -883,11 +962,11 @@ public final class ArcoStore {
                            meetingReference != nextMeeting {
                             meetingReference = nextMeeting
                             meeting = nextMeeting
-                            triggerLiveTitleGenerationIfNeeded()
                         }
                     } else if snapshot.capture.activeMeetingId == nil {
                         activeMeeting = nil
                     }
+                    triggerLiveTitleGenerationIfNeeded()
                     if snapshot.capture.phase != .recording
                         || snapshot.capture.activeMeetingId != activeMeetingId {
                         liveMeetingRevisions[activeMeetingId] = nil

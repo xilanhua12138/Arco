@@ -133,6 +133,12 @@ impl MeetingStateStore {
         Ok(self.read_state(meeting_id, &path)?.artifacts)
     }
 
+    pub fn has_manual_title(&self, meeting_id: &str) -> Result<bool, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let _guard = self.acquire_lock()?;
+        Ok(self.read_state(meeting_id, &path)?.manual_title.is_some())
+    }
+
     pub fn invalidate_generated_summary(&self, meeting_id: &str) -> Result<(), String> {
         let path = self.sidecar_path(meeting_id)?;
         let _guard = self.acquire_lock()?;
@@ -197,6 +203,52 @@ impl MeetingStateStore {
         value: &str,
         expected_session_id: Option<&str>,
     ) -> Result<GeneratedMeetingArtifact, String> {
+        self.commit_meeting_artifact_with_policy(
+            meeting_id,
+            kind,
+            context_scope,
+            canonical_cwd,
+            output,
+            value,
+            expected_session_id,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_generated_title_artifact(
+        &self,
+        meeting_id: &str,
+        context_scope: &str,
+        canonical_cwd: &Path,
+        output: &AgentRunOutput,
+        value: &str,
+        expected_session_id: Option<&str>,
+    ) -> Result<GeneratedMeetingArtifact, String> {
+        self.commit_meeting_artifact_with_policy(
+            meeting_id,
+            "title",
+            context_scope,
+            canonical_cwd,
+            output,
+            value,
+            expected_session_id,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_meeting_artifact_with_policy(
+        &self,
+        meeting_id: &str,
+        kind: &str,
+        context_scope: &str,
+        canonical_cwd: &Path,
+        output: &AgentRunOutput,
+        value: &str,
+        expected_session_id: Option<&str>,
+        replace_existing: bool,
+    ) -> Result<GeneratedMeetingArtifact, String> {
         let path = self.sidecar_path(meeting_id)?;
         validate_artifact_kind(kind)?;
         validate_context_scope(context_scope)?;
@@ -223,8 +275,13 @@ impl MeetingStateStore {
 
         let _guard = self.acquire_lock()?;
         let mut state = self.read_state(meeting_id, &path)?;
-        if let Some(existing) = artifact_for_kind(&state.artifacts, kind) {
-            return Ok(existing.clone());
+        if replace_existing && state.manual_title.is_some() {
+            return Err("generated meeting title cannot replace a manual title".into());
+        }
+        if !replace_existing {
+            if let Some(existing) = artifact_for_kind(&state.artifacts, kind) {
+                return Ok(existing.clone());
+            }
         }
         let now = Local::now().to_rfc3339();
         upsert_session_binding(

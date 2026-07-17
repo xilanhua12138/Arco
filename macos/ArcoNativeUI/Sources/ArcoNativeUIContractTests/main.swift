@@ -186,6 +186,11 @@ private func argumentString(_ arguments: [String: AnySendable], _ key: String) -
     return value
 }
 
+private func argumentBool(_ arguments: [String: AnySendable], _ key: String) -> Bool? {
+    guard case let .bool(value) = arguments[key] else { return nil }
+    return value
+}
+
 private func summary(
     id: String,
     title: String? = nil,
@@ -794,6 +799,47 @@ private func testMeetingStatisticsContracts() {
 }
 
 @MainActor
+private func testMeetingTitleRefreshPolicyUsesFiveMinuteWindows() {
+    let startedAt = "2026-07-16T09:00:00+08:00"
+    let formatter = ISO8601DateFormatter()
+    let start = formatter.date(from: startedAt)!
+
+    expect(
+        MeetingTitleRefreshPolicy.bucket(startedAt: startedAt, now: start.addingTimeInterval(299)),
+        nil,
+        "Automatic titles do not run before the first complete five-minute window"
+    )
+    expect(
+        MeetingTitleRefreshPolicy.bucket(startedAt: startedAt, now: start.addingTimeInterval(300)),
+        1,
+        "The first automatic title is due exactly five minutes after capture starts"
+    )
+    expect(
+        MeetingTitleRefreshPolicy.bucket(startedAt: startedAt, now: start.addingTimeInterval(599)),
+        1,
+        "A five-minute window is stable between its boundaries"
+    )
+    expect(
+        MeetingTitleRefreshPolicy.bucket(startedAt: startedAt, now: start.addingTimeInterval(600)),
+        2,
+        "The next automatic title is due at the next five-minute boundary"
+    )
+    expect(
+        MeetingTitleRefreshPolicy.bucket(
+            startedAt: "2026-07-16T09:00:00.500+08:00",
+            now: start.addingTimeInterval(300.5)
+        ),
+        1,
+        "Real capture timestamps with fractional seconds use the same five-minute policy"
+    )
+    expect(
+        MeetingTitleRefreshPolicy.bucket(startedAt: "not-a-date", now: start),
+        nil,
+        "Invalid capture timestamps never invent a refresh window"
+    )
+}
+
+@MainActor
 private func testSelectionAndNotesRejectStaleRequests() async {
     let backend = ScriptedBackend()
     backend.on("read_meeting") { arguments in
@@ -832,8 +878,14 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
     let backend = ScriptedBackend()
     let surfaces = TestCaptureSurfaces()
     let meeting = detail(id: "live", live: true)
-    let meetingList = [meeting.summary]
+    let meetingList = [meeting.summary, summary(id: "history", title: "Earlier meeting")]
     let generatedKinds = LockedBox<[String]>([])
+    let generatedMeetingIds = LockedBox<[String]>([])
+    let regenerateFlags = LockedBox<[Bool]>([])
+    let formatter = ISO8601DateFormatter()
+    let currentDate = LockedBox(
+        formatter.date(from: "2026-07-16T09:04:59+08:00")!
+    )
 
     backend.on("start_capture") { _ in
         try await Task.sleep(for: .milliseconds(70))
@@ -844,11 +896,18 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
         return try JSONEncoder().encode(capture(phase: .idle))
     }
     backend.respond("list_meetings", with: meetingList)
-    backend.respond("read_meeting", with: meeting)
+    backend.on("read_meeting") { arguments in
+        let id = argumentString(arguments, "id") ?? ""
+        return try JSONEncoder().encode(
+            id == "live" ? meeting : detail(id: id)
+        )
+    }
     backend.respond("list_agent_turns", with: [AgentTurn]())
     backend.on("generate_meeting_output") { arguments in
         let kind = argumentString(arguments, "kind") ?? ""
         generatedKinds.mutate { $0.append(kind) }
+        generatedMeetingIds.mutate { $0.append(argumentString(arguments, "meetingId") ?? "") }
+        regenerateFlags.mutate { $0.append(argumentBool(arguments, "regenerate") ?? false) }
         let artifact = MeetingOutputArtifact(
             kind: kind,
             status: "ready",
@@ -865,7 +924,8 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
     let store = ArcoStore(
         backend: backend,
         captureSurfaces: surfaces,
-        loadProviderConfiguration: { provider }
+        loadProviderConfiguration: { provider },
+        now: { currentDate.read { $0 } }
     )
     // Generation routing reads the current runtime snapshot exactly like useArco.
     backend.respond("runtime_status", with: [
@@ -884,25 +944,67 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
     expect((await start.value)?.phase, .recording, "Capture enters recording after backend start")
     expect(surfaces.showCount, 1, "Recording opens one reusable HUD")
 
-    for _ in 0..<100 {
-        let hasTitle = generatedKinds.read { $0.contains("title") }
-        if hasTitle { break }
-        try? await Task.sleep(for: .milliseconds(5))
+    try? await Task.sleep(for: .milliseconds(30))
+    expect(
+        generatedKinds.read { $0 },
+        [],
+        "A live meeting is not titled from a partial transcript before five minutes"
+    )
+
+    _ = await store.selectMeeting("history")
+    currentDate.mutate { $0 = formatter.date(from: "2026-07-16T09:05:00+08:00")! }
+    _ = await store.selectMeeting("history")
+    let generatedFirstWindow = await eventually {
+        generatedKinds.read { $0 } == ["title"]
     }
+    expectTrue(generatedFirstWindow, "The first five-minute boundary regenerates the live title")
+    expect(
+        generatedMeetingIds.read { $0 },
+        ["live"],
+        "Title refresh remains attached to the active recording while another page is selected"
+    )
+
+    _ = await store.selectMeeting("history")
+    try? await Task.sleep(for: .milliseconds(30))
+    expect(
+        generatedKinds.read { $0 },
+        ["title"],
+        "Repeated transcript refreshes in one five-minute window do not duplicate title requests"
+    )
+
+    currentDate.mutate { $0 = formatter.date(from: "2026-07-16T09:10:00+08:00")! }
+    _ = await store.selectMeeting("history")
+    let generatedSecondWindow = await eventually {
+        generatedKinds.read { $0 } == ["title", "title"]
+    }
+    expectTrue(generatedSecondWindow, "The next five-minute boundary regenerates from the newer transcript")
 
     let stop = Task { @MainActor in await store.toggleCapture(mode: .both) }
     try? await Task.sleep(for: .milliseconds(10))
     expect(store.capture.phase, .stopping, "Capture exposes the original optimistic stopping phase")
+    expect(
+        surfaces.releaseCount,
+        1,
+        "Entering the stopping phase closes the HUD immediately without waiting for backend cleanup"
+    )
     expect((await stop.value)?.phase, .idle, "Capture returns idle after stop")
     expectTrue(surfaces.releaseCount >= 1, "Stopping releases capture surfaces even if later refresh work fails")
 
-    for _ in 0..<100 {
-        let complete = generatedKinds.read { $0.count >= 2 }
-        if complete { break }
-        try? await Task.sleep(for: .milliseconds(5))
+    let generatedFinalOutputs = await eventually {
+        generatedKinds.read { $0.count >= 4 }
     }
+    expectTrue(generatedFinalOutputs, "Stopping waits for final title and summary output requests")
     let finalKinds = generatedKinds.read { $0 }
-    expect(finalKinds, ["title", "summary"], "Stopped output generation remains title then summary")
+    expect(
+        finalKinds,
+        ["title", "title", "title", "summary"],
+        "Stopping forces one final title from the completed transcript before the summary"
+    )
+    expect(
+        regenerateFlags.read { $0 },
+        [true, true, true, false],
+        "Periodic and final titles explicitly replace generated output while summaries remain one-shot"
+    )
     expect(store.completedMeetingId, "live", "Stopped meeting remains selected for review")
     store.dispose()
 }
@@ -1692,6 +1794,7 @@ testLiquidGlassUsesTheRegularNativeFallback()
 testNotesEmptyActionUsesSwiftUINativeGlass()
 testHUDClockInvalidationIsScopedToStatusView()
 testMeetingStatisticsContracts()
+testMeetingTitleRefreshPolicyUsesFiveMinuteWindows()
 await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
 await testHUDFailureRollsBackCapture()
