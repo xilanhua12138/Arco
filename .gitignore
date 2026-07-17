@@ -16,6 +16,7 @@ __pycache__/
 native/**/.build/
 macos/ArcoNativeUI/.build/
 rust/arco-core/target/
+rust/arco-audio-rt/target/
 /build/
 artifacts/
 .agents/

@@ -6,6 +6,7 @@ build:
 
 test:
 	./native/verify-native-ui.sh
+	cargo test --manifest-path rust/arco-audio-rt/Cargo.toml --all-targets -- --test-threads=1
 	cargo test --manifest-path rust/arco-core/Cargo.toml --all-targets --all-features -- --test-threads=1
 	cargo build --manifest-path rust/arco-core/Cargo.toml --lib
 	@set -e; for product in \
@@ -40,6 +41,7 @@ package:
 	./native/package-local-app.sh
 
 clean:
+	cargo clean --manifest-path rust/arco-audio-rt/Cargo.toml
 	cargo clean --manifest-path rust/arco-core/Cargo.toml
 	swift package --package-path macos/ArcoNativeUI clean
 	rm -rf build artifacts

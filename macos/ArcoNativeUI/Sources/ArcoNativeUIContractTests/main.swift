@@ -1,5 +1,6 @@
 import ArcoNativeUI
 import Foundation
+import Observation
 
 private var failures: [String] = []
 private var assertionCount = 0
@@ -142,6 +143,27 @@ private actor DelayedFirstHUDCapture {
             returning: capture(phase: .recording, meetingId: "stale", message: "stale")
         )
         firstRead = nil
+    }
+}
+
+private actor SuspendedBackendRequest {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func suspendUntilReleased() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            started = true
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started { await Task.yield() }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 
@@ -590,19 +612,30 @@ private func testStageDotGridSourceParity() {
     )) ?? ""
 
     expectTrue(
-        mainShellSource.contains("var y = rect.minY + 4")
-            && mainShellSource.contains("var x = rect.minX + 4"),
+        mainShellSource.contains("dotTileSize = CGSize(width: 8, height: 8)")
+            && mainShellSource.contains("dotCenter = CGPoint(x: 4, y: 4)"),
         "Stage dots must begin at the center of the source CSS 8pt tile"
     )
     expectTrue(
-        mainShellSource.contains("CGRect(x: x - 1, y: y - 1, width: 2, height: 2)"),
+        mainShellSource.contains("dotSolidRadius: CGFloat = 1")
+            && mainShellSource.contains("dotFadeRadius: CGFloat = 1.05"),
         "Stage dots must preserve the source radial-gradient 1pt radius instead of a 1pt diameter"
     )
     expectTrue(
-        mainShellSource.contains("x += 8")
-            && mainShellSource.contains("y += 8")
-            && mainShellSource.contains(".fill(ArcoNativeColors.stageDot.opacity(0.38))"),
+        mainShellSource.contains("dotOverlayOpacity: Double = 0.38")
+            && mainShellSource.contains(".tiledImage("),
         "Stage dots must preserve the source 8pt repeat and 0.38 layer opacity"
+    )
+    let ellipticalWashBody = mainShellSource
+        .components(separatedBy: "private static func drawEllipticalWash")
+        .dropFirst()
+        .first?
+        .components(separatedBy: "private static func color")
+        .first ?? ""
+    expect(
+        ellipticalWashBody.components(separatedBy: "graphics.translateBy").count - 1,
+        1,
+        "Each ambient radial wash must translate to its CSS percentage center exactly once"
     )
 }
 
@@ -687,14 +720,50 @@ private func testNotesEmptyActionUsesSwiftUINativeGlass() {
         .first ?? ""
 
     expectTrue(
-        emptyActionSource.contains("ArcoGlassSurface(cornerRadius: 8, tone: .neutral, interactive: true)")
+        emptyActionSource.contains("interactive: viewModel.canCreateNote")
+            && emptyActionSource.contains(".disabled(!viewModel.canCreateNote)")
+            && emptyActionSource.contains(".opacity(viewModel.canCreateNote ? 1 : 0.42)")
+            && emptyActionSource.contains(".allowsHitTesting(viewModel.canCreateNote)")
             && themeSource.contains(".regular.tint(tone.tint).interactive(interactive)")
             && themeSource.contains(".background(.regularMaterial, in: shape)")
             && !notesSource.contains("NSGlassEffectView")
             && !notesSource.contains("NSVisualEffectView")
             && !themeSource.contains("NSGlassEffectView")
             && !themeSource.contains("NSVisualEffectView"),
-        "Notes empty-state action must use SwiftUI regular Liquid Glass with the shared regular-material fallback"
+        "Notes empty-state action must use native glass and disable its full visual hit target without a meeting"
+    )
+}
+
+@MainActor
+private func testHUDClockInvalidationIsScopedToStatusView() {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let modelSource = (try? String(
+        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoNativeUI/RecordingHUDModel.swift"),
+        encoding: .utf8
+    )) ?? ""
+    let viewSource = (try? String(
+        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoApp/Platform/RecordingHUD.swift"),
+        encoding: .utf8
+    )) ?? ""
+
+    expectTrue(
+        modelSource.contains("@ObservationIgnored public let elapsedClock")
+            && modelSource.contains("elapsedClock.update()"),
+        "The one-second HUD clock must publish through an isolated observable instead of invalidating RecordingHUDModel"
+    )
+    expectTrue(
+        modelSource.contains("if capture != next {")
+            && modelSource.contains("capture = next"),
+        "The 700 millisecond capture poll must reject equal snapshots before assigning observable state"
+    )
+    expectTrue(
+        viewSource.contains("private struct RecordingHUDStatusView: View")
+            && viewSource.contains("elapsedClock: model.elapsedClock")
+            && !viewSource.contains("Text(model.elapsed)"),
+        "The one-second timer must be read only by the small status subtree, never by the HUD root and its glass actions"
     )
 }
 
@@ -959,6 +1028,97 @@ private func testHUDMonitoringRejectsLatePreviousGeneration() async {
 }
 
 @MainActor
+private func testHUDMonitoringSkipsEqualCaptureSnapshots() async {
+    let reads = LockedBox(0)
+    let stableCapture = capture(
+        phase: .recording,
+        meetingId: "stable",
+        mode: .both,
+        message: "unchanged"
+    )
+    let model = RecordingHUDModel(
+        readCapture: {
+            reads.mutate { $0 += 1 }
+            return stableCapture
+        },
+        stopCapture: { capture(phase: .idle) },
+        onStopped: {},
+        capturePollInterval: .milliseconds(20),
+        clockInterval: .seconds(30)
+    )
+
+    model.startMonitoring()
+    let initialSnapshotApplied = await eventually {
+        model.capture == stableCapture && reads.read { $0 } >= 1
+    }
+    expectTrue(initialSnapshotApplied, "HUD applies the first capture snapshot")
+
+    let captureInvalidations = LockedBox(0)
+    withObservationTracking {
+        _ = model.capture
+    } onChange: {
+        captureInvalidations.mutate { $0 += 1 }
+    }
+    let readsBeforeObservation = reads.read { $0 }
+    let repeatedPollsCompleted = await eventually(attempts: 80, interval: .milliseconds(5)) {
+        reads.read { $0 } >= readsBeforeObservation + 3
+    }
+
+    expectTrue(repeatedPollsCompleted, "HUD keeps polling the backend at its configured cadence")
+    expect(
+        captureInvalidations.read { $0 },
+        0,
+        "Equal capture snapshots must not republish Observation changes every 700 milliseconds"
+    )
+    model.stopMonitoring()
+}
+
+@MainActor
+private func testLivePollingSkipsUnchangedTranscriptPayloads() async {
+    let backend = ScriptedBackend()
+    let liveMeeting = detail(id: "live", lineCount: 1, live: true)
+    let liveCapture = capture(phase: .recording, meetingId: "live", mode: .both)
+    backend.respond("list_meetings", with: [liveMeeting.summary])
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: liveCapture)
+    backend.respond("read_meeting", with: liveMeeting)
+    backend.respond("list_agent_turns", with: [AgentTurn]())
+    backend.respond(
+        "poll_live_meeting",
+        with: LiveMeetingPoll(capture: liveCapture, revision: "stable", meeting: nil)
+    )
+    installStorageHandlers(on: backend)
+
+    let store = ArcoStore(backend: backend)
+    await store.initialize()
+    let initialFullReads = backend.callCount("read_meeting")
+    let captureInvalidations = LockedBox(0)
+    withObservationTracking {
+        _ = store.capture
+    } onChange: {
+        captureInvalidations.mutate { $0 += 1 }
+    }
+    try? await Task.sleep(for: .milliseconds(1_300))
+
+    expectTrue(
+        backend.callCount("poll_live_meeting") >= 1,
+        "Live refresh uses the version-aware poll command"
+    )
+    expect(
+        backend.callCount("read_meeting"),
+        initialFullReads,
+        "An unchanged live transcript does not cross FFI as another full meeting payload"
+    )
+    expect(store.meeting, liveMeeting, "An unchanged poll preserves the rendered meeting value")
+    expect(
+        captureInvalidations.read { $0 },
+        0,
+        "An equal capture snapshot does not invalidate every capture-dependent SwiftUI surface"
+    )
+    store.dispose()
+}
+
+@MainActor
 private func testAgentStreamingIsRequestScoped() async {
     let backend = ScriptedBackend()
     backend.on("run_agent") { arguments in
@@ -1022,6 +1182,55 @@ private func testAgentStreamingIsRequestScoped() async {
 }
 
 @MainActor
+private func testConcurrentAgentRequestIsRejectedBeforeBackendDispatch() async {
+    let backend = ScriptedBackend()
+    let firstRequest = SuspendedBackendRequest()
+    let runCount = LockedBox(0)
+    backend.on("run_agent") { arguments in
+        let call = runCount.read { $0 }
+        runCount.mutate { $0 += 1 }
+        if call == 0 { await firstRequest.suspendUntilReleased() }
+        let id = call == 0 ? "first-turn" : "duplicate-turn"
+        return try JSONEncoder().encode(AgentTurn(
+            id: id,
+            meetingId: argumentString(arguments, "meetingId") ?? "meeting",
+            provider: .codex,
+            question: argumentString(arguments, "question") ?? "Question",
+            answer: "Answer",
+            sources: [],
+            contextScope: "transcript",
+            createdAt: "2026-07-16T09:00:00+08:00",
+            savedAsNote: false,
+            noteId: nil,
+            usedFallback: false,
+            providerSessionId: nil,
+            providerTurnId: nil
+        ))
+    }
+    let store = ArcoStore(backend: backend)
+    let input = AskAgentInput(
+        provider: .codex,
+        usedFallback: false,
+        question: "Question",
+        meetingId: "meeting",
+        contextScope: "transcript"
+    )
+
+    let first = Task { @MainActor in await store.askAgent(input) }
+    await firstRequest.waitUntilStarted()
+    expectTrue(store.agentRunning, "The first Agent request owns the shared running state")
+
+    let duplicate = await store.askAgent(input)
+    expect(duplicate, false, "A second Agent button press is rejected immediately while one request is active")
+    expect(backend.callCount("run_agent"), 1, "Rejected duplicate Agent requests never enter the Rust run lock")
+
+    await firstRequest.release()
+    expect(await first.value, true, "The original Agent request still completes after rejecting the duplicate")
+    expectTrue(!store.agentRunning, "Completing the original request releases the shared running state")
+    store.dispose()
+}
+
+@MainActor
 private func testHistoryDebounceCannotOverwriteClearedQuery() async {
     let backend = ScriptedBackend()
     backend.on("list_meetings") { arguments in
@@ -1045,6 +1254,35 @@ private func testHistoryDebounceCannotOverwriteClearedQuery() async {
         ["all-meetings"],
         "A cancelled History debounce cannot overwrite the cleared meeting list"
     )
+    controller.store.dispose()
+}
+
+@MainActor
+private func testNotesNavigationTransitionsBeforeItsRefreshCompletes() async {
+    let backend = ScriptedBackend()
+    let notesRequest = SuspendedBackendRequest()
+    backend.on("list_notes") { _ in
+        await notesRequest.suspendUntilReleased()
+        return try JSONEncoder().encode([NoteDocument]())
+    }
+    let controller = makeController(backend: backend)
+
+    controller.requestPage(.notes)
+
+    expect(
+        controller.page,
+        .notes,
+        "Requesting Notes changes the selected page in the initiating event turn"
+    )
+    await notesRequest.waitUntilStarted()
+    expect(
+        controller.page,
+        .notes,
+        "Notes remains visible while its asynchronous list request is still suspended"
+    )
+
+    await notesRequest.release()
+    _ = await eventually { !controller.store.notesLoading }
     controller.store.dispose()
 }
 
@@ -1361,14 +1599,19 @@ testStageDotGridSourceParity()
 testWorkspaceColumnAllocationMatchesCSSGrid()
 testLiquidGlassUsesTheRegularNativeFallback()
 testNotesEmptyActionUsesSwiftUINativeGlass()
+testHUDClockInvalidationIsScopedToStatusView()
 testMeetingStatisticsContracts()
 await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
 await testHUDFailureRollsBackCapture()
 await testHUDMonitoringLifecycleIsExplicitAndRestartable()
 await testHUDMonitoringRejectsLatePreviousGeneration()
+await testHUDMonitoringSkipsEqualCaptureSnapshots()
+await testLivePollingSkipsUnchangedTranscriptPayloads()
 await testAgentStreamingIsRequestScoped()
+await testConcurrentAgentRequestIsRejectedBeforeBackendDispatch()
 await testHistoryDebounceCannotOverwriteClearedQuery()
+await testNotesNavigationTransitionsBeforeItsRefreshCompletes()
 await testNotesUnmountCancelsSearchAutosaveAndLocalState()
 await testSettingsUnmountAndShortcutErrorIsolation()
 await testTopBarUnmountResetsComponentLocalState()

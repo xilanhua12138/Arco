@@ -27,6 +27,7 @@ public final class ArcoStore {
     public private(set) var agentTurnsByMeeting: [String: [AgentTurn]] = [:]
     public private(set) var savedNotes: [NoteDocument] = []
     public private(set) var notesLoading = false
+    public private(set) var lastSuccessfulNotesQuery: String?
     public private(set) var loading = true
     public private(set) var agentRunning = false
     public private(set) var agentStreamingTurn: AgentStreamingTurn?
@@ -66,6 +67,7 @@ public final class ArcoStore {
     private var noteRequest = 0
     private var selectionRequest = 0
     private var generationClaims: [String: Task<Void, Never>] = [:]
+    private var liveMeetingRevisions: [String: String] = [:]
     private var pollTask: Task<Void, Never>?
     private var disposed = false
 
@@ -205,7 +207,10 @@ public final class ArcoStore {
                 "list_notes",
                 arguments: ["query": .string(query)]
             )
-            if noteRequest == request { savedNotes = notes }
+            if noteRequest == request {
+                savedNotes = notes
+                lastSuccessfulNotesQuery = query
+            }
             return notes
         } catch {
             if noteRequest == request {
@@ -357,7 +362,7 @@ public final class ArcoStore {
     @discardableResult
     public func askAgent(_ input: AskAgentInput) async -> Bool {
         let question = input.question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else { return false }
+        guard !question.isEmpty, !agentRunning else { return false }
         let requestId = UUID().uuidString.lowercased()
         agentRunning = true
         agentStreamingTurn = AgentStreamingTurn(
@@ -834,8 +839,9 @@ public final class ArcoStore {
     private func applyCapture(_ next: CaptureState) {
         let previousPhase = capture.phase
         let previousId = capture.activeMeetingId
-        capture = next
         activeCaptureReference = next.activeMeetingId
+        guard capture != next else { return }
+        capture = next
         if previousPhase != next.phase || previousId != next.activeMeetingId {
             updateLivePolling()
         }
@@ -855,20 +861,34 @@ public final class ArcoStore {
                 }
                 guard let self, !Task.isCancelled else { return }
                 do {
-                    async let nextCapture: CaptureState = backend.call("capture_status")
-                    async let nextMeeting: MeetingDetail = backend.call(
-                        "read_meeting",
-                        arguments: ["id": .string(activeMeetingId)]
+                    let knownRevision = liveMeetingRevisions[activeMeetingId]
+                    let snapshot: LiveMeetingPoll = try await backend.callDecodedOffMain(
+                        "poll_live_meeting",
+                        arguments: [
+                            "meetingId": .string(activeMeetingId),
+                            "knownRevision": knownRevision.map(AnySendable.string) ?? .null,
+                        ]
                     )
-                    let snapshot = try await (nextCapture, nextMeeting)
-                    applyCapture(snapshot.0)
-                    activeMeeting = snapshot.0.activeMeetingId == nil ? nil : snapshot.1.summary
-                    if selectedReference == activeMeetingId {
-                        meetingReference = snapshot.1
-                        meeting = snapshot.1
-                        triggerLiveTitleGenerationIfNeeded()
+                    applyCapture(snapshot.capture)
+                    if let revision = snapshot.revision {
+                        liveMeetingRevisions[activeMeetingId] = revision
                     }
-                    if snapshot.0.phase != .recording || snapshot.0.activeMeetingId != activeMeetingId {
+                    if let nextMeeting = snapshot.meeting {
+                        if activeMeeting != nextMeeting.summary {
+                            activeMeeting = nextMeeting.summary
+                        }
+                        if selectedReference == activeMeetingId,
+                           meetingReference != nextMeeting {
+                            meetingReference = nextMeeting
+                            meeting = nextMeeting
+                            triggerLiveTitleGenerationIfNeeded()
+                        }
+                    } else if snapshot.capture.activeMeetingId == nil {
+                        activeMeeting = nil
+                    }
+                    if snapshot.capture.phase != .recording
+                        || snapshot.capture.activeMeetingId != activeMeetingId {
+                        liveMeetingRevisions[activeMeetingId] = nil
                         return
                     }
                 } catch {

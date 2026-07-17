@@ -3,6 +3,37 @@ import Observation
 
 @MainActor
 @Observable
+public final class RecordingHUDElapsedClock {
+    public private(set) var now = Date()
+
+    public func elapsed(startedAt raw: String?) -> String {
+        guard let raw,
+              let started = Self.parseDate(raw) else { return "00:00" }
+        let total = max(0, Int(now.timeIntervalSince(started)))
+        let hours = total / 3_600
+        let minutes = total % 3_600 / 60
+        let seconds = total % 60
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    fileprivate func update() {
+        now = Date()
+    }
+
+    private static func parseDate(_ raw: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let value = formatter.date(from: raw) { return value }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
+    }
+}
+
+@MainActor
+@Observable
 public final class RecordingHUDModel {
     public private(set) var capture = CaptureState(
         phase: .starting,
@@ -14,9 +45,9 @@ public final class RecordingHUDModel {
         error: nil,
         transcription: nil
     )
-    public private(set) var now = Date()
     public private(set) var saving = false
     public private(set) var saved = false
+    @ObservationIgnored public let elapsedClock = RecordingHUDElapsedClock()
 
     private let readCapture: () async throws -> CaptureState
     private let stopCapture: () async throws -> CaptureState
@@ -90,19 +121,6 @@ public final class RecordingHUDModel {
         }
     }
 
-    public var elapsed: String {
-        guard let raw = capture.startedAt,
-              let started = Self.parseDate(raw) else { return "00:00" }
-        let total = max(0, Int(now.timeIntervalSince(started)))
-        let hours = total / 3_600
-        let minutes = total % 3_600 / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
     public var controlsLocked: Bool {
         saving || saved || capture.phase == .starting || capture.phase == .stopping
     }
@@ -116,13 +134,17 @@ public final class RecordingHUDModel {
                       monitoringGeneration == generation else { return }
                 let reusedForNewRecording = saved && next.phase == .recording
                 if !saving && (!saved || reusedForNewRecording) {
-                    capture = next
+                    if capture != next {
+                        capture = next
+                    }
                     if reusedForNewRecording { saved = false }
                 }
             } catch {
                 guard !Task.isCancelled,
                       monitoringGeneration == generation else { return }
-                capture.phase = .error
+                if capture.phase != .error {
+                    capture.phase = .error
+                }
             }
 
             do {
@@ -136,20 +158,12 @@ public final class RecordingHUDModel {
     private func runClock(generation: Int) async {
         while !Task.isCancelled {
             guard monitoringGeneration == generation else { return }
-            now = Date()
+            elapsedClock.update()
             do {
                 try await Task.sleep(for: clockInterval)
             } catch {
                 return
             }
         }
-    }
-
-    private static func parseDate(_ raw: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let value = formatter.date(from: raw) { return value }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: raw)
     }
 }

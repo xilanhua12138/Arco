@@ -101,7 +101,8 @@ public final class ArcoAppShellController: ObservableObject {
     private let translate: ArcoTranslate
     private var meetingSearchTask: Task<Void, Never>?
     private var notesSearchTask: Task<Void, Never>?
-    private var loadedNotesQuery: String?
+    private var notesLoadTask: Task<Void, Never>?
+    private var pendingNotesQuery: String?
     private var openedCompletedMeetingID: String?
     private var topBarViewModelStorage: TopBarViewModel?
     private var notesViewModelStorage: NotesPageViewModel?
@@ -136,6 +137,7 @@ public final class ArcoAppShellController: ObservableObject {
     deinit {
         meetingSearchTask?.cancel()
         notesSearchTask?.cancel()
+        notesLoadTask?.cancel()
     }
 
     public var audioModeLocked: Bool {
@@ -194,6 +196,9 @@ public final class ArcoAppShellController: ObservableObject {
             loading: store.notesLoading
         )
         guard page == .notes else { return }
+        notesLoadTask?.cancel()
+        notesLoadTask = nil
+        pendingNotesQuery = nil
         notesSearchTask?.cancel()
         notesSearchTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(180))
@@ -202,8 +207,23 @@ public final class ArcoAppShellController: ObservableObject {
                   self.page == .notes,
                   self.notesQuery == value
             else { return }
-            self.loadedNotesQuery = value
             _ = await self.store.refreshSavedNotes(value)
+        }
+    }
+
+    /// Mirrors React navigation: commit the route in the initiating event turn,
+    /// then let route-owned data refresh without delaying click feedback.
+    public func requestPage(_ next: AppRoute) {
+        switch next {
+        case .notes:
+            dismissSettings()
+            transition(to: .notes)
+            startNotesRefreshIfNeeded()
+        case .history, .review:
+            dismissSettings()
+            transition(to: next)
+        case .current:
+            Task { @MainActor [weak self] in await self?.showPage(.current) }
         }
     }
 
@@ -211,10 +231,8 @@ public final class ArcoAppShellController: ObservableObject {
         dismissSettings()
         if next == .notes {
             transition(to: .notes)
-            if loadedNotesQuery != notesQuery {
-                loadedNotesQuery = notesQuery
-                _ = await store.refreshSavedNotes(notesQuery)
-            }
+            startNotesRefreshIfNeeded()
+            await notesLoadTask?.value
             return
         }
         if next == .current,
@@ -596,10 +614,30 @@ public final class ArcoAppShellController: ObservableObject {
         query = ""
     }
 
+    private func startNotesRefreshIfNeeded() {
+        let requestedQuery = notesQuery
+        guard store.lastSuccessfulNotesQuery != requestedQuery,
+              pendingNotesQuery != requestedQuery
+        else { return }
+
+        notesLoadTask?.cancel()
+        pendingNotesQuery = requestedQuery
+        notesLoadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.store.refreshSavedNotes(requestedQuery)
+            guard self.pendingNotesQuery == requestedQuery else { return }
+            self.pendingNotesQuery = nil
+            self.notesLoadTask = nil
+        }
+    }
+
     private func transition(to next: AppRoute) {
         if page == .notes, next != .notes {
             notesSearchTask?.cancel()
             notesSearchTask = nil
+            notesLoadTask?.cancel()
+            notesLoadTask = nil
+            pendingNotesQuery = nil
             notesViewModelStorage?.teardown()
             notesViewModelStorage = nil
         }

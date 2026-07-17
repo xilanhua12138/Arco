@@ -13,20 +13,32 @@ struct RecordingHUDView: View {
     @Bindable var model: RecordingHUDModel
     let translate: ArcoTranslate
     let onToggleAgent: @MainActor () throws -> Bool
+    let onError: @MainActor (Error) -> Void
 
     init(
         model: RecordingHUDModel,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        onToggleAgent: @escaping @MainActor () throws -> Bool
+        onToggleAgent: @escaping @MainActor () throws -> Bool,
+        onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
         self.translate = translate
         self.onToggleAgent = onToggleAgent
+        self.onError = onError
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            status
+            RecordingHUDStatusView(
+                model: RecordingHUDStatusState(
+                    phase: model.capture.phase,
+                    startedAt: model.capture.startedAt,
+                    saving: model.saving,
+                    saved: model.saved
+                ),
+                elapsedClock: model.elapsedClock,
+                translate: translate
+            )
             Spacer(minLength: 0)
             Rectangle()
                 .fill(HUDSourcePalette.ink.opacity(0.09))
@@ -46,7 +58,9 @@ struct RecordingHUDView: View {
             Button {
                 do {
                     _ = try onToggleAgent()
-                } catch {}
+                } catch {
+                    onError(error)
+                }
             } label: {
                 Label(translate("hud.askArco", [:]), systemImage: "sparkles")
                     .labelStyle(HUDLabelStyle(iconSize: 14))
@@ -61,8 +75,21 @@ struct RecordingHUDView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
     }
+}
 
-    private var status: some View {
+private struct RecordingHUDStatusState {
+    let phase: CapturePhase
+    let startedAt: String?
+    let saving: Bool
+    let saved: Bool
+}
+
+private struct RecordingHUDStatusView: View {
+    let model: RecordingHUDStatusState
+    let elapsedClock: RecordingHUDElapsedClock
+    let translate: ArcoTranslate
+
+    var body: some View {
         HStack(spacing: 7) {
             Circle()
                 .fill(ArcoNativeColors.record)
@@ -82,13 +109,14 @@ struct RecordingHUDView: View {
 
             if !model.saved,
                !model.saving,
-               model.capture.phase == .recording {
-                Text(model.elapsed)
+               model.phase == .recording {
+                let elapsed = elapsedClock.elapsed(startedAt: model.startedAt)
+                Text(elapsed)
                     .font(ArcoTypography.mono(11, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(HUDSourcePalette.ink.opacity(0.5))
                     .lineLimit(1)
-                    .accessibilityLabel(model.elapsed)
+                    .accessibilityLabel(elapsed)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -100,21 +128,21 @@ struct RecordingHUDView: View {
     private var statusAccessibilityLabel: String {
         guard !model.saved,
               !model.saving,
-              model.capture.phase == .recording else {
+              model.phase == .recording else {
             return statusText
         }
-        return "\(statusText), \(model.elapsed)"
+        return "\(statusText), \(elapsedClock.elapsed(startedAt: model.startedAt))"
     }
 
     private var statusText: String {
         if model.saved { return translate("hud.saved", [:]) }
-        if model.saving || model.capture.phase == .stopping {
+        if model.saving || model.phase == .stopping {
             return translate("common.saving", [:])
         }
-        if model.capture.phase == .starting {
+        if model.phase == .starting {
             return translate("common.starting", [:])
         }
-        if model.capture.phase == .error {
+        if model.phase == .error {
             return translate("hud.recordingStopped", [:])
         }
         return translate("common.recording", [:])
@@ -156,36 +184,14 @@ private struct HUDButtonStyleBody: View {
     let enabled: Bool
     @State private var hovering = false
 
-    @ViewBuilder
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-        if #available(macOS 26.0, *) {
-            configuration.label
-                .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
-                .contentShape(shape)
-                .glassEffect(
-                    .regular.tint(glassTint).interactive(),
-                    in: shape
-                )
-                .opacity(enabled ? 1 : 0.42)
-                .onHover { hovering = $0 }
-        } else {
-            configuration.label
-                .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
-                .background(background)
-                .clipShape(shape)
-                .opacity(enabled ? 1 : 0.42)
-                .onHover { hovering = $0 }
-        }
-    }
-
-    private var glassTint: Color {
-        switch kind {
-        case .stop:
-            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 1 : 0.92)
-        case .agent:
-            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.11 : 0.07)
-        }
+        configuration.label
+            .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
+            .contentShape(shape)
+            .background(background, in: shape)
+            .opacity(enabled ? 1 : 0.42)
+            .onHover { hovering = $0 }
     }
 
     private var background: Color {

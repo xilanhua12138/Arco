@@ -324,10 +324,12 @@ public struct ArcoNativeActionButton: View {
                 actionButton {
                     Image(systemName: symbol)
                         .font(.system(size: 12, weight: .medium))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Circle())
                 }
                 .contentShape(Circle())
                 .glassEffect(.regular.interactive(), in: Circle())
+                .help(title)
             case .prominent:
                 actionButton {
                     Label(title, systemImage: symbol)
@@ -361,11 +363,13 @@ public struct ArcoNativeActionButton: View {
             actionButton {
                 Image(systemName: symbol)
                     .font(.system(size: 12, weight: .medium))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Circle())
             }
             .contentShape(Circle())
             .background(.regularMaterial, in: Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.28), lineWidth: 0.75))
+            .help(title)
         case .prominent:
             actionButton {
                 Label(title, systemImage: symbol)
@@ -392,6 +396,7 @@ public struct ArcoNativeActionButton: View {
     private func actionButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
         Button(action: action, label: label)
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityLabel(title)
     }
 }

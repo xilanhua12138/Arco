@@ -71,15 +71,12 @@ public struct NotesPageView: View {
     }
 
     private var indexToggle: some View {
-        NotesGlassToolbarButton(
-            label: translate(viewModel.indexOpen ? "notes.hideList" : "notes.showList", [:]),
-            disabled: false,
+        ArcoNativeActionButton(
+            title: translate(viewModel.indexOpen ? "notes.hideList" : "notes.showList", [:]),
+            symbol: "sidebar.left",
+            variant: .toolbar,
             action: { viewModel.indexOpen.toggle() }
-        ) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 12, weight: .medium))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        )
         .frame(width: 40, height: 40)
         .padding(.leading, 12)
         .padding(.top, 9)
@@ -215,15 +212,13 @@ public struct NotesPageView: View {
     private var commandBar: some View {
         ZStack {
             HStack(spacing: 10) {
-                NotesGlassToolbarButton(
-                    label: translate("notes.new", [:]),
-                    disabled: !viewModel.canCreateNote,
+                ArcoNativeActionButton(
+                    title: translate("notes.new", [:]),
+                    symbol: "square.and.pencil",
+                    variant: .toolbar,
+                    enabled: viewModel.canCreateNote,
                     action: { viewModel.createNew() }
-                ) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                )
                 .frame(width: 40, height: 40)
                 .padding(.leading, viewModel.indexOpen ? 0 : 46)
 
@@ -408,7 +403,11 @@ public struct NotesPageView: View {
             Text(translate("notes.writeFirstHelp", [:]))
                 .font(ArcoTypography.sans(13))
                 .multilineTextAlignment(.center)
-            ArcoGlassSurface(cornerRadius: 8, tone: .neutral, interactive: true) {
+            ArcoGlassSurface(
+                cornerRadius: 8,
+                tone: .neutral,
+                interactive: viewModel.canCreateNote
+            ) {
                 Button { viewModel.createNew() } label: {
                     Label(translate("notes.new", [:]), systemImage: "plus")
                         .font(ArcoTypography.sans(12, weight: .semibold))
@@ -422,6 +421,8 @@ public struct NotesPageView: View {
                 .disabled(!viewModel.canCreateNote)
             }
             .padding(.top, 8)
+            .opacity(viewModel.canCreateNote ? 1 : 0.42)
+            .allowsHitTesting(viewModel.canCreateNote)
         }
         .foregroundStyle(ArcoNativeColors.inkMuted)
         .padding(32)
@@ -503,45 +504,6 @@ public struct NotesPageView: View {
         .disabled(draft.source == "agent")
         .opacity(draft.source == "agent" ? 0.62 : 1)
         .accessibilityLabel(translate("notes.meeting", [:]))
-    }
-}
-
-// MARK: - Exact native controls previously mounted by ArcoGlassControls.swift
-
-private struct NotesGlassToolbarButton<Label: View>: View {
-    let label: String
-    let disabled: Bool
-    let action: () -> Void
-    @ViewBuilder let content: Label
-    @State private var hovering = false
-
-    var body: some View {
-        Group {
-            if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: 8) {
-                    button
-                        .contentShape(Circle())
-                        .glassEffect(.regular.interactive(), in: Circle())
-                }
-            } else {
-                button
-                    .contentShape(Circle())
-                    .background(.regularMaterial, in: Circle())
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 0.75))
-            }
-        }
-        .disabled(disabled)
-        .scaleEffect(hovering ? 1.018 : 1)
-        .offset(y: hovering ? -1 : 0)
-        .onHover { hovering = $0 }
-        .animation(.smooth(duration: 0.18), value: hovering)
-        .help(label)
-    }
-
-    private var button: some View {
-        Button(action: action) { content }
-            .buttonStyle(.plain)
-            .accessibilityLabel(label)
     }
 }
 

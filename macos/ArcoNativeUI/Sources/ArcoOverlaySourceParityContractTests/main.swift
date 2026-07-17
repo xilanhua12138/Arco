@@ -70,6 +70,7 @@ private let material = source("NativeOverlayMaterial.swift")
 private let coordinator = source("WindowCoordinator.swift")
 private let geometry = source("WindowGeometry.swift")
 private let application = appSource("ArcoApplication.swift")
+private let insight = nativeUISource("Views/InsightPanel.swift")
 
 expectTrue(!hud.isEmpty, "Recording HUD source contract must resolve the migrated source")
 expectTrue(!hudModel.isEmpty, "Recording HUD lifecycle model must live in the testable native UI module")
@@ -78,6 +79,7 @@ expectTrue(!material.isEmpty, "Overlay material source contract must resolve the
 expectTrue(!coordinator.isEmpty, "Window coordinator source contract must resolve the migrated source")
 expectTrue(!geometry.isEmpty, "Window geometry source contract must resolve the migrated source")
 expectTrue(!application.isEmpty, "Native application runtime source contract must resolve the migrated source")
+expectTrue(!insight.isEmpty, "Shared Agent interaction source contract must resolve the migrated source")
 
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
 expectTrue(
@@ -119,6 +121,12 @@ expectTrue(
     "Ask Arco must only enable during a live recording"
 )
 expectTrue(
+    hud.contains("onError(error)")
+        && !hud.contains("catch {}")
+        && application.contains("onError:"),
+    "Ask Arco must surface a failed window action instead of looking like an unresponsive button"
+)
+expectTrue(
     hud.contains("HUDSourcePalette.ink") && !hud.contains("Color.black"),
     "HUD ink, divider, timer, and button fills must use source rgb(17 17 17), not pure black"
 )
@@ -154,6 +162,16 @@ expect(
     "Expanded Agent header and workspace must both preserve the source 2fr transcript track"
 )
 expectTrue(
+    agent.contains("width: geometry.size.width,")
+        && agent.contains("height: geometry.size.height,")
+        && agent.contains("alignment: .center"),
+    "Expanded Agent header must fill its complete 52-point GeometryReader height instead of leaving an empty lower strip"
+)
+expectTrue(
+    agent.contains(".frame(maxHeight: .infinity, alignment: .center)"),
+    "Expanded Agent header columns must remain vertically centered across the complete toolbar height"
+)
+expectTrue(
     agent.contains("model.snapshot.capture.phase == .recording")
         && agent.contains("== model.snapshot.capture.activeMeetingId"),
     "Live badge must require both recording phase and the active meeting identity"
@@ -164,22 +182,159 @@ expectTrue(
     "Transcript actions must preserve both expand and collapse transitions"
 )
 expectTrue(
-    agent.contains("systemName: \"sidebar.right\"")
-        && agent.contains("systemName: \"rectangle.righthalf.inset.filled.arrow.right\""),
-    "SF Symbols may replace Lucide, but show and hide transcript must remain visibly distinct states"
+    agent.contains("symbol: \"sidebar.trailing\""),
+    "Transcript controls must use the standard macOS trailing-sidebar symbol"
+)
+let collapsedAgentHeader = sourceSection(
+    agent,
+    from: "private var agentHeader: some View",
+    until: "private var transcriptHeader: some View"
+)
+expectTrue(
+    !collapsedAgentHeader.contains("Text(translate(\"transcript.heading\"")
+        && collapsedAgentHeader.contains("translate(\"agent.showTranscript\", [:])"),
+    "Collapsed Agent chrome must keep the transcript action accessible without repeating a visible Transcript label beside the title"
+)
+expectTrue(
+    collapsedAgentHeader.contains("HStack(spacing: 10)")
+        && collapsedAgentHeader.contains(".padding(.leading, 16)")
+        && collapsedAgentHeader.contains(".padding(.trailing, 11)"),
+    "Collapsed Agent chrome must preserve the source 10-point title rhythm and 16/11-point insets"
+)
+let expandedTranscriptHeader = sourceSection(
+    agent,
+    from: "private var transcriptHeader: some View",
+    until: "private var closeButton: some View"
+)
+expectTrue(
+    expandedTranscriptHeader.contains("HStack(spacing: 10)")
+        && expandedTranscriptHeader.contains("HStack(spacing: 6)")
+        && expandedTranscriptHeader.contains("HStack(spacing: 5)")
+        && expandedTranscriptHeader.contains(".padding(.leading, 14)")
+        && expandedTranscriptHeader.contains(".padding(.trailing, 11)"),
+    "Expanded Transcript chrome must preserve a clear 10/6/5-point grouping and balanced 14/11-point insets"
+)
+expectTrue(
+    !agent.contains("AgentOverlaySourcePalette")
+        && expandedTranscriptHeader.contains("Text(translate(\"transcript.heading\"")
+        && !expandedTranscriptHeader.contains("overlay(alignment: .leading)"),
+    "The native glass toolbar must keep the Transcript hierarchy without redrawing the web tint or vertical split"
+)
+expectTrue(
+    agent.contains(".frame(height: 0.5)")
+        && !agent.contains("Color(red: 248 / 255, green: 251 / 255, blue: 253 / 255).opacity(0.4)"),
+    "The unified glass header must use only one subtle bottom hairline and no opaque toolbar wash"
+)
+let closeAction = sourceSection(
+    agent,
+    from: "private var closeButton: some View",
+    until: "private var workspace: some View"
+)
+expectTrue(
+    closeAction.contains("AgentHeaderCloseButton(")
+        && !closeAction.contains(".padding(.leading, 7)")
+        && !closeAction.contains("frame(width: 1, height: 20)"),
+    "Close must remain a dedicated circular window action without the obsolete leading divider"
+)
+let headerIconButton = sourceSection(
+    agent,
+    from: "private struct AgentHeaderToggleButton: View",
+    until: "private struct AgentHeaderCloseButton: View"
+)
+let headerCloseButton = sourceSection(
+    agent,
+    from: "private struct AgentHeaderCloseButton: View",
+    until: "private struct AgentHeaderToggleButtonStyle: ButtonStyle"
+)
+let headerToggleStyle = sourceSection(
+    agent,
+    from: "private struct AgentHeaderToggleButtonStyle: ButtonStyle",
+    until: "private struct AgentHeaderCloseButtonStyle: ButtonStyle"
+)
+let headerCloseStyle = sourceSection(
+    agent,
+    from: "private struct AgentHeaderCloseButtonStyle: ButtonStyle",
+    until: "private struct AgentPrimaryOverlayButtonStyle: ButtonStyle"
+)
+expectTrue(
+    headerIconButton.contains(".frame(width: 30, height: 30)")
+        && headerIconButton.contains(".contentShape(RoundedRectangle(cornerRadius: 8")
+        && headerIconButton.contains(".accessibilityLabel(label)")
+        && headerIconButton.contains(".help(label)"),
+    "Transcript toggle must preserve the source 30-point, 8-radius action with an accessible name and pointer help"
+)
+expectTrue(
+    headerCloseButton.contains(".frame(width: 30, height: 30)")
+        && headerCloseButton.contains(".contentShape(Circle())")
+        && headerCloseButton.contains(".accessibilityLabel(label)")
+        && headerCloseButton.contains(".help(label)"),
+    "Close must expose a visible 30-point circular action with an accessible name and pointer help"
+)
+expectTrue(
+    headerToggleStyle.contains("RoundedRectangle(cornerRadius: 8")
+        && headerToggleStyle.contains("Color.clear")
+        && !headerToggleStyle.contains(".glassEffect("),
+    "Transcript toggle must retain the source transparent 8-radius treatment without nested glass"
+)
+expectTrue(
+    headerCloseStyle.contains("let shape = Circle()")
+        && headerCloseStyle.contains("Color.white.opacity(0.36)")
+        && headerCloseStyle.contains("ArcoNativeColors.line")
+        && headerCloseStyle.contains("strokeBorder")
+        && !headerCloseStyle.contains(".glassEffect("),
+    "Close must render a clearly visible circular material edge instead of disappearing into the glass"
+)
+let insightPanelBody = sourceSection(
+    insight,
+    from: "public var body: some View",
+    until: "private var header: some View"
+)
+expectTrue(
+    insightPanelBody.contains("Color.white.opacity(0.32)")
+        && !insightPanelBody.contains("Color.white.opacity(0.92)"),
+    "Agent overlay content must reveal the outer Liquid Glass instead of covering it with an opaque white sheet"
+)
+let primaryOverlayStyle = agent.range(
+    of: "private struct AgentPrimaryOverlayButtonStyle: ButtonStyle"
+).map { String(agent[$0.lowerBound...]) } ?? ""
+expectTrue(
+    agent.contains(".buttonStyle(AgentPrimaryOverlayButtonStyle())")
+        && primaryOverlayStyle.contains(".background(ArcoNativeColors.action, in: shape)")
+        && !primaryOverlayStyle.contains(".glassEffect("),
+    "The unavailable-state primary action must preserve React's solid action fill instead of adding nested glass"
 )
 expectTrue(
     agent.contains(".id(model.snapshot.meeting?.summary.id ?? \"no-meeting\")"),
     "Agent conversation state must reset only when the source meeting key changes"
 )
 expectTrue(
-    agent.contains("AgentOverlaySourcePalette.transcriptHeader")
-        && !agent.contains("Color.gray.opacity(0.03)"),
-    "Transcript header tint must preserve source rgb(119 119 119 / 3%) instead of system gray"
-)
-expectTrue(
     agent.contains("onFocusMain()") && agent.contains("onHide"),
     "Unavailable and close actions must preserve the source focus-main and hide-window behavior"
+)
+expectTrue(
+    agent.contains("func applyRunning(_ running: Bool)")
+        && application.contains(".onChange(of: store.agentRunning)"),
+    "The Agent overlay must disable its buttons when a request starts from any shared surface"
+)
+let agentWorkspace = sourceSection(
+    agent,
+    from: "private var workspace: some View",
+    until: "private var agentSlot: some View"
+)
+expect(
+    agentWorkspace.components(separatedBy: "agentSlot").count - 1,
+    1,
+    "Toggling the transcript must keep one stable Agent panel identity so draft questions and context state survive"
+)
+let contextMenu = sourceSection(
+    insight,
+    from: "private var contextMenu: some View",
+    until: "private var composerContextMenu: some View"
+)
+expectTrue(
+    contextMenu.contains("ZStack(alignment: .bottomLeading)")
+        && !contextMenu.contains(".overlay(alignment: .bottomLeading)"),
+    "Context choices must be sibling controls instead of nested Buttons inside the add-context Button overlay"
 )
 
 // Native replacement of material.rs: SwiftUI owns every visible material.
@@ -206,12 +361,15 @@ expectTrue(
         && material.contains("ArcoNativeColors.surfaceDocument"),
     "Reduce Transparency must retain the source HUD and Agent opaque fallbacks"
 )
+let hudButtonStyle = sourceSection(
+    hud,
+    from: "private struct HUDButtonStyleBody: View",
+    until: "private var background: Color"
+)
 expectTrue(
-    hud.contains(".glassEffect(")
-        && hud.contains(".interactive()")
-        && agent.contains(".glassEffect(")
-        && agent.contains(".interactive()"),
-    "Interactive HUD and Agent controls must use SwiftUI Liquid Glass on macOS 26"
+    hudButtonStyle.contains(".background(background, in: shape)")
+        && !hudButtonStyle.contains(".glassEffect("),
+    "The Liquid Glass HUD surface must preserve React's filled controls instead of stacking nested glass effects"
 )
 
 // Read-only window lifecycle/geometry: source placement, resize, reuse, close.
@@ -225,6 +383,33 @@ expectTrue(
     coordinator.contains("defaults.set(visible, forKey: Self.agentTranscriptVisibilityKey)")
         && coordinator.contains("resizingPreservingTopLeft"),
     "Transcript visibility must persist and resize without moving the Agent's top-left anchor"
+)
+expectTrue(
+    coordinator.contains("@Observable")
+        && coordinator.contains("private let agentState: AgentWindowState")
+        && coordinator.contains("get: { state.transcriptVisible }")
+        && coordinator.contains("agentState.transcriptVisible = visible"),
+    "Transcript buttons must mutate observable SwiftUI state before coordinating AppKit geometry"
+)
+let toggleAgent = sourceSection(
+    coordinator,
+    from: "func toggleAgent() throws -> Bool",
+    until: "func hideAgent()"
+)
+let transcriptVisibility = sourceSection(
+    coordinator,
+    from: "func setAgentTranscriptVisible(_ visible: Bool)",
+    until: "// MARK: - NSWindowDelegate"
+)
+expectTrue(
+    toggleAgent.contains("synchronizeAgentFrame")
+        && appearsBefore("synchronizeAgentFrame", "makeKeyAndOrderFront", in: toggleAgent),
+    "Every Agent presentation must reconcile the reused panel frame with the persisted transcript state before showing it"
+)
+expectTrue(
+    transcriptVisibility.contains("synchronizeAgentFrame")
+        && !transcriptVisibility.contains("agentWindow.isVisible"),
+    "Transcript expansion must resize a hidden reused Agent panel instead of leaving visible content in the collapsed frame"
 )
 let showHUD = sourceSection(
     coordinator,

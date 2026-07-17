@@ -60,6 +60,16 @@ pub struct MeetingDetail {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LiveMeetingPoll {
+    pub capture: CaptureState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting: Option<MeetingDetail>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
     pub provider: String,
     pub label: String,

@@ -156,7 +156,7 @@ public struct InsightPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             layout == .agentOverlay
-                ? Color.white.opacity(0.92)
+                ? Color.white.opacity(0.32)
                 : ArcoNativeColors.surfaceDocument
         )
         .clipped()
@@ -725,33 +725,36 @@ public struct InsightPanelView: View {
     }
 
     private var contextMenu: some View {
-        Button {
-            contextMenuOpen.toggle()
-        } label: {
-            ArcoLucideIcon(.plus, size: 16)
-                .foregroundStyle(
-                    contextMenuOpen || contextButtonHovering
-                        ? ArcoNativeColors.inkStrong
-                        : ArcoNativeColors.ink
-                )
-                .frame(width: 28, height: 28)
-                .background(
-                    contextMenuOpen || contextButtonHovering ? ArcoNativeColors.surfaceHover : .clear,
-                    in: Circle()
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onHover { contextButtonHovering = $0 }
-        .overlay(alignment: .bottomLeading) {
+        ZStack(alignment: .bottomLeading) {
+            Button {
+                contextMenuOpen.toggle()
+            } label: {
+                ArcoLucideIcon(.plus, size: 16)
+                    .foregroundStyle(
+                        contextMenuOpen || contextButtonHovering
+                            ? ArcoNativeColors.inkStrong
+                            : ArcoNativeColors.ink
+                    )
+                    .frame(width: 28, height: 28)
+                    .background(
+                        contextMenuOpen || contextButtonHovering ? ArcoNativeColors.surfaceHover : .clear,
+                        in: Circle()
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .onHover { contextButtonHovering = $0 }
+            .accessibilityLabel(translate("agent.addContext", [:]))
+            .help(translate("agent.contextMenu", [:]))
+
             if contextMenuOpen {
                 composerContextMenu
                     .offset(y: -35)
                     .zIndex(4)
             }
         }
-        .accessibilityLabel(translate("agent.addContext", [:]))
-        .help(translate("agent.contextMenu", [:]))
+        .frame(width: 28, height: 28, alignment: .bottomLeading)
+        .zIndex(4)
     }
 
     private var composerContextMenu: some View {

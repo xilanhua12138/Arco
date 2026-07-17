@@ -4,14 +4,6 @@ import Foundation
 import Observation
 import SwiftUI
 
-private enum AgentOverlaySourcePalette {
-    static let transcriptHeader = Color(
-        red: 119 / 255,
-        green: 119 / 255,
-        blue: 119 / 255
-    ).opacity(0.03)
-}
-
 struct AgentOverlaySnapshot: Equatable, Sendable {
     var meeting: MeetingDetail?
     var capture: CaptureState
@@ -88,6 +80,10 @@ final class AgentOverlayModel {
 
     func applyStreamingTurn(_ turn: AgentStreamingTurn?) {
         snapshot.streamingTurn = turn
+    }
+
+    func applyRunning(_ running: Bool) {
+        snapshot.running = running
     }
 
     func ask(_ request: InsightAskRequest) async throws -> Bool {
@@ -168,24 +164,27 @@ struct AgentOverlaySurfaceView: View {
         .accessibilityLabel(translate("agent.askArco", [:]))
     }
 
-    @ViewBuilder
     private var header: some View {
-        if transcriptVisible {
-            GeometryReader { geometry in
-                HStack(spacing: 0) {
-                    agentHeader
-                        .frame(width: geometry.size.width * 3 / 5)
-                    transcriptHeader
-                        .frame(width: geometry.size.width * 2 / 5)
+        Group {
+            if transcriptVisible {
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        agentHeader
+                            .frame(width: geometry.size.width * 3 / 5)
+                        transcriptHeader
+                            .frame(width: geometry.size.width * 2 / 5)
+                    }
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height,
+                        alignment: .center
+                    )
                 }
+            } else {
+                agentHeader
             }
-            .background(Color(red: 248 / 255, green: 251 / 255, blue: 253 / 255).opacity(0.4))
-            .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
-        } else {
-            agentHeader
-                .background(Color(red: 248 / 255, green: 251 / 255, blue: 253 / 255).opacity(0.4))
-                .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
         }
+        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 0.5) }
     }
 
     private var agentHeader: some View {
@@ -195,24 +194,17 @@ struct AgentOverlaySurfaceView: View {
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .tracking(-0.15)
                 .lineLimit(1)
+                .frame(height: 22, alignment: .center)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
             if !transcriptVisible {
-                HStack(spacing: 4) {
-                    Button {
-                        transcriptVisible = true
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "sidebar.right")
-                                .font(.system(size: 15))
-                            Text(translate("transcript.heading", [:]))
-                                .font(ArcoTypography.sans(11))
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 30)
-                    }
-                    .buttonStyle(AgentHeaderButtonStyle())
-                    .accessibilityLabel(translate("agent.showTranscript", [:]))
+                HStack(spacing: 6) {
+                    AgentHeaderToggleButton(
+                        symbol: "sidebar.trailing",
+                        symbolSize: 15,
+                        label: translate("agent.showTranscript", [:]),
+                        action: { transcriptVisible = true }
+                    )
 
                     closeButton
                 }
@@ -220,6 +212,7 @@ struct AgentOverlaySurfaceView: View {
         }
         .padding(.leading, 16)
         .padding(.trailing, 11)
+        .frame(maxHeight: .infinity, alignment: .center)
         .background(ArcoWindowDragRegion())
     }
 
@@ -228,10 +221,12 @@ struct AgentOverlaySurfaceView: View {
             Text(translate("transcript.heading", [:]))
                 .font(ArcoTypography.sans(13, weight: .medium))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
+                .tracking(-0.13)
                 .lineLimit(1)
+                .frame(height: 22, alignment: .center)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 if live {
                     HStack(spacing: 5) {
                         Circle()
@@ -241,50 +236,46 @@ struct AgentOverlaySurfaceView: View {
                             .font(ArcoTypography.sans(11, weight: .medium))
                     }
                     .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .frame(height: 22, alignment: .center)
+                    .padding(.trailing, 4)
                 }
 
-                Button {
-                    transcriptVisible = false
-                } label: {
-                    Image(systemName: "rectangle.righthalf.inset.filled.arrow.right")
-                        .font(.system(size: 16))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(AgentHeaderButtonStyle())
-                .accessibilityLabel(translate("agent.hideTranscript", [:]))
+                AgentHeaderToggleButton(
+                    symbol: "sidebar.trailing",
+                    symbolSize: 15,
+                    label: translate("agent.hideTranscript", [:]),
+                    action: { transcriptVisible = false }
+                )
 
                 closeButton
             }
         }
-        .padding(.leading, 13)
+        .padding(.leading, 14)
         .padding(.trailing, 11)
-        .background(AgentOverlaySourcePalette.transcriptHeader)
+        .frame(maxHeight: .infinity, alignment: .center)
         .background(ArcoWindowDragRegion())
-        .overlay(alignment: .leading) { ArcoNativeColors.lineThin.frame(width: 1) }
     }
 
     private var closeButton: some View {
-        Button(action: onHide) {
-            Image(systemName: "xmark")
-                .font(.system(size: 17, weight: .medium))
-                .frame(width: 30, height: 30)
-        }
-        .buttonStyle(AgentCloseButtonStyle())
-        .padding(.leading, 7)
-        .overlay(alignment: .leading) {
-            ArcoNativeColors.lineThin
-                .frame(width: 1, height: 20)
-        }
-        .accessibilityLabel(translate("agent.close", [:]))
+        AgentHeaderCloseButton(
+            symbol: "xmark",
+            symbolSize: 14,
+            symbolWeight: .regular,
+            label: translate("agent.close", [:]),
+            action: onHide
+        )
     }
 
-    @ViewBuilder
     private var workspace: some View {
-        if transcriptVisible {
-            GeometryReader { geometry in
-                HStack(spacing: 0) {
-                    agentSlot
-                        .frame(width: geometry.size.width * 3 / 5)
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                agentSlot
+                    .frame(
+                        width: transcriptVisible
+                            ? geometry.size.width * 3 / 5
+                            : geometry.size.width
+                    )
+                if transcriptVisible {
                     TranscriptPaneView(
                         meeting: model.snapshot.meeting,
                         capture: model.snapshot.capture,
@@ -295,17 +286,12 @@ struct AgentOverlaySurfaceView: View {
                         translate: translate
                     )
                     .frame(width: geometry.size.width * 2 / 5)
-                    .background(
-                        Color(red: 248 / 255, green: 250 / 255, blue: 252 / 255)
-                            .opacity(0.9)
-                    )
+                    .background(Color.white.opacity(0.18))
                     .overlay(alignment: .leading) {
-                        ArcoNativeColors.lineThin.frame(width: 1)
+                        ArcoNativeColors.line.frame(width: 0.5)
                     }
                 }
             }
-        } else {
-            agentSlot
         }
     }
 
@@ -349,13 +335,24 @@ struct AgentOverlaySurfaceView: View {
             )
             .id(model.snapshot.meeting?.summary.id ?? "no-meeting")
         } else {
-            VStack(spacing: 8) {
-                Text(translate("agent.askArco", [:]))
-                    .font(ArcoTypography.sans(20, weight: .medium))
-                    .foregroundStyle(ArcoNativeColors.inkStrong)
+            VStack(spacing: 0) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.36))
+                        .overlay(Circle().strokeBorder(ArcoNativeColors.line, lineWidth: 0.75))
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(ArcoNativeColors.ink)
+                }
+                .frame(width: 40, height: 40)
+                .accessibilityHidden(true)
+
                 Text(translate("agent.connectFirst", [:]))
                     .font(ArcoTypography.sans(13))
                     .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .lineSpacing(3.6)
+                    .frame(maxWidth: 260)
+                    .padding(.top, 12)
                 Button(translate("agent.openArco", [:])) {
                     do {
                         try onFocusMain()
@@ -363,87 +360,126 @@ struct AgentOverlaySurfaceView: View {
                         onError(error)
                     }
                 }
-                .buttonStyle(AgentPrimaryGlassButtonStyle())
-                .padding(.top, 8)
+                .buttonStyle(AgentPrimaryOverlayButtonStyle())
+                .padding(.top, 16)
             }
             .multilineTextAlignment(.center)
             .padding(28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.white.opacity(0.92))
+            .background(Color.white.opacity(0.32))
         }
     }
 }
 
-private struct AgentHeaderButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        AgentHeaderButtonBody(configuration: configuration)
+private struct AgentHeaderToggleButton: View {
+    let symbol: String
+    let symbolSize: CGFloat
+    let label: String
+    let action: @MainActor () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: symbolSize))
+                .frame(width: 30, height: 30)
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(AgentHeaderToggleButtonStyle())
+        .accessibilityLabel(label)
+        .help(label)
     }
 }
 
-private struct AgentCloseButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        AgentHeaderButtonBody(configuration: configuration)
+private struct AgentHeaderCloseButton: View {
+    let symbol: String
+    let symbolSize: CGFloat
+    var symbolWeight: Font.Weight = .regular
+    let label: String
+    let action: @MainActor () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: symbolSize, weight: symbolWeight))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+        }
+        .buttonStyle(AgentHeaderCloseButtonStyle())
+        .accessibilityLabel(label)
+        .help(label)
     }
 }
 
-private struct AgentHeaderButtonBody: View {
+private struct AgentHeaderToggleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        AgentHeaderToggleButtonBody(configuration: configuration)
+    }
+}
+
+private struct AgentHeaderToggleButtonBody: View {
     let configuration: ButtonStyle.Configuration
     @State private var hovering = false
 
-    @ViewBuilder
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        if #available(macOS 26.0, *) {
-            configuration.label
-                .foregroundStyle(hovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
-                .contentShape(shape)
-                .glassEffect(
-                    .regular
-                        .tint(hovering ? ArcoNativeColors.surfaceHover : nil)
-                        .interactive(),
-                    in: shape
-                )
-                .onHover { hovering = $0 }
-        } else {
-            configuration.label
-                .foregroundStyle(hovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
-                .background(hovering ? ArcoNativeColors.surfaceHover : Color.clear)
-                .clipShape(shape)
-                .onHover { hovering = $0 }
-        }
+        configuration.label
+            .foregroundStyle(hovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
+            .contentShape(shape)
+            .background(
+                hovering || configuration.isPressed
+                    ? ArcoNativeColors.surfaceHover
+                    : Color.clear,
+                in: shape
+            )
+            .onHover { hovering = $0 }
     }
 }
 
-private struct AgentPrimaryGlassButtonStyle: ButtonStyle {
+private struct AgentHeaderCloseButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        AgentPrimaryGlassButtonBody(configuration: configuration)
+        AgentHeaderCloseButtonBody(configuration: configuration)
     }
 }
 
-private struct AgentPrimaryGlassButtonBody: View {
+private struct AgentHeaderCloseButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    @State private var hovering = false
+
+    var body: some View {
+        let shape = Circle()
+        configuration.label
+            .foregroundStyle(hovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
+            .contentShape(shape)
+            .background(
+                hovering || configuration.isPressed
+                    ? Color.white.opacity(0.56)
+                    : Color.white.opacity(0.36),
+                in: shape
+            )
+            .overlay(shape.strokeBorder(ArcoNativeColors.line, lineWidth: 0.75))
+            .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
+            .onHover { hovering = $0 }
+    }
+}
+
+private struct AgentPrimaryOverlayButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        AgentPrimaryOverlayButtonBody(configuration: configuration)
+    }
+}
+
+private struct AgentPrimaryOverlayButtonBody: View {
     let configuration: ButtonStyle.Configuration
 
-    @ViewBuilder
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        if #available(macOS 26.0, *) {
-            configuration.label
-                .font(ArcoTypography.sans(13))
-                .foregroundStyle(ArcoNativeColors.actionInk)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .contentShape(shape)
-                .glassEffect(
-                    .regular.tint(ArcoNativeColors.action).interactive(),
-                    in: shape
-                )
-        } else {
-            configuration.label
-                .font(ArcoTypography.sans(13))
-                .foregroundStyle(ArcoNativeColors.actionInk)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(ArcoNativeColors.action, in: shape)
-        }
+        configuration.label
+            .font(ArcoTypography.sans(13))
+            .foregroundStyle(ArcoNativeColors.actionInk)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(shape)
+            .background(ArcoNativeColors.action, in: shape)
+            .opacity(configuration.isPressed ? 0.88 : 1)
     }
 }

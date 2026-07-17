@@ -109,8 +109,10 @@ expectTrue(
     "Main composer must not retain the migration-only 63pt growth allowance"
 )
 expectTrue(
-    notesEmptySource.contains("ArcoGlassSurface(cornerRadius: 8, tone: .neutral, interactive: true)"),
-    "Notes empty-state action must use the shared native regular-glass surface"
+    notesEmptySource.contains("interactive: viewModel.canCreateNote")
+        && notesEmptySource.contains(".disabled(!viewModel.canCreateNote)")
+        && notesEmptySource.contains(".allowsHitTesting(viewModel.canCreateNote)"),
+    "Notes empty-state action must use the shared native regular-glass surface only when a meeting can own the note"
 )
 expectTrue(
     !notesEmptySource.contains("ArcoNativeColors.action")

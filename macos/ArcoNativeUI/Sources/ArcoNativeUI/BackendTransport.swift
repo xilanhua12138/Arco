@@ -245,4 +245,15 @@ public extension BackendDispatching {
     func callVoid(_ command: String, arguments: [String: AnySendable] = [:]) async throws {
         _ = try await request(command, arguments: arguments)
     }
+
+    func callDecodedOffMain<T: Decodable & Sendable>(
+        _ command: String,
+        arguments: [String: AnySendable] = [:],
+        as type: T.Type = T.self
+    ) async throws -> T {
+        let data = try await request(command, arguments: arguments)
+        return try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(T.self, from: data)
+        }.value
+    }
 }

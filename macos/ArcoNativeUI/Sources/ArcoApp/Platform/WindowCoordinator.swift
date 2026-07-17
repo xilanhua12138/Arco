@@ -1,5 +1,6 @@
 import AppKit
 import ArcoNativeUI
+import Observation
 import SwiftUI
 
 enum WindowCoordinatorError: LocalizedError {
@@ -44,6 +45,16 @@ struct WindowContentFactories {
     }
 }
 
+@MainActor
+@Observable
+private final class AgentWindowState {
+    var transcriptVisible: Bool
+
+    init(transcriptVisible: Bool) {
+        self.transcriptVisible = transcriptVisible
+    }
+}
+
 /// Owns the three native AppKit windows. Hidden capture surfaces remain
 /// strongly owned and are reused for the entire process lifetime; this is the
 /// native equivalent of overlay.rs's WindowServer leak prevention.
@@ -63,7 +74,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     private var factories: WindowContentFactories
     private let defaults: UserDefaults
-    private var agentTranscriptVisible: Bool
+    private let agentState: AgentWindowState
     private var keyEventMonitor: Any?
 
     init(
@@ -72,13 +83,15 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     ) {
         self.factories = factories
         self.defaults = defaults
+        let transcriptVisible: Bool
         if defaults.object(forKey: Self.agentTranscriptVisibilityKey) == nil {
-            agentTranscriptVisible = true
+            transcriptVisible = true
         } else {
-            agentTranscriptVisible = defaults.bool(
+            transcriptVisible = defaults.bool(
                 forKey: Self.agentTranscriptVisibilityKey
             )
         }
+        agentState = AgentWindowState(transcriptVisible: transcriptVisible)
         super.init()
         keyEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown
@@ -126,8 +139,16 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
             created.titlebarSeparatorStyle = .none
             created.toolbarStyle = .unified
             created.contentMinSize = ArcoWindowMetrics.mainMinimumSize
-            created.isOpaque = false
-            created.backgroundColor = .clear
+            // The main surface paints every pixel. Marking this large window
+            // transparent forces WindowServer to blend the whole desktop under
+            // it continuously; transparency is reserved for the small overlays.
+            created.isOpaque = true
+            created.backgroundColor = NSColor(
+                calibratedRed: 245 / 255,
+                green: 248 / 255,
+                blue: 250 / 255,
+                alpha: 1
+            )
             created.isReleasedWhenClosed = false
             created.delegate = self
             created.contentView = FirstMouseHostingView(rootView: content)
@@ -192,12 +213,14 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
         let existed = agentWindow != nil
         let agent = try ensureAgentWindow()
-        if !existed {
-            guard let screen = preferredScreen(for: agent) else {
-                throw WindowCoordinatorError.noAvailableDisplay
-            }
-            applyDefaultAgentFrame(agent, on: screen)
+        guard let screen = agent.screen ?? preferredScreen(for: agent) else {
+            throw WindowCoordinatorError.noAvailableDisplay
         }
+        synchronizeAgentFrame(
+            agent,
+            on: screen,
+            preservingTopLeft: existed
+        )
 
         NSApp.activate(ignoringOtherApps: true)
         agent.makeKeyAndOrderFront(nil)
@@ -209,29 +232,18 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     }
 
     func setAgentTranscriptVisible(_ visible: Bool) {
-        agentTranscriptVisible = visible
+        agentState.transcriptVisible = visible
         defaults.set(visible, forKey: Self.agentTranscriptVisibilityKey)
-        guard let agentWindow, agentWindow.isVisible else { return }
+        guard let agentWindow else { return }
         guard let screen = agentWindow.screen ?? preferredScreen(for: agentWindow) else {
             onSurfaceError(WindowCoordinatorError.noAvailableDisplay)
             return
         }
 
-        let requested = visible
-            ? ArcoWindowMetrics.agentSize
-            : ArcoWindowMetrics.collapsedAgentSize
-        let fitted = ArcoWindowPlacement.fittedAgentSize(
-            in: ScreenWorkArea(screen),
-            requested: requested
-        )
-        configureAgentMinimumSize(agentWindow, fitted: fitted)
-        agentWindow.setFrame(
-            ArcoWindowPlacement.resizingPreservingTopLeft(
-                agentWindow.frame,
-                to: fitted
-            ),
-            display: true,
-            animate: false
+        synchronizeAgentFrame(
+            agentWindow,
+            on: screen,
+            preservingTopLeft: true
         )
     }
 
@@ -316,8 +328,9 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         guard let factory = factories.agent else {
             throw WindowCoordinatorError.contentNotInstalled("agent")
         }
+        let state = agentState
         let visibility = Binding(
-            get: { [weak self] in self?.agentTranscriptVisible ?? true },
+            get: { state.transcriptVisible },
             set: { [weak self] visible in
                 self?.setAgentTranscriptVisible(visible)
             }
@@ -332,7 +345,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
             }
         )
         let content = try factory(visibility, actions)
-        let initialSize = agentTranscriptVisible
+        let initialSize = agentState.transcriptVisible
             ? ArcoWindowMetrics.agentSize
             : ArcoWindowMetrics.collapsedAgentSize
         let panel = OverlayPanel(
@@ -369,16 +382,34 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         panel.animationBehavior = .none
     }
 
-    private func applyDefaultAgentFrame(_ agent: NSPanel, on screen: NSScreen) {
-        let requested = agentTranscriptVisible
+    private func synchronizeAgentFrame(
+        _ agent: NSPanel,
+        on screen: NSScreen,
+        preservingTopLeft: Bool
+    ) {
+        let requested = agentState.transcriptVisible
             ? ArcoWindowMetrics.agentSize
             : ArcoWindowMetrics.collapsedAgentSize
-        let frame = ArcoWindowPlacement.agentFrame(
-            in: ScreenWorkArea(screen),
+        let area = ScreenWorkArea(screen)
+        let fitted = ArcoWindowPlacement.fittedAgentSize(
+            in: area,
             requested: requested
         )
-        configureAgentMinimumSize(agent, fitted: frame.size)
-        agent.setFrame(frame, display: true)
+        let frame = preservingTopLeft
+            ? ArcoWindowPlacement.resizingPreservingTopLeft(
+                agent.frame,
+                to: fitted
+            )
+            : ArcoWindowPlacement.agentFrame(
+                in: area,
+                requested: requested
+            )
+        configureAgentMinimumSize(agent, fitted: fitted)
+        agent.setFrame(
+            frame,
+            display: agent.isVisible,
+            animate: false
+        )
     }
 
     private func configureAgentMinimumSize(_ agent: NSPanel, fitted: CGSize) {

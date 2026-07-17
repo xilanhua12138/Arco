@@ -47,6 +47,10 @@ rm "$TMP/Arco.app/Contents/Resources/native/recorder"
 expect_rejected_without_signature_check "an app missing the recorder worker"
 
 fresh_app
+: > "$TMP/Arco.app/Contents/Resources/native/libarco_audio_rt.a"
+expect_rejected_without_signature_check "a recorder build archive in the application runtime payload"
+
+fresh_app
 cp "$TMP/Arco.app/Contents/Resources/native/arco-deepgram-transcriber" \
   "$TMP/Arco.app/Contents/Resources/native/FluidVoice"
 expect_rejected_without_signature_check "a FluidVoice binary in the application bundle"

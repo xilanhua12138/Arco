@@ -294,14 +294,17 @@ private final class NativeApplicationRuntime {
                     translate: translate
                 ))
             },
-            hud: { [weak recordingHUDModel] actions in
-                guard let recordingHUDModel else {
+            hud: { [weak recordingHUDModel, weak shellController] actions in
+                guard let recordingHUDModel, let shellController else {
                     throw WindowCoordinatorError.contentNotInstalled("recording HUD")
                 }
                 return AnyView(RecordingHUDView(
                     model: recordingHUDModel,
                     translate: translate,
-                    onToggleAgent: actions.toggleAgent
+                    onToggleAgent: actions.toggleAgent,
+                    onError: { error in
+                        shellController.presentInterfaceError(error.localizedDescription)
+                    }
                 ))
             },
             agent: { [weak agentOverlayModel, weak shellController, weak store] visibility, actions in
@@ -361,6 +364,9 @@ private struct AgentOverlayHostView: View {
         )
         .onChange(of: store.agentStreamingTurn) { _, turn in
             model.applyStreamingTurn(turn)
+        }
+        .onChange(of: store.agentRunning) { _, running in
+            model.applyRunning(running)
         }
         .onChange(of: store.agentTurnsByMeeting) { _, _ in
             Task { await model.refresh() }

@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(3);
+const TRANSCRIBER_FINALIZATION_GRACE: Duration = Duration::from_secs(6);
 
 fn pipeline_layout(transcription: &TranscriptionConfig) -> Vec<&'static str> {
     match (
@@ -60,7 +62,12 @@ impl CommandSpec {
 #[derive(Clone, Debug)]
 pub enum RecorderSpec {
     Executable(PathBuf),
-    SwiftSource { source: PathBuf, output: PathBuf },
+    SwiftSource {
+        source: PathBuf,
+        output: PathBuf,
+        audio_runtime_archive: PathBuf,
+        audio_runtime_header: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +138,8 @@ impl CaptureConfig {
                     RecorderSpec::SwiftSource {
                         source: paths.native_dir.join("recorder.swift"),
                         output: paths.app_data.join("bin").join("arco-recorder"),
+                        audio_runtime_archive: developer_audio_runtime_archive(&paths.native_dir),
+                        audio_runtime_header: paths.native_dir.join("arco_audio_rt.h"),
                     }
                 }
             });
@@ -193,6 +202,23 @@ impl CaptureConfig {
             requires_ready_signal: true,
         }
     }
+}
+
+fn developer_audio_runtime_archive(native_dir: &Path) -> PathBuf {
+    let rust_target = match std::env::consts::ARCH {
+        "aarch64" => "aarch64-apple-darwin",
+        "x86_64" => "x86_64-apple-darwin",
+        architecture => architecture,
+    };
+    native_dir
+        .parent()
+        .unwrap_or(native_dir)
+        .join("rust")
+        .join("arco-audio-rt")
+        .join("target")
+        .join(rust_target)
+        .join("release")
+        .join("libarco_audio_rt.a")
 }
 
 fn cleanup_stale_ready_signals(log_dir: &Path) -> std::io::Result<()> {
@@ -609,7 +635,7 @@ impl CaptureManager {
         let recorder_stdout = match recorder.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                let _ = terminate_process_tree(&mut recorder, Duration::from_millis(250));
+                let _ = terminate_process_tree(&mut recorder, RECORDER_TERMINATION_GRACE);
                 let _ = finalize_transcript(&transcript, "error");
                 return Err("native recorder did not expose its audio stream".into());
             }
@@ -952,7 +978,7 @@ fn fan_out_audio<R: Read, W: Write>(source: &mut R, destinations: &mut [W]) -> s
 }
 
 fn terminate_partial_pipeline(recorder: &mut Child, transcribers: &mut Vec<TranscriberChild>) {
-    let _ = terminate_process_tree(recorder, Duration::from_millis(250));
+    let _ = terminate_process_tree(recorder, RECORDER_TERMINATION_GRACE);
     for transcriber in transcribers {
         let _ = terminate_process_tree(&mut transcriber.child, Duration::from_millis(250));
     }
@@ -1109,12 +1135,12 @@ fn refresh_children(inner: &mut CaptureInner) {
 }
 
 fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
-    let _ = terminate_process_tree(&mut children.recorder, Duration::from_millis(500));
+    let _ = terminate_process_tree(&mut children.recorder, RECORDER_TERMINATION_GRACE);
 
     for transcriber in &mut children.transcribers {
         match transcriber
             .child
-            .wait_timeout(Duration::from_secs(2))
+            .wait_timeout(TRANSCRIBER_FINALIZATION_GRACE)
             .ok()
             .flatten()
         {
@@ -1136,10 +1162,15 @@ fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
 fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
     match spec {
         RecorderSpec::Executable(path) => Ok(path.clone()),
-        RecorderSpec::SwiftSource { source, output } => {
+        RecorderSpec::SwiftSource {
+            source,
+            output,
+            audio_runtime_archive,
+            audio_runtime_header,
+        } => {
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (source, output);
+                let _ = (source, output, audio_runtime_archive, audio_runtime_header);
                 return Err("native meeting capture currently requires macOS".into());
             }
             #[cfg(target_os = "macos")]
@@ -1150,13 +1181,34 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                         source.display()
                     ));
                 }
-                let source_modified = fs::metadata(source)
-                    .and_then(|metadata| metadata.modified())
-                    .ok();
+                if !audio_runtime_archive.is_file() {
+                    return Err(format!(
+                        "native recorder Rust audio archive is missing: {}",
+                        audio_runtime_archive.display()
+                    ));
+                }
+                if !audio_runtime_header.is_file() {
+                    return Err(format!(
+                        "native recorder Rust audio header is missing: {}",
+                        audio_runtime_header.display()
+                    ));
+                }
+                let newest_input_modified = [
+                    source.as_path(),
+                    audio_runtime_archive.as_path(),
+                    audio_runtime_header.as_path(),
+                ]
+                .into_iter()
+                .filter_map(|path| {
+                    fs::metadata(path)
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                })
+                .max();
                 let output_modified = fs::metadata(output)
                     .and_then(|metadata| metadata.modified())
                     .ok();
-                let rebuild = !is_executable(output) || source_modified > output_modified;
+                let rebuild = !is_executable(output) || newest_input_modified > output_modified;
                 if !rebuild {
                     return Ok(output.clone());
                 }
@@ -1181,9 +1233,13 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                     }
                 };
                 build_command
+                    .arg("-O")
+                    .arg("-import-objc-header")
+                    .arg(audio_runtime_header)
                     .arg("-target")
                     .arg(swift_target)
                     .arg(source)
+                    .arg(audio_runtime_archive)
                     .arg("-o")
                     .arg(&temporary)
                     .args([
@@ -1191,6 +1247,10 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                         "ScreenCaptureKit",
                         "-framework",
                         "AVFoundation",
+                        "-framework",
+                        "AudioToolbox",
+                        "-framework",
+                        "CoreAudio",
                         "-framework",
                         "CoreMedia",
                     ]);
@@ -1454,6 +1514,17 @@ fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
 mod tests {
     use super::*;
 
+    fn source_between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let start_index = source
+            .find(start)
+            .unwrap_or_else(|| panic!("missing source marker: {start}"));
+        let body = &source[start_index..];
+        let end_index = body
+            .find(end)
+            .unwrap_or_else(|| panic!("missing source marker: {end}"));
+        &body[..end_index]
+    }
+
     #[test]
     fn capture_modes_are_explicit_and_closed() {
         for mode in ["both", "system", "mic"] {
@@ -1463,6 +1534,19 @@ mod tests {
         assert!(validate_mode("both; echo unsafe")
             .unwrap_err()
             .contains("unsupported capture mode"));
+    }
+
+    #[test]
+    fn host_grace_exceeds_the_doubao_provider_final_ack_window() {
+        assert!(TRANSCRIBER_FINALIZATION_GRACE > Duration::from_secs(5));
+    }
+
+    #[test]
+    fn recorder_grace_covers_screen_capture_kit_shutdown() {
+        assert!(
+            RECORDER_TERMINATION_GRACE >= Duration::from_secs(3),
+            "the host must cover ScreenCaptureKit's one-second stop wait plus stdout and two resampler-tail drains"
+        );
     }
 
     #[test]
@@ -1510,6 +1594,11 @@ mod tests {
     #[test]
     fn bundled_native_recorder_releases_every_core_audio_tap_resource() {
         let source = include_str!("../../../native/recorder.swift");
+        let start_failure = source_between(
+            source,
+            "let startStatus = AudioDeviceStart(aggregateID, ioProcID)",
+            "log(\"system audio capture started with Core Audio tap\")",
+        );
 
         assert!(source.contains("installTerminationSignalHandler(SIGTERM)"));
         assert!(source.contains("DispatchSource.makeSignalSource("));
@@ -1518,8 +1607,187 @@ mod tests {
         assert!(source.contains("private func stopCoreAudioTapCapture()"));
         assert!(source.contains("AudioDeviceStop("));
         assert!(source.contains("AudioDeviceDestroyIOProcID("));
+        assert!(start_failure.contains("if destroyIOStatus == noErr"));
+        assert!(start_failure.contains("systemIOProcID = nil"));
+        assert!(start_failure.contains("could not unregister Core Audio system tap"));
         assert!(source.contains("AudioHardwareDestroyAggregateDevice("));
         assert!(source.contains("AudioHardwareDestroyProcessTap("));
+    }
+
+    #[test]
+    fn native_recorder_realtime_callbacks_delegate_to_the_rust_audio_runtime() {
+        let source = include_str!("../../../native/recorder.swift");
+        let io_callback = source_between(
+            source,
+            "let createIOStatus = AudioDeviceCreateIOProcID(",
+            "guard createIOStatus == noErr",
+        );
+        let microphone_callback = source_between(
+            source,
+            "input.installTap(",
+            "do {\n            engine.prepare()",
+        );
+
+        assert!(source.contains("arco_audio_rt_io_proc"));
+        assert!(io_callback.contains("arco_audio_rt_io_proc"));
+        assert!(io_callback.contains("UnsafeMutableRawPointer(audioRuntime.producer)"));
+        assert!(!io_callback.contains("Unmanaged"));
+        assert!(microphone_callback.contains("arco_audio_rt_push_planar_f32"));
+        for callback in [io_callback, microphone_callback] {
+            assert!(!callback.contains("Array("));
+            assert!(!callback.contains("resampler"));
+            assert!(!callback.contains("floatToInt16"));
+            assert!(!callback.contains("lock.lock()"));
+            assert!(!callback.contains("removeFirst"));
+            assert!(!callback.contains("self.log("));
+            assert!(!callback.contains("FileHandle"));
+        }
+        for forbidden in [
+            "private final class RealtimeMonoRing",
+            "private final class StreamingAudioResampler",
+            "OSAtomic",
+            "AVAudioConverter",
+            "@_silgen_name",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "native recorder retained forbidden handwritten DSP path: {forbidden}"
+            );
+        }
+        assert!(source.contains("private var systemAudioProducer: OpaquePointer?"));
+        assert!(source.contains("private var systemAudioConsumer: OpaquePointer?"));
+        assert!(source.contains("private var microphoneAudioProducer: OpaquePointer?"));
+        assert!(source.contains("private var microphoneAudioConsumer: OpaquePointer?"));
+        assert!(source.contains("arco_audio_rt_push_audio_buffer_list"));
+        assert!(source.contains("maxBufferedFrames"));
+    }
+
+    #[test]
+    fn native_recorder_mixer_reuses_storage_without_touching_realtime_state() {
+        let source = include_str!("../../../native/recorder.swift");
+        let mixer = source_between(
+            source,
+            "private func mixAndEmit()",
+            "private func logQuality(",
+        );
+
+        assert!(source.contains("private var interleavedOutput = [Int16]("));
+        assert!(source.contains("private var systemBuffer = PCMSampleFIFO("));
+        assert!(source.contains("private var micBuffer = PCMSampleFIFO("));
+        assert!(!mixer.contains("lock.lock()"));
+        assert!(!mixer.contains("removeFirst"));
+        assert!(!mixer.contains("var interleaved = [Int16]("));
+        assert!(mixer.contains("outputWriteGate.wait(timeout: .now())"));
+        assert!(mixer.contains("outputQueue.async"));
+        assert!(mixer.contains("drainAudioRuntime()"));
+    }
+
+    #[test]
+    fn native_recorder_stops_callbacks_before_destroying_rust_audio_handles() {
+        let source = include_str!("../../../native/recorder.swift");
+        let stop = source_between(
+            source,
+            "private func stop()",
+            "@available(macOS 14.2, *)\n    private func stopCoreAudioTapCapture()",
+        );
+
+        let microphone_stop = stop.find("removeTap(onBus: 0)").unwrap();
+        let system_stop = stop.find("stopCoreAudioTapCapture()").unwrap();
+        let stream_stop = stop.find("stream.stopCapture").unwrap();
+        let runtime_stop = stop.find("stopAudioRuntime(").unwrap();
+        assert!(microphone_stop < runtime_stop);
+        assert!(system_stop < runtime_stop);
+        assert!(stream_stop < runtime_stop);
+
+        let runtime = source_between(
+            source,
+            "private func stopAudioRuntime(",
+            "@available(macOS 14.2, *)\n    private func stopCoreAudioTapCapture()",
+        );
+        assert!(stop.contains("waitResult == .success && stoppedCleanly"));
+        assert!(stop.contains("queue.sync {}"));
+        assert!(runtime.contains("if !systemCallbacksQuiesced"));
+        assert!(runtime.contains("if !microphoneCallbacksQuiesced"));
+        assert!(runtime.contains("leaving Rust audio runtime handles"));
+        assert!(
+            runtime.find("arco_audio_rt_producer_finish").unwrap()
+                < runtime.find("arco_audio_rt_producer_destroy").unwrap()
+        );
+        assert!(
+            runtime.find("arco_audio_rt_producer_destroy").unwrap()
+                < runtime.find("arco_audio_rt_consumer_destroy").unwrap()
+        );
+        assert!(runtime.contains("Date().addingTimeInterval(0.25)"));
+        assert!(source.contains("if #available(macOS 14.2, *)"));
+        assert!(source.contains("startScreenCaptureKitCapture()"));
+    }
+
+    #[test]
+    fn native_recorder_flushes_resampler_and_fifo_tail_to_stdout_before_destroy() {
+        let source = include_str!("../../../native/recorder.swift");
+        let runtime = source_between(
+            source,
+            "private func stopAudioRuntime(",
+            "@available(macOS 14.2, *)\n    private func stopCoreAudioTapCapture()",
+        );
+
+        assert!(runtime.contains("fifo: &systemBuffer"));
+        assert!(runtime.contains("fifo: &micBuffer"));
+        assert!(runtime.contains("emitRemainingPCM()"));
+        assert!(runtime.contains("outputWriteGate.wait(timeout: .now() + 1)"));
+        assert!(runtime.contains("writeAll(bytes)"));
+        assert!(runtime.contains("Rust audio runtime drain failed during shutdown"));
+        assert!(runtime.contains("shutdown PCM FIFO overflow"));
+        assert!(
+            runtime.find("arco_audio_rt_producer_finish").unwrap()
+                < runtime.find("arco_audio_rt_consumer_destroy").unwrap()
+        );
+        assert!(
+            runtime.find("emitRemainingPCM()").unwrap()
+                < runtime.rfind("arco_audio_rt_consumer_destroy").unwrap()
+        );
+    }
+
+    #[test]
+    fn native_recorder_is_optimized_in_bundled_and_source_fallback_builds() {
+        let runtime_build = include_str!("../../../native/build-recorder.sh");
+        let boundary_verifier = include_str!("../../../native/verify-native-boundaries.sh");
+        let fallback_build = source_between(
+            include_str!("capture.rs"),
+            "let mut build_command = Command::new(swiftc);",
+            "let build = build_command",
+        );
+
+        assert!(runtime_build.contains("cargo build --release"));
+        assert!(runtime_build.contains("--target \"$RUST_TARGET\""));
+        assert!(runtime_build.contains("libarco_audio_rt.a"));
+        assert!(runtime_build.contains("-import-objc-header"));
+        assert!(runtime_build.contains("swiftc -O \"$NATIVE_DIR/recorder.swift\""));
+        assert!(fallback_build.contains(".arg(\"-O\")"));
+        assert!(fallback_build.contains("-import-objc-header"));
+        assert!(fallback_build.contains(".arg(audio_runtime_archive)"));
+        assert!(include_str!("capture.rs").contains("join(\"libarco_audio_rt.a\")"));
+        assert!(boundary_verifier.contains("libarco_audio_rt*.dylib"));
+        assert!(boundary_verifier.contains("LC_RPATH"));
+    }
+
+    #[test]
+    fn native_recorder_source_fallback_loads_the_static_archive_from_the_developer_tree() {
+        let native_dir = Path::new("/repo/native");
+        let rust_target = match std::env::consts::ARCH {
+            "aarch64" => "aarch64-apple-darwin",
+            "x86_64" => "x86_64-apple-darwin",
+            architecture => architecture,
+        };
+        let archive = developer_audio_runtime_archive(native_dir);
+
+        assert_eq!(
+            archive,
+            PathBuf::from("/repo/rust/arco-audio-rt/target")
+                .join(rust_target)
+                .join("release/libarco_audio_rt.a")
+        );
+        assert!(!archive.starts_with(native_dir));
     }
 
     #[test]
