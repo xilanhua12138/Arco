@@ -2,14 +2,14 @@ use chrono::{Local, TimeZone};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::connect_async;
@@ -21,8 +21,179 @@ const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
 const RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 const SAMPLE_RATE: usize = 16_000;
 const STEREO_FRAME_BYTES: usize = 4;
+const MONO_FRAME_BYTES: usize = 2;
 const READ_CHUNK_BYTES: usize = 6_400;
+const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
+const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
+const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
+const MAX_IN_FLIGHT_CHUNKS: usize = 20;
+const ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
+const MAX_PENDING_TRANSCRIPT_SEGMENTS: usize = 10_000;
+const FATAL_ERROR_PREFIX: &str = "ARCO_DOUBAO_FATAL:";
+
+type DoubaoSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioChunk {
+    data: Vec<u8>,
+    start_frame: usize,
+}
+
+impl AudioChunk {
+    fn end_frame(&self) -> usize {
+        self.start_frame + self.data.len() / MONO_FRAME_BYTES
+    }
+}
+
+#[derive(Default)]
+struct PendingAudio {
+    chunks: VecDeque<AudioChunk>,
+}
+
+impl PendingAudio {
+    fn restore(&mut self, chunk: AudioChunk) {
+        self.chunks.push_front(chunk);
+    }
+
+    fn take(&mut self) -> Option<AudioChunk> {
+        self.chunks.pop_front()
+    }
+
+    fn bytes(&self) -> usize {
+        self.chunks.iter().map(|chunk| chunk.data.len()).sum()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SentAudio {
+    sequence: i32,
+    chunk: AudioChunk,
+    final_packet: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AudioConfirmation {
+    confirmed_chunks: usize,
+    final_confirmed: bool,
+    confirmed_through_frame: Option<usize>,
+}
+
+impl AudioConfirmation {
+    fn absorb(&mut self, other: Self) {
+        self.confirmed_chunks += other.confirmed_chunks;
+        self.final_confirmed |= other.final_confirmed;
+        self.confirmed_through_frame = self
+            .confirmed_through_frame
+            .max(other.confirmed_through_frame);
+    }
+}
+
+#[derive(Default)]
+struct InFlightAudio {
+    chunks: VecDeque<SentAudio>,
+}
+
+impl InFlightAudio {
+    fn record(&mut self, sequence: i32, chunk: AudioChunk, final_packet: bool) {
+        debug_assert!(sequence > 0);
+        self.chunks.push_back(SentAudio {
+            sequence,
+            chunk,
+            final_packet,
+        });
+    }
+
+    fn confirm_through(&mut self, sequence: i32) -> AudioConfirmation {
+        let watermark = sequence.checked_abs().unwrap_or(i32::MAX);
+        let mut confirmation = AudioConfirmation::default();
+        while self
+            .chunks
+            .front()
+            .is_some_and(|sent| sent.sequence <= watermark)
+        {
+            if self.chunks.front().is_some_and(|sent| sent.final_packet) {
+                break;
+            }
+            let sent = self
+                .chunks
+                .pop_front()
+                .expect("front was checked before removing confirmed audio");
+            confirmation.confirmed_chunks += 1;
+            confirmation.confirmed_through_frame = confirmation
+                .confirmed_through_frame
+                .max(Some(sent.chunk.end_frame()));
+        }
+        confirmation
+    }
+
+    fn confirm_explicit_final(&mut self) -> AudioConfirmation {
+        if !self.chunks.iter().any(|sent| sent.final_packet) {
+            return AudioConfirmation::default();
+        }
+        let mut confirmation = AudioConfirmation::default();
+        while let Some(sent) = self.chunks.pop_front() {
+            confirmation.confirmed_chunks += 1;
+            confirmation.final_confirmed |= sent.final_packet;
+            confirmation.confirmed_through_frame = confirmation
+                .confirmed_through_frame
+                .max(Some(sent.chunk.end_frame()));
+        }
+        confirmation.final_confirmed = true;
+        confirmation
+    }
+
+    fn restore_into(&mut self, pending: &mut PendingAudio) {
+        while let Some(sent) = self.chunks.pop_back() {
+            pending.restore(sent.chunk);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.chunks.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    fn is_full(&self) -> bool {
+        self.chunks.len() >= MAX_IN_FLIGHT_CHUNKS
+    }
+
+    fn contains_final_packet(&self) -> bool {
+        self.chunks.iter().any(|sent| sent.final_packet)
+    }
+}
+
+struct ReplayPacer {
+    origin_end_frame: usize,
+}
+
+impl ReplayPacer {
+    fn new(first: &AudioChunk) -> Self {
+        Self {
+            origin_end_frame: first.end_frame(),
+        }
+    }
+
+    fn delay_for(&self, chunk: &AudioChunk, elapsed: Duration) -> Duration {
+        let replay_frames = chunk.end_frame().saturating_sub(self.origin_end_frame) as u128;
+        let target_nanos = replay_frames
+            .saturating_mul(1_000_000_000)
+            .saturating_mul(MAX_REPLAY_RATE_DENOMINATOR)
+            / ((SAMPLE_RATE as u128).saturating_mul(MAX_REPLAY_RATE_NUMERATOR));
+        Duration::from_nanos(target_nanos.min(u64::MAX as u128) as u64).saturating_sub(elapsed)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerMessage {
@@ -50,9 +221,42 @@ struct Segment {
     end: f64,
 }
 
+#[derive(Default)]
+struct SpeakerRegistry {
+    ids: HashMap<(u64, i64), i64>,
+    next: i64,
+}
+
+impl SpeakerRegistry {
+    fn relabel(&mut self, mut segment: Segment, connection_id: u64) -> Segment {
+        let speaker = *self
+            .ids
+            .entry((connection_id, segment.speaker))
+            .or_insert_with(|| {
+                let speaker = self.next;
+                self.next = self.next.saturating_add(1);
+                speaker
+            });
+        segment.speaker = speaker;
+        segment.label = format!(
+            "{} {}",
+            if segment.channel == 0 {
+                "Remote"
+            } else {
+                "In room"
+            },
+            speaker + 1,
+        );
+        segment
+    }
+}
+
 struct TranscriptWriter {
     path: PathBuf,
     session_started_at: f64,
+    active_channels: [bool; 2],
+    processed_until: [f64; 2],
+    pending: Vec<Segment>,
 }
 
 impl TranscriptWriter {
@@ -65,10 +269,90 @@ impl TranscriptWriter {
         Ok(Self {
             path,
             session_started_at,
+            active_channels: [true, true],
+            processed_until: [0.0, 0.0],
+            pending: Vec::new(),
         })
     }
 
-    fn append(&self, segment: &Segment) -> Result<(), String> {
+    fn set_active_channels(&mut self, active: [bool; 2]) {
+        self.active_channels = active;
+        for (channel, enabled) in active.into_iter().enumerate() {
+            if !enabled {
+                self.processed_until[channel] = f64::INFINITY;
+            }
+        }
+    }
+
+    fn append(&mut self, segment: &Segment) -> Result<(), String> {
+        if self.pending.len() >= MAX_PENDING_TRANSCRIPT_SEGMENTS {
+            return Err(format!(
+                "Doubao transcript reorder buffer exceeded {MAX_PENDING_TRANSCRIPT_SEGMENTS} segments"
+            ));
+        }
+        self.pending.push(segment.clone());
+        self.flush_ready()
+    }
+
+    fn advance(&mut self, channel: usize, processed_until: f64) -> Result<(), String> {
+        let channel = channel.min(1);
+        self.processed_until[channel] = self.processed_until[channel].max(processed_until);
+        self.flush_ready()
+    }
+
+    fn advance_from_confirmation(
+        &mut self,
+        channel: usize,
+        confirmation: &AudioConfirmation,
+    ) -> Result<(), String> {
+        let Some(frame) = confirmation.confirmed_through_frame else {
+            return Ok(());
+        };
+        self.advance(channel, frame as f64 / SAMPLE_RATE as f64)
+    }
+
+    fn complete_channel(&mut self, channel: usize) -> Result<(), String> {
+        self.processed_until[channel.min(1)] = f64::INFINITY;
+        self.flush_ready()
+    }
+
+    fn flush_ready(&mut self) -> Result<(), String> {
+        let cutoff = self
+            .processed_until
+            .iter()
+            .enumerate()
+            .filter(|(channel, _)| self.active_channels[*channel])
+            .map(|(_, value)| *value)
+            .fold(f64::INFINITY, f64::min);
+        self.flush_through(cutoff)
+    }
+
+    fn flush_all(&mut self) -> Result<(), String> {
+        self.flush_through(f64::INFINITY)
+    }
+
+    fn flush_through(&mut self, cutoff: f64) -> Result<(), String> {
+        self.pending.sort_by(|left, right| {
+            left.start
+                .total_cmp(&right.start)
+                .then_with(|| left.end.total_cmp(&right.end))
+                .then_with(|| left.channel.cmp(&right.channel))
+                .then_with(|| left.speaker.cmp(&right.speaker))
+                .then_with(|| left.text.cmp(&right.text))
+        });
+        let ready = self
+            .pending
+            .iter()
+            .take_while(|segment| segment.end <= cutoff)
+            .count();
+        let segments: Vec<_> = self.pending.drain(..ready).collect();
+        for segment in segments {
+            self.append_to_file(&segment)?;
+        }
+        Ok(())
+    }
+
+    fn append_to_file(&self, segment: &Segment) -> Result<(), String> {
         let mut file = OpenOptions::new()
             .append(true)
             .open(&self.path)
@@ -179,7 +463,7 @@ pub fn encode_full_client_request(
         &serde_json::to_vec(&request)
             .map_err(|error| format!("could not encode Doubao request: {error}"))?,
     )?;
-    let mut packet = vec![0x11, 0x11, 0x11, 0x01];
+    let mut packet = vec![0x11, 0x11, 0x11, 0x00];
     packet.extend_from_slice(&sequence.to_be_bytes());
     packet.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     packet.extend_from_slice(&payload);
@@ -195,8 +479,10 @@ pub fn encode_audio_request(
         return Err("Doubao audio request sequence must be positive.".into());
     }
     let payload = gzip(audio)?;
-    let mut packet = vec![0x11, if final_packet { 0x23 } else { 0x21 }, 0x00, 0x01];
-    packet.extend_from_slice(&(if final_packet { -sequence } else { sequence }).to_be_bytes());
+    // Volcengine's SAUC streaming protocol auto-assigns audio sequence numbers.
+    // The low nibble in byte 1 therefore only marks the final package. Byte 2
+    // carries the gzip bit; byte 3 is reserved and must remain zero.
+    let mut packet = vec![0x11, if final_packet { 0x22 } else { 0x20 }, 0x01, 0x00];
     packet.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     packet.extend_from_slice(&payload);
     Ok(packet)
@@ -357,6 +643,84 @@ fn segments_from_payload(payload: &Value, channel: usize, include_tentative: boo
         .collect()
 }
 
+fn segments_from_connection_payload(
+    payload: &Value,
+    channel: usize,
+    include_tentative: bool,
+    connection_origin: f64,
+) -> Vec<Segment> {
+    segments_from_payload(payload, channel, include_tentative)
+        .into_iter()
+        .map(|mut segment| {
+            segment.start += connection_origin;
+            segment.end += connection_origin;
+            segment
+        })
+        .collect()
+}
+
+fn segment_dedup_key(segment: &Segment) -> (i64, i64, String) {
+    (
+        (segment.start * 1_000.0) as i64,
+        (segment.end * 1_000.0) as i64,
+        segment.text.clone(),
+    )
+}
+
+fn audio_buffer_capacity(seconds: Option<usize>) -> usize {
+    seconds
+        .unwrap_or(DEFAULT_BUFFER_SECONDS)
+        .clamp(1, 300)
+        .saturating_mul(10)
+}
+
+fn next_retry_delay(current: u64) -> u64 {
+    current.saturating_mul(2).min(15)
+}
+
+fn is_fatal_channel_error(error: &str) -> bool {
+    let lowercase = error.to_ascii_lowercase();
+    error.starts_with(FATAL_ERROR_PREFIX)
+        || error.contains("Doubao transcription failed (")
+        || error.contains("unsupported Doubao recognition language")
+        || error.contains("invalid Doubao request")
+        || error.contains("Doubao readiness coordinator stopped")
+        || (lowercase.contains("http") && (lowercase.contains("401") || lowercase.contains("403")))
+}
+
+fn apply_server_confirmation(
+    message: &ServerMessage,
+    in_flight: &mut InFlightAudio,
+) -> AudioConfirmation {
+    match message {
+        ServerMessage::Acknowledgement { sequence } => in_flight.confirm_through(*sequence),
+        ServerMessage::Result {
+            sequence, is_final, ..
+        } => {
+            if *is_final && !in_flight.contains_final_packet() {
+                return AudioConfirmation::default();
+            }
+            let mut confirmation = sequence
+                .map(|sequence| in_flight.confirm_through(sequence))
+                .unwrap_or_default();
+            if *is_final {
+                confirmation.absorb(in_flight.confirm_explicit_final());
+            }
+            confirmation
+        }
+        ServerMessage::Error { .. } => AudioConfirmation::default(),
+    }
+}
+
+fn finalization_deadline(started: tokio::time::Instant) -> tokio::time::Instant {
+    started + EOF_FINALIZATION_TIMEOUT
+}
+
+fn buffered_audio_seconds(pending: &PendingAudio, receiver: &mpsc::Receiver<AudioChunk>) -> f64 {
+    let bytes = pending.bytes() + receiver.len() * (READ_CHUNK_BYTES / 2);
+    bytes as f64 / (SAMPLE_RATE * MONO_FRAME_BYTES) as f64
+}
+
 async fn attribute_segment(mut segment: Segment, timeline: Option<&Path>) -> Segment {
     let Some(path) = timeline else {
         return segment;
@@ -389,10 +753,7 @@ async fn connect_socket(
     request_id: &str,
     language: &str,
     enable_speaker_info: bool,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    String,
-> {
+) -> Result<DoubaoSocket, String> {
     let mut request = ENDPOINT
         .into_client_request()
         .map_err(|error| format!("invalid Doubao request: {error}"))?;
@@ -413,6 +774,7 @@ async fn connect_socket(
         ))
         .await
         .map_err(|error| format!("Doubao initial request failed: {error}"))?;
+    wait_for_initialization(&mut socket).await?;
     Ok(socket)
 }
 
@@ -428,6 +790,22 @@ async fn receive_protocol_message(
     }
 }
 
+async fn wait_for_initialization(socket: &mut DoubaoSocket) -> Result<(), String> {
+    loop {
+        match receive_protocol_message(socket.next().await).await? {
+            Some(ServerMessage::Error { code, message }) => {
+                return Err(format!(
+                    "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
+                ));
+            }
+            Some(ServerMessage::Result { .. } | ServerMessage::Acknowledgement { .. }) => {
+                return Ok(());
+            }
+            None => continue,
+        }
+    }
+}
+
 pub async fn verify_credentials(app_id: &str, access_token: &str) -> Result<(), String> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let mut socket = tokio::time::timeout(
@@ -435,22 +813,10 @@ pub async fn verify_credentials(app_id: &str, access_token: &str) -> Result<(), 
         connect_socket(app_id, access_token, &request_id, "zh-CN", false),
     )
     .await
-    .map_err(|_| "Doubao credential verification timed out.".to_string())??;
-    let response = tokio::time::timeout(Duration::from_secs(8), socket.next())
-        .await
-        .map_err(|_| {
-            "Doubao did not acknowledge the credential verification request.".to_string()
-        })?;
-    match receive_protocol_message(response).await? {
-        Some(ServerMessage::Error { code, message }) => Err(format!(
-            "Doubao rejected these credentials ({code}): {message}"
-        )),
-        Some(ServerMessage::Result { .. } | ServerMessage::Acknowledgement { .. }) => {
-            let _ = socket.close(None).await;
-            Ok(())
-        }
-        None => Err("Doubao returned an unexpected verification response.".into()),
-    }
+    .map_err(|_| "Doubao credential verification timed out.".to_string())?
+    .map_err(|error| error.trim_start_matches(FATAL_ERROR_PREFIX).to_string())?;
+    let _ = socket.close(None).await;
+    Ok(())
 }
 
 fn signal_ready() -> Result<(), String> {
@@ -468,6 +834,526 @@ fn signal_ready() -> Result<(), String> {
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
 }
 
+async fn announce_channel_ready(
+    ready: &mpsc::Sender<usize>,
+    state: &mut ChannelState,
+) -> Result<(), String> {
+    if state.ready_announced {
+        return Ok(());
+    }
+    state.ready_announced = true;
+    ready
+        .send(state.channel)
+        .await
+        .map_err(|_| format!("{FATAL_ERROR_PREFIX}Doubao readiness coordinator stopped."))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_connected_channel(
+    socket: DoubaoSocket,
+    receiver: &mut mpsc::Receiver<AudioChunk>,
+    writer: &Arc<Mutex<TranscriptWriter>>,
+    timeline: Option<&Path>,
+    ready: &mpsc::Sender<usize>,
+    role: &str,
+    timeline_store: Option<&Arc<Mutex<crate::speaker_timeline::SpeakerTimelineStore>>>,
+    state: &mut ChannelState,
+) -> Result<bool, String> {
+    let replay_buffered_seconds = buffered_audio_seconds(&state.pending, receiver);
+    let (mut sink, mut stream) = socket.split();
+    if state.connection_id > 1 {
+        eprintln!(
+            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} max_replay_rate=1.25",
+            state.channel,
+            state.connection_id,
+            replay_buffered_seconds,
+            state.pending.bytes(),
+        );
+    }
+    let mut sequence = 2i32;
+    let mut lookahead: Option<AudioChunk> = None;
+    let mut in_flight = InFlightAudio::default();
+    let mut connection_origin: Option<f64> = None;
+    let connection_started = Instant::now();
+    let mut pacer = None;
+    let mut replay_reported = state.connection_id == 1 || replay_buffered_seconds == 0.0;
+    let mut closing = false;
+    let dormant_deadline = Duration::from_secs(365 * 24 * 60 * 60);
+    let acknowledgement_deadline = tokio::time::sleep(dormant_deadline);
+    let eof_deadline = tokio::time::sleep(dormant_deadline);
+    tokio::pin!(acknowledgement_deadline, eof_deadline);
+
+    loop {
+        state.observe_eof(receiver);
+        if state.finalization_expired() {
+            restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+            return Err(state.finalization_error());
+        }
+        if let Some(deadline) = state.eof_deadline {
+            eof_deadline.as_mut().reset(deadline);
+        }
+
+        if !closing && !in_flight.is_full() {
+            if let Some(chunk) = state.pending.take() {
+                connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
+                let before = in_flight.len();
+                if let Err((error, previous, newer)) = queue_audio_chunk(
+                    &mut sink,
+                    &mut sequence,
+                    &mut lookahead,
+                    chunk,
+                    &mut in_flight,
+                    &mut pacer,
+                    connection_started,
+                    state.eof_deadline,
+                )
+                .await
+                {
+                    state.pending.restore(newer);
+                    state.pending.restore(previous);
+                    in_flight.restore_into(&mut state.pending);
+                    return Err(format!("Doubao replay send failed: {error}"));
+                }
+                if in_flight.len() > before {
+                    acknowledgement_deadline
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + ACK_TIMEOUT);
+                }
+                if !replay_reported && state.pending.is_empty() && receiver.is_empty() {
+                    eprintln!(
+                        "ARCO_DOUBAO_REPLAY_CAUGHT_UP channel={} connection={} replayed_audio={:.3}s",
+                        state.channel, state.connection_id, replay_buffered_seconds
+                    );
+                    replay_reported = true;
+                }
+                continue;
+            }
+        }
+
+        tokio::select! {
+            chunk = receiver.recv(), if !closing && !in_flight.is_full() => {
+                match chunk {
+                    Some(chunk) => {
+                        connection_origin
+                            .get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
+                        let before = in_flight.len();
+                        if let Err((error, previous, newer)) = queue_audio_chunk(
+                            &mut sink,
+                            &mut sequence,
+                            &mut lookahead,
+                            chunk,
+                            &mut in_flight,
+                            &mut pacer,
+                            connection_started,
+                            state.eof_deadline,
+                        ).await {
+                            state.pending.restore(newer);
+                            state.pending.restore(previous);
+                            in_flight.restore_into(&mut state.pending);
+                            return Err(format!("Doubao audio send failed: {error}"));
+                        }
+                        if in_flight.len() > before {
+                            acknowledgement_deadline
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + ACK_TIMEOUT);
+                        }
+                        if !replay_reported && state.pending.is_empty() && receiver.is_empty() {
+                            eprintln!(
+                                "ARCO_DOUBAO_REPLAY_CAUGHT_UP channel={} connection={} replayed_audio={:.3}s",
+                                state.channel, state.connection_id, replay_buffered_seconds
+                            );
+                            replay_reported = true;
+                        }
+                    }
+                    None => {
+                        state.observe_eof(receiver);
+                        let final_audio = lookahead.take().unwrap_or_else(|| AudioChunk {
+                            data: Vec::new(),
+                            start_frame: connection_origin
+                                .map(|origin| (origin * SAMPLE_RATE as f64) as usize)
+                                .unwrap_or(0),
+                        });
+                        if let Err(error) = send_audio_chunk(
+                            &mut sink,
+                            &final_audio,
+                            sequence,
+                            true,
+                            &mut pacer,
+                            connection_started,
+                            state.eof_deadline,
+                        ).await {
+                            state.pending.restore(final_audio);
+                            in_flight.restore_into(&mut state.pending);
+                            return Err(format!("Doubao final audio send failed: {error}"));
+                        }
+                        in_flight.record(sequence, final_audio, true);
+                        closing = true;
+                        acknowledgement_deadline
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + FINAL_ACK_TIMEOUT);
+                    }
+                }
+            }
+            message = stream.next() => {
+                let message = match receive_protocol_message(message).await {
+                    Ok(message) => message,
+                    Err(error) => {
+                        restore_connection_audio(
+                            &mut state.pending,
+                            &mut lookahead,
+                            &mut in_flight,
+                        );
+                        return Err(if state.finalization_expired() {
+                            state.finalization_error()
+                        } else {
+                            error
+                        });
+                    }
+                };
+                let Some(message) = message else { continue; };
+                announce_channel_ready(ready, state).await?;
+                let confirmation = apply_server_confirmation(&message, &mut in_flight);
+                if confirmation.confirmed_chunks > 0 && !in_flight.is_empty() {
+                    acknowledgement_deadline.as_mut().reset(
+                        tokio::time::Instant::now()
+                            + if closing { FINAL_ACK_TIMEOUT } else { ACK_TIMEOUT },
+                    );
+                }
+                match message {
+                    ServerMessage::Error { code, message } => {
+                        return Err(format!(
+                            "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
+                        ));
+                    }
+                    ServerMessage::Acknowledgement { .. } => {
+                        writer
+                            .lock()
+                            .await
+                            .advance_from_confirmation(state.channel, &confirmation)
+                            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                    }
+                    ServerMessage::Result { is_final, payload, .. } => {
+                        let origin = connection_origin.unwrap_or(0.0);
+                        let segments = segments_from_connection_payload(
+                            &payload,
+                            state.channel,
+                            is_final,
+                            origin,
+                        );
+                        let mut processed_until = confirmation
+                            .confirmed_through_frame
+                            .map(|frame| frame as f64 / SAMPLE_RATE as f64)
+                            .unwrap_or(0.0);
+                        let mut transcript_segments = Vec::new();
+                        for segment in segments {
+                            processed_until = processed_until.max(segment.end);
+                            let key = segment_dedup_key(&segment);
+                            if state.emitted.insert(key) {
+                                let segment = if role == "asr" {
+                                    segment
+                                } else {
+                                    state.speakers.relabel(segment, state.connection_id)
+                                };
+                                if let Some(store) = timeline_store {
+                                    store.lock().await.update(
+                                        state.channel,
+                                        segment.end,
+                                        vec![crate::speaker_timeline::SpeakerInterval {
+                                            speaker: segment.speaker,
+                                            start: segment.start,
+                                            end: segment.end,
+                                        }],
+                                        Vec::new(),
+                                    ).map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                                }
+                                if role != "diarization" {
+                                    let segment = if role == "asr" {
+                                        if let Some(deadline) = state.eof_deadline {
+                                            tokio::time::timeout_at(
+                                                deadline,
+                                                attribute_segment(segment, timeline),
+                                            )
+                                            .await
+                                            .map_err(|_| state.finalization_error())?
+                                        } else {
+                                            attribute_segment(segment, timeline).await
+                                        }
+                                    } else {
+                                        segment
+                                    };
+                                    transcript_segments.push(segment);
+                                }
+                            }
+                        }
+
+                        if state.finalization_expired() {
+                            restore_connection_audio(
+                                &mut state.pending,
+                                &mut lookahead,
+                                &mut in_flight,
+                            );
+                            return Err(state.finalization_error());
+                        }
+                        let mut transcript = writer.lock().await;
+                        for segment in transcript_segments {
+                            transcript
+                                .append(&segment)
+                                .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                        }
+                        if closing && confirmation.final_confirmed {
+                            transcript
+                                .complete_channel(state.channel)
+                                .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                            return Ok(true);
+                        }
+                        transcript
+                            .advance(state.channel, processed_until)
+                            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+
+                        if is_final {
+                            drop(transcript);
+                            restore_connection_audio(
+                                &mut state.pending,
+                                &mut lookahead,
+                                &mut in_flight,
+                            );
+                            return Err("Doubao finalized the stream before audio input ended.".into());
+                        }
+                    }
+                }
+            }
+            _ = &mut acknowledgement_deadline, if !in_flight.is_empty() => {
+                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                return Err(if state.finalization_expired() {
+                    state.finalization_error()
+                } else {
+                    "Doubao acknowledgement timed out; reconnecting with unconfirmed audio.".into()
+                });
+            }
+            _ = &mut eof_deadline, if state.eof_deadline.is_some() => {
+                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                return Err(state.finalization_error());
+            }
+        }
+    }
+}
+
+struct ChannelState {
+    pending: PendingAudio,
+    emitted: HashSet<(i64, i64, String)>,
+    speakers: SpeakerRegistry,
+    ready_announced: bool,
+    channel: usize,
+    connection_id: u64,
+    eof_deadline: Option<tokio::time::Instant>,
+}
+
+impl ChannelState {
+    fn new(channel: usize) -> Self {
+        Self {
+            pending: PendingAudio::default(),
+            emitted: HashSet::new(),
+            speakers: SpeakerRegistry::default(),
+            ready_announced: false,
+            channel,
+            connection_id: 0,
+            eof_deadline: None,
+        }
+    }
+
+    fn observe_eof(&mut self, receiver: &mpsc::Receiver<AudioChunk>) {
+        if receiver.is_closed()
+            && receiver.is_empty()
+            && self.pending.is_empty()
+            && self.eof_deadline.is_none()
+        {
+            self.eof_deadline = Some(finalization_deadline(tokio::time::Instant::now()));
+        }
+    }
+
+    fn finalization_expired(&self) -> bool {
+        self.eof_deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    }
+
+    fn finalization_error(&self) -> String {
+        format!(
+            "{FATAL_ERROR_PREFIX}Doubao could not finalize channel {} before the host shutdown deadline; buffered audio was not reported as saved.",
+            self.channel
+        )
+    }
+}
+
+async fn send_audio_chunk<S>(
+    sink: &mut S,
+    chunk: &AudioChunk,
+    sequence: i32,
+    final_packet: bool,
+    pacer: &mut Option<ReplayPacer>,
+    connection_started: Instant,
+    eof_deadline: Option<tokio::time::Instant>,
+) -> Result<(), String>
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let pacer = pacer.get_or_insert_with(|| ReplayPacer::new(chunk));
+    let delay = pacer.delay_for(chunk, connection_started.elapsed());
+    if !delay.is_zero() {
+        if let Some(deadline) = eof_deadline {
+            tokio::time::timeout_at(deadline, tokio::time::sleep(delay))
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{FATAL_ERROR_PREFIX}Doubao audio replay exceeded the finalization deadline."
+                    )
+                })?;
+        } else {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    let packet = encode_audio_request(sequence, &chunk.data, final_packet)?;
+    let send = sink.send(Message::Binary(packet.into()));
+    if let Some(deadline) = eof_deadline {
+        tokio::time::timeout_at(deadline, send)
+            .await
+            .map_err(|_| {
+                format!("{FATAL_ERROR_PREFIX}Doubao audio send exceeded the finalization deadline.")
+            })?
+            .map_err(|error| error.to_string())
+    } else {
+        send.await.map_err(|error| error.to_string())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn queue_audio_chunk<S>(
+    sink: &mut S,
+    sequence: &mut i32,
+    lookahead: &mut Option<AudioChunk>,
+    next: AudioChunk,
+    in_flight: &mut InFlightAudio,
+    pacer: &mut Option<ReplayPacer>,
+    connection_started: Instant,
+    eof_deadline: Option<tokio::time::Instant>,
+) -> Result<(), (String, AudioChunk, AudioChunk)>
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let Some(previous) = lookahead.replace(next) else {
+        return Ok(());
+    };
+    if let Err(error) = send_audio_chunk(
+        sink,
+        &previous,
+        *sequence,
+        false,
+        pacer,
+        connection_started,
+        eof_deadline,
+    )
+    .await
+    {
+        let newer = lookahead
+            .take()
+            .expect("queue_audio_chunk must retain the newer lookahead");
+        return Err((error, previous, newer));
+    }
+    in_flight.record(*sequence, previous, false);
+    *sequence = sequence.saturating_add(1);
+    Ok(())
+}
+
+fn restore_connection_audio(
+    pending: &mut PendingAudio,
+    lookahead: &mut Option<AudioChunk>,
+    in_flight: &mut InFlightAudio,
+) {
+    if let Some(chunk) = lookahead.take() {
+        pending.restore(chunk);
+    }
+    in_flight.restore_into(pending);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_channel_socket(
+    app_id: &str,
+    access_token: &str,
+    request_id: &str,
+    language: &str,
+    enable_speaker_info: bool,
+    receiver: &mpsc::Receiver<AudioChunk>,
+    state: &mut ChannelState,
+) -> Result<DoubaoSocket, String> {
+    let connect_deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let connect = connect_socket(
+        app_id,
+        access_token,
+        request_id,
+        language,
+        enable_speaker_info,
+    );
+    tokio::pin!(connect);
+    loop {
+        state.observe_eof(receiver);
+        if state.finalization_expired() {
+            return Err(state.finalization_error());
+        }
+        let deadline = state
+            .eof_deadline
+            .map(|eof| eof.min(connect_deadline))
+            .unwrap_or(connect_deadline);
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(if state.eof_deadline.is_some() {
+                state.finalization_error()
+            } else {
+                "Doubao connection timed out.".into()
+            });
+        }
+        let slice = deadline.duration_since(now).min(Duration::from_millis(50));
+        match tokio::time::timeout(slice, connect.as_mut()).await {
+            Ok(result) => return result,
+            Err(_) => continue,
+        }
+    }
+}
+
+async fn wait_before_retry(
+    delay: Duration,
+    receiver: &mpsc::Receiver<AudioChunk>,
+    state: &mut ChannelState,
+) -> Result<(), String> {
+    let live_deadline = tokio::time::Instant::now() + delay;
+    loop {
+        state.observe_eof(receiver);
+        if state.finalization_expired() {
+            return Err(state.finalization_error());
+        }
+        if let Some(deadline) = state.eof_deadline {
+            let now = tokio::time::Instant::now();
+            tokio::time::sleep(
+                deadline
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(50)),
+            )
+            .await;
+            return Ok(());
+        }
+        let now = tokio::time::Instant::now();
+        if now >= live_deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(
+            live_deadline
+                .duration_since(now)
+                .min(Duration::from_millis(50)),
+        )
+        .await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_channel(
     app_id: &str,
@@ -475,7 +1361,7 @@ async fn run_channel(
     language: &str,
     channel: usize,
     enabled: bool,
-    mut receiver: mpsc::Receiver<Vec<u8>>,
+    mut receiver: mpsc::Receiver<AudioChunk>,
     writer: Arc<Mutex<TranscriptWriter>>,
     timeline: Option<PathBuf>,
     ready: mpsc::Sender<usize>,
@@ -486,93 +1372,88 @@ async fn run_channel(
         while receiver.recv().await.is_some() {}
         return Ok(());
     }
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let mut socket =
-        connect_socket(app_id, access_token, &request_id, language, role != "asr").await?;
-    let mut sequence = 2i32;
-    let mut pending: Option<Vec<u8>> = None;
-    let mut emitted = HashSet::<(i64, i64, String)>::new();
-    let mut ready_announced = false;
-    let mut closing = false;
-    let deadline = tokio::time::sleep(Duration::from_secs(365 * 24 * 60 * 60));
-    tokio::pin!(deadline);
+    let mut state = ChannelState::new(channel);
+    let mut retry = 1u64;
     loop {
-        tokio::select! {
-            audio = receiver.recv(), if !closing => {
-                match audio {
-                    Some(audio) => {
-                        if let Some(previous) = pending.replace(audio) {
-                            socket.send(Message::Binary(encode_audio_request(sequence, &previous, false)?.into()))
-                                .await
-                                .map_err(|error| format!("Doubao audio send failed: {error}"))?;
-                            sequence += 1;
-                        }
-                    }
-                    None => {
-                        let final_audio = pending.take().unwrap_or_default();
-                        socket.send(Message::Binary(encode_audio_request(sequence, &final_audio, true)?.into()))
-                            .await
-                            .map_err(|error| format!("Doubao final audio send failed: {error}"))?;
-                        closing = true;
-                        deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(5));
-                    }
-                }
-            }
-            message = socket.next() => {
-                let Some(message) = receive_protocol_message(message).await? else { continue; };
-                if !ready_announced {
-                    ready_announced = true;
-                    ready.send(channel).await.map_err(|_| "Doubao readiness coordinator stopped.".to_string())?;
-                }
-                match message {
-                    ServerMessage::Error { code, message } => {
-                        return Err(format!("Doubao transcription failed ({code}): {message}"));
-                    }
-                    ServerMessage::Acknowledgement { .. } => {}
-                    ServerMessage::Result { is_final, payload, .. } => {
-                        for segment in segments_from_payload(&payload, channel, is_final) {
-                            let key = ((segment.start * 1000.0) as i64, (segment.end * 1000.0) as i64, segment.text.clone());
-                            if emitted.insert(key) {
-                                if let Some(store) = timeline_store.as_ref() {
-                                    store.lock().await.update(
-                                        channel,
-                                        segment.end,
-                                        vec![crate::speaker_timeline::SpeakerInterval {
-                                            speaker: segment.speaker,
-                                            start: segment.start,
-                                            end: segment.end,
-                                        }],
-                                        Vec::new(),
-                                    )?;
-                                }
-                                if role != "diarization" {
-                                    let segment = if role == "combined" {
-                                        segment
-                                    } else {
-                                        attribute_segment(segment, timeline.as_deref()).await
-                                    };
-                                    writer.lock().await.append(&segment)?;
-                                }
-                            }
-                        }
-                        if closing && is_final {
-                            let _ = socket.close(None).await;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            _ = &mut deadline, if closing => {
-                let _ = socket.close(None).await;
-                return Ok(());
-            }
+        state.observe_eof(&receiver);
+        if state.finalization_expired() {
+            return Err(state
+                .finalization_error()
+                .trim_start_matches(FATAL_ERROR_PREFIX)
+                .to_string());
         }
+        state.connection_id += 1;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let attempt = match connect_channel_socket(
+            app_id,
+            access_token,
+            &request_id,
+            language,
+            role != "asr",
+            &receiver,
+            &mut state,
+        )
+        .await
+        {
+            Ok(socket) => {
+                announce_channel_ready(&ready, &mut state).await?;
+                stream_connected_channel(
+                    socket,
+                    &mut receiver,
+                    &writer,
+                    timeline.as_deref(),
+                    &ready,
+                    role,
+                    timeline_store.as_ref(),
+                    &mut state,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match attempt {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) if is_fatal_channel_error(&error) => {
+                return Err(error.trim_start_matches(FATAL_ERROR_PREFIX).to_string());
+            }
+            Err(error) => eprintln!(
+                "[doubao channel {channel}] {error}; retrying in {retry}s; buffered_audio={:.3}s pending_bytes={}",
+                buffered_audio_seconds(&state.pending, &receiver),
+                state.pending.bytes(),
+            ),
+        }
+        wait_before_retry(Duration::from_secs(retry), &receiver, &mut state)
+            .await
+            .map_err(|error| error.trim_start_matches(FATAL_ERROR_PREFIX).to_string())?;
+        retry = next_retry_delay(retry);
     }
 }
 
-async fn pump_stdin(senders: [mpsc::Sender<Vec<u8>>; 2]) -> Result<(), String> {
+async fn send_stereo_chunk(
+    senders: &[mpsc::Sender<AudioChunk>; 2],
+    stereo: &[u8],
+    start_frame: usize,
+) -> Result<(), String> {
+    let (remote, room) = split_stereo_pcm(stereo)?;
+    let remote_send = senders[0].send(AudioChunk {
+        data: remote,
+        start_frame,
+    });
+    let room_send = senders[1].send(AudioChunk {
+        data: room,
+        start_frame,
+    });
+    let (remote_result, room_result) = tokio::join!(remote_send, room_send);
+    remote_result
+        .and(room_result)
+        .map_err(|_| "Doubao audio worker stopped.".to_string())
+}
+
+async fn pump_stdin(senders: [mpsc::Sender<AudioChunk>; 2]) -> Result<(), String> {
     let mut input = tokio::io::stdin();
     let mut carry = Vec::new();
+    let mut next_frame = 0usize;
     loop {
         let mut buffer = vec![0u8; READ_CHUNK_BYTES];
         let read = input
@@ -586,24 +1467,13 @@ async fn pump_stdin(senders: [mpsc::Sender<Vec<u8>>; 2]) -> Result<(), String> {
         while carry.len() >= READ_CHUNK_BYTES {
             let tail = carry.split_off(READ_CHUNK_BYTES);
             let chunk = std::mem::replace(&mut carry, tail);
-            let (remote, room) = split_stereo_pcm(&chunk)?;
-            for (sender, audio) in senders.iter().zip([remote, room]) {
-                sender
-                    .send(audio)
-                    .await
-                    .map_err(|_| "Doubao audio worker stopped.".to_string())?;
-            }
+            send_stereo_chunk(&senders, &chunk, next_frame).await?;
+            next_frame += chunk.len() / STEREO_FRAME_BYTES;
         }
     }
     let aligned = carry.len() / STEREO_FRAME_BYTES * STEREO_FRAME_BYTES;
     if aligned > 0 {
-        let (remote, room) = split_stereo_pcm(&carry[..aligned])?;
-        for (sender, audio) in senders.iter().zip([remote, room]) {
-            sender
-                .send(audio)
-                .await
-                .map_err(|_| "Doubao audio worker stopped.".to_string())?;
-        }
+        send_stereo_chunk(&senders, &carry[..aligned], next_frame).await?;
     }
     Ok(())
 }
@@ -631,10 +1501,10 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64 / 1_000.0);
-    let writer = Arc::new(Mutex::new(TranscriptWriter::new(
-        transcript_path.to_path_buf(),
-        session_started_at,
-    )?));
+    let mut transcript_writer =
+        TranscriptWriter::new(transcript_path.to_path_buf(), session_started_at)?;
+    transcript_writer.set_active_channels(active);
+    let writer = Arc::new(Mutex::new(transcript_writer));
     let timeline = std::env::var_os("ARCO_SPEAKER_TIMELINE_FILE").map(PathBuf::from);
     let role = std::env::var("ARCO_TRANSCRIBER_ROLE").unwrap_or_else(|_| "combined".into());
     if !matches!(role.as_str(), "combined" | "asr" | "diarization") {
@@ -649,8 +1519,12 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
     } else {
         None
     };
-    let (remote_sender, remote_receiver) = mpsc::channel(600);
-    let (room_sender, room_receiver) = mpsc::channel(600);
+    let buffer_seconds = std::env::var("ARCO_AUDIO_BUFFER_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    let capacity = audio_buffer_capacity(buffer_seconds);
+    let (remote_sender, remote_receiver) = mpsc::channel(capacity);
+    let (room_sender, room_receiver) = mpsc::channel(capacity);
     let (ready_sender, mut ready_receiver) = mpsc::channel(2);
     let pump = pump_stdin([remote_sender, room_sender]);
     let remote = run_channel(
@@ -673,7 +1547,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         1,
         active[1],
         room_receiver,
-        writer,
+        writer.clone(),
         timeline,
         ready_sender,
         &role,
@@ -690,13 +1564,115 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         }
         signal_ready()
     };
-    tokio::try_join!(pump, remote, room, readiness)?;
-    Ok(())
+    let run_result = tokio::try_join!(pump, remote, room, readiness);
+    let flush_result = writer.lock().await.flush_all();
+    match run_result {
+        Ok(_) => flush_result,
+        Err(error) => {
+            if let Err(flush_error) = flush_result {
+                eprintln!("[doubao transcript] final ordered flush failed: {flush_error}");
+            }
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::{accept_async, WebSocketStream};
+
+    #[derive(Default)]
+    struct ResettingSink;
+
+    impl Sink<Message> for ResettingSink {
+        type Error = &'static str;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Err("connection reset")
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn local_websocket_pair() -> (DoubaoSocket, WebSocketStream<TcpStream>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            accept_async(stream).await.unwrap()
+        });
+        let (client, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        (client, server.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn initialization_waits_for_the_server_result_before_audio_can_start() {
+        let (mut socket, mut server) = local_websocket_pair().await;
+        let initialization = wait_for_initialization(&mut socket);
+        tokio::pin!(initialization);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut initialization)
+                .await
+                .is_err(),
+            "initialization must not complete before the provider acknowledges the request"
+        );
+
+        server
+            .send(result_message(1, false, json!({ "result": {} })))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), &mut initialization)
+            .await
+            .expect("provider acknowledgement should complete initialization")
+            .unwrap();
+    }
+
+    fn acknowledgement_message(sequence: i32) -> Message {
+        let mut packet = vec![0x11, 0xb0, 0x00, 0x00];
+        packet.extend_from_slice(&sequence.to_be_bytes());
+        Message::Binary(packet.into())
+    }
+
+    fn result_message(sequence: i32, is_final: bool, payload: Value) -> Message {
+        let flags = 0x01 | if is_final { 0x02 } else { 0x00 };
+        let payload = serde_json::to_vec(&payload).unwrap();
+        let mut packet = vec![0x11, 0x90 | flags, 0x10, 0x00];
+        packet.extend_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&payload);
+        Message::Binary(packet.into())
+    }
+
+    fn tenth_second_chunk(start_frame: usize, byte: u8) -> AudioChunk {
+        AudioChunk {
+            data: vec![byte; SAMPLE_RATE * MONO_FRAME_BYTES / 10],
+            start_frame,
+        }
+    }
 
     #[test]
     fn credential_headers_use_the_official_doubao_streaming_contract() {
@@ -720,23 +1696,27 @@ mod tests {
     #[test]
     fn first_request_is_gzip_json_with_positive_sequence() {
         let packet = encode_full_client_request("request-id", "zh-CN", 1, true).unwrap();
-        assert_eq!(&packet[..4], &[0x11, 0x11, 0x11, 0x01]);
+        assert_eq!(&packet[..4], &[0x11, 0x11, 0x11, 0x00]);
         assert_eq!(i32::from_be_bytes(packet[4..8].try_into().unwrap()), 1);
         let payload_size = u32::from_be_bytes(packet[8..12].try_into().unwrap()) as usize;
         assert_eq!(packet.len(), 12 + payload_size);
     }
 
     #[test]
-    fn audio_requests_distinguish_streaming_and_final_sequences() {
+    fn audio_requests_mark_gzip_and_follow_the_official_no_sequence_framing() {
         let streaming = encode_audio_request(2, &[1, 2, 3, 4], false).unwrap();
         let final_packet = encode_audio_request(3, &[5, 6, 7, 8], true).unwrap();
-        assert_eq!(&streaming[..4], &[0x11, 0x21, 0x00, 0x01]);
-        assert_eq!(i32::from_be_bytes(streaming[4..8].try_into().unwrap()), 2);
-        assert_eq!(&final_packet[..4], &[0x11, 0x23, 0x00, 0x01]);
-        assert_eq!(
-            i32::from_be_bytes(final_packet[4..8].try_into().unwrap()),
-            -3
-        );
+        assert_eq!(&streaming[..4], &[0x11, 0x20, 0x01, 0x00]);
+        assert_eq!(&final_packet[..4], &[0x11, 0x22, 0x01, 0x00]);
+
+        let streaming_payload_size =
+            u32::from_be_bytes(streaming[4..8].try_into().unwrap()) as usize;
+        let final_payload_size =
+            u32::from_be_bytes(final_packet[4..8].try_into().unwrap()) as usize;
+        assert_eq!(streaming.len(), 8 + streaming_payload_size);
+        assert_eq!(final_packet.len(), 8 + final_payload_size);
+        assert_eq!(gunzip(&streaming[8..]).unwrap(), [1, 2, 3, 4]);
+        assert_eq!(gunzip(&final_packet[8..]).unwrap(), [5, 6, 7, 8]);
     }
 
     #[test]
@@ -799,5 +1779,675 @@ mod tests {
         let request: Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(request["request"]["enable_speaker_info"], true);
         assert_eq!(request["request"]["show_utterances"], true);
+    }
+
+    #[tokio::test]
+    async fn failed_audio_chunk_is_retried_byte_for_byte_before_new_channel_audio() {
+        let failed = AudioChunk {
+            data: vec![7, 8, 9, 10],
+            start_frame: 4_200,
+        };
+        let newer = AudioChunk {
+            data: vec![11, 12, 13, 14],
+            start_frame: 4_202,
+        };
+        let newest = AudioChunk {
+            data: vec![15, 16, 17, 18],
+            start_frame: 4_204,
+        };
+        let (sender, mut receiver) = mpsc::channel(2);
+        sender.send(newest.clone()).await.unwrap();
+        drop(sender);
+        let mut sink = ResettingSink;
+        let mut sequence = 2;
+        let mut lookahead = Some(failed.clone());
+        let mut in_flight = InFlightAudio::default();
+        let mut pacer = None;
+        let (error, failed_again, newer_again) = queue_audio_chunk(
+            &mut sink,
+            &mut sequence,
+            &mut lookahead,
+            newer.clone(),
+            &mut in_flight,
+            &mut pacer,
+            Instant::now(),
+            None,
+        )
+        .await
+        .expect_err("the fake socket must reset while sending the held chunk");
+        assert_eq!(error, "connection reset");
+        assert_eq!(sequence, 2, "failed sends must not consume a sequence");
+
+        let mut pending = PendingAudio::default();
+        pending.restore(newer_again);
+        pending.restore(failed_again);
+
+        assert_eq!(pending.take(), Some(failed));
+        assert_eq!(pending.take(), Some(newer));
+        assert_eq!(pending.take(), None);
+        assert_eq!(receiver.recv().await, Some(newest));
+        assert_eq!(receiver.recv().await, None);
+    }
+
+    #[test]
+    fn reconnect_replay_is_capped_at_one_point_two_five_times_realtime() {
+        let first = AudioChunk {
+            data: vec![1; READ_CHUNK_BYTES / 2],
+            start_frame: SAMPLE_RATE,
+        };
+        let pacer = ReplayPacer::new(&first);
+        assert_eq!(pacer.delay_for(&first, Duration::ZERO), Duration::ZERO);
+
+        let second = AudioChunk {
+            data: vec![2; READ_CHUNK_BYTES / 2],
+            start_frame: first.end_frame(),
+        };
+        assert_eq!(
+            pacer.delay_for(&second, Duration::ZERO),
+            Duration::from_millis(80)
+        );
+        assert_eq!(
+            pacer.delay_for(&second, Duration::from_millis(100)),
+            Duration::ZERO
+        );
+
+        let ten_seconds = AudioChunk {
+            data: vec![3; READ_CHUNK_BYTES / 2],
+            start_frame: first.end_frame() + SAMPLE_RATE * 10 - READ_CHUNK_BYTES / 4,
+        };
+        assert_eq!(
+            pacer.delay_for(&ten_seconds, Duration::ZERO),
+            Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn reset_after_final_send_replays_the_final_audio_on_the_next_connection() {
+        let final_audio = AudioChunk {
+            data: vec![21, 22, 23, 24],
+            start_frame: 9_900,
+        };
+        let mut pending = PendingAudio::default();
+        let mut lookahead = None;
+        let mut in_flight = InFlightAudio::default();
+        in_flight.record(2, final_audio.clone(), true);
+
+        restore_connection_audio(&mut pending, &mut lookahead, &mut in_flight);
+
+        assert_eq!(pending.take(), Some(final_audio));
+        assert_eq!(pending.take(), None);
+        assert!(in_flight.is_empty());
+    }
+
+    #[test]
+    fn reset_replays_every_unacknowledged_sent_chunk_in_original_order() {
+        let first = AudioChunk {
+            data: vec![1, 2],
+            start_frame: 100,
+        };
+        let second = AudioChunk {
+            data: vec![3, 4],
+            start_frame: 101,
+        };
+        let held = AudioChunk {
+            data: vec![5, 6],
+            start_frame: 102,
+        };
+        let queued = AudioChunk {
+            data: vec![7, 8],
+            start_frame: 103,
+        };
+        let mut in_flight = InFlightAudio::default();
+        in_flight.record(2, first.clone(), false);
+        in_flight.record(3, second.clone(), false);
+        let mut pending = PendingAudio::default();
+        pending.restore(queued.clone());
+        let mut lookahead = Some(held.clone());
+
+        restore_connection_audio(&mut pending, &mut lookahead, &mut in_flight);
+
+        assert_eq!(pending.take(), Some(first));
+        assert_eq!(pending.take(), Some(second));
+        assert_eq!(pending.take(), Some(held));
+        assert_eq!(pending.take(), Some(queued));
+        assert_eq!(pending.take(), None);
+    }
+
+    #[test]
+    fn acknowledgements_advance_a_monotonic_watermark_and_only_replay_the_tail() {
+        let chunks: Vec<_> = (0..3)
+            .map(|index| AudioChunk {
+                data: vec![index as u8; 2],
+                start_frame: 200 + index,
+            })
+            .collect();
+        let mut in_flight = InFlightAudio::default();
+        for (index, chunk) in chunks.iter().cloned().enumerate() {
+            in_flight.record(index as i32 + 2, chunk, false);
+        }
+
+        let confirmation = in_flight.confirm_through(3);
+        assert_eq!(confirmation.confirmed_chunks, 2);
+        assert!(!confirmation.final_confirmed);
+        assert_eq!(in_flight.len(), 1);
+
+        let mut pending = PendingAudio::default();
+        in_flight.restore_into(&mut pending);
+        assert_eq!(pending.take(), Some(chunks[2].clone()));
+        assert_eq!(pending.take(), None);
+    }
+
+    #[test]
+    fn final_completion_requires_a_negative_final_result_not_a_transport_ack() {
+        let final_audio = AudioChunk {
+            data: vec![9, 10],
+            start_frame: 300,
+        };
+        let mut acked = InFlightAudio::default();
+        acked.record(2, final_audio.clone(), true);
+        assert!(
+            !apply_server_confirmation(
+                &ServerMessage::Acknowledgement { sequence: -2 },
+                &mut acked,
+            )
+            .final_confirmed,
+            "SERVER_ACK confirms receipt, not persisted final transcript"
+        );
+
+        let mut result = InFlightAudio::default();
+        result.record(2, final_audio, true);
+        assert!(
+            apply_server_confirmation(
+                &ServerMessage::Result {
+                    sequence: Some(-2),
+                    is_final: true,
+                    payload: Value::Null,
+                },
+                &mut result,
+            )
+            .final_confirmed
+        );
+
+        let mut ordinary = InFlightAudio::default();
+        ordinary.record(
+            2,
+            AudioChunk {
+                data: vec![11, 12],
+                start_frame: 301,
+            },
+            false,
+        );
+        assert!(
+            !apply_server_confirmation(
+                &ServerMessage::Acknowledgement { sequence: 2 },
+                &mut ordinary,
+            )
+            .final_confirmed
+        );
+    }
+
+    #[test]
+    fn unexpected_final_result_before_client_eof_preserves_unconfirmed_audio_for_replay() {
+        let chunks: Vec<_> = (0..2)
+            .map(|index| AudioChunk {
+                data: vec![index as u8; MONO_FRAME_BYTES],
+                start_frame: 500 + index,
+            })
+            .collect();
+        let mut in_flight = InFlightAudio::default();
+        for (index, chunk) in chunks.iter().cloned().enumerate() {
+            in_flight.record(index as i32 + 2, chunk, false);
+        }
+
+        let confirmation = apply_server_confirmation(
+            &ServerMessage::Result {
+                sequence: Some(-3),
+                is_final: true,
+                payload: Value::Null,
+            },
+            &mut in_flight,
+        );
+
+        assert!(!confirmation.final_confirmed);
+        let mut pending = PendingAudio::default();
+        in_flight.restore_into(&mut pending);
+        assert_eq!(pending.take(), Some(chunks[0].clone()));
+        assert_eq!(pending.take(), Some(chunks[1].clone()));
+    }
+
+    #[test]
+    fn eof_finalization_deadline_allows_the_full_provider_final_ack_window() {
+        let started = tokio::time::Instant::now();
+        let deadline = finalization_deadline(started);
+        assert_eq!(deadline.duration_since(started), EOF_FINALIZATION_TIMEOUT);
+        assert_eq!(EOF_FINALIZATION_TIMEOUT, FINAL_ACK_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn closed_receiver_does_not_start_finalization_while_audio_is_still_buffered() {
+        let (sender, receiver) = mpsc::channel(2);
+        sender.send(tenth_second_chunk(0, 7)).await.unwrap();
+        drop(sender);
+
+        let mut state = ChannelState::new(0);
+        state.observe_eof(&receiver);
+
+        assert!(receiver.is_closed());
+        assert!(!receiver.is_empty());
+        assert_eq!(state.eof_deadline, None);
+    }
+
+    #[tokio::test]
+    async fn closed_empty_receiver_does_not_start_finalization_while_replay_is_pending() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+        let mut state = ChannelState::new(0);
+        state.pending.restore(tenth_second_chunk(0, 9));
+
+        state.observe_eof(&receiver);
+
+        assert!(receiver.is_closed());
+        assert!(receiver.is_empty());
+        assert!(!state.pending.is_empty());
+        assert_eq!(state.eof_deadline, None);
+    }
+
+    #[test]
+    fn reconnects_assign_new_session_speaker_ids_instead_of_merging_provider_slots() {
+        let payload = json!({ "result": { "utterances": [
+            { "text": "voice", "start_time": 0.0, "end_time": 500.0, "definite": true, "additions": { "speaker": "1" } }
+        ]}});
+        let base = segments_from_payload(&payload, 0, false).remove(0);
+        let mut registry = SpeakerRegistry::default();
+        let first = registry.relabel(base.clone(), 1);
+        let same_connection = registry.relabel(base.clone(), 1);
+        let reconnected = registry.relabel(base, 2);
+
+        assert_eq!((first.speaker, same_connection.speaker), (0, 0));
+        assert_eq!(first.label, "Remote 1");
+        assert_eq!(reconnected.speaker, 1);
+        assert_eq!(reconnected.label, "Remote 2");
+    }
+
+    #[test]
+    fn cross_channel_reconnect_skew_is_written_in_absolute_timestamp_order() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "later remote".into(),
+                start: 20.0,
+                end: 21.0,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "earlier recovered room".into(),
+                start: 10.0,
+                end: 11.0,
+            })
+            .unwrap();
+        writer.flush_all().unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(
+            content.find("earlier recovered room").unwrap() < content.find("later remote").unwrap(),
+            "replayed older room audio must not be appended after newer remote audio"
+        );
+    }
+
+    #[test]
+    fn silent_channel_acknowledgements_advance_the_live_cross_channel_barrier() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+        let one_hour_frame = (SAMPLE_RATE * 60 * 60) as f64;
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "audible microphone".into(),
+                start: one_hour_frame / SAMPLE_RATE as f64 - 1.0,
+                end: one_hour_frame / SAMPLE_RATE as f64 - 0.5,
+            })
+            .unwrap();
+        writer
+            .advance(1, one_hour_frame / SAMPLE_RATE as f64 + 1.0)
+            .unwrap();
+        assert!(!fs::read_to_string(&transcript)
+            .unwrap()
+            .contains("audible microphone"));
+
+        let silent_audio = AudioChunk {
+            data: vec![0; MONO_FRAME_BYTES],
+            start_frame: one_hour_frame as usize,
+        };
+        let mut in_flight = InFlightAudio::default();
+        in_flight.record(2, silent_audio, false);
+        let acknowledgement = apply_server_confirmation(
+            &ServerMessage::Acknowledgement { sequence: 2 },
+            &mut in_flight,
+        );
+        writer
+            .advance_from_confirmation(0, &acknowledgement)
+            .unwrap();
+
+        assert!(fs::read_to_string(&transcript)
+            .unwrap()
+            .contains("audible microphone"));
+    }
+
+    #[tokio::test]
+    async fn fake_websocket_silent_ack_unblocks_other_channel_before_audio_eof() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        transcript_writer.set_active_channels([true, true]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (remote_socket, mut remote_server) = local_websocket_pair().await;
+        let (room_socket, mut room_server) = local_websocket_pair().await;
+        let (remote_sender, remote_receiver) = mpsc::channel(2);
+        let (room_sender, room_receiver) = mpsc::channel(2);
+        for (sender, byte) in [(&remote_sender, 1u8), (&room_sender, 2u8)] {
+            sender.send(tenth_second_chunk(0, byte)).await.unwrap();
+            sender
+                .send(tenth_second_chunk(SAMPLE_RATE / 10, byte))
+                .await
+                .unwrap();
+        }
+        let (ready, _ready_receiver) = mpsc::channel(2);
+
+        let remote_task = tokio::spawn({
+            let writer = writer.clone();
+            let ready = ready.clone();
+            async move {
+                let mut receiver = remote_receiver;
+                let mut state = ChannelState::new(0);
+                state.connection_id = 1;
+                stream_connected_channel(
+                    remote_socket,
+                    &mut receiver,
+                    &writer,
+                    None,
+                    &ready,
+                    "combined",
+                    None,
+                    &mut state,
+                )
+                .await
+            }
+        });
+        let room_task = tokio::spawn({
+            let writer = writer.clone();
+            async move {
+                let mut receiver = room_receiver;
+                let mut state = ChannelState::new(1);
+                state.connection_id = 1;
+                stream_connected_channel(
+                    room_socket,
+                    &mut receiver,
+                    &writer,
+                    None,
+                    &ready,
+                    "combined",
+                    None,
+                    &mut state,
+                )
+                .await
+            }
+        });
+        let remote_response = tokio::spawn(async move {
+            assert!(matches!(
+                remote_server.next().await,
+                Some(Ok(Message::Binary(_)))
+            ));
+            remote_server
+                .send(acknowledgement_message(2))
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let room_response = tokio::spawn(async move {
+            assert!(matches!(
+                room_server.next().await,
+                Some(Ok(Message::Binary(_)))
+            ));
+            room_server
+                .send(result_message(
+                    2,
+                    false,
+                    json!({ "result": { "utterances": [{
+                        "text": "live room speech",
+                        "start_time": 0.0,
+                        "end_time": 50.0,
+                        "definite": true,
+                        "additions": { "speaker": "1" }
+                    }]}}),
+                ))
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if fs::read_to_string(&transcript)
+                    .unwrap()
+                    .contains("live room speech")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("ACK-only silent channel must not hold live transcript until EOF");
+        assert!(
+            !remote_sender.is_closed() && !room_sender.is_closed(),
+            "the transcript must flush while both audio inputs are still live"
+        );
+
+        remote_task.abort();
+        room_task.abort();
+        remote_response.abort();
+        room_response.abort();
+    }
+
+    #[tokio::test]
+    async fn fake_websocket_early_final_restores_every_nonfinal_chunk_for_reconnect() {
+        let (socket, mut server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(2);
+        let first = tenth_second_chunk(0, 3);
+        let second = tenth_second_chunk(SAMPLE_RATE / 10, 4);
+        sender.send(first.clone()).await.unwrap();
+        sender.send(second.clone()).await.unwrap();
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 1;
+        let response = tokio::spawn(async move {
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            server
+                .send(result_message(-2, true, json!({})))
+                .await
+                .unwrap();
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            stream_connected_channel(
+                socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            ),
+        )
+        .await
+        .expect("unexpected final must leave the live connection")
+        .expect_err("unexpected final before EOF must reconnect");
+        response.await.unwrap();
+
+        assert!(error.contains("before audio input ended"));
+        assert_eq!(state.pending.take(), Some(first));
+        assert_eq!(state.pending.take(), Some(second));
+        assert_eq!(state.pending.take(), None);
+        assert!(!sender.is_closed(), "audio input was still live");
+    }
+
+    #[tokio::test]
+    async fn provider_final_result_may_arrive_after_the_old_one_point_five_second_window() {
+        let (socket, mut server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(2);
+        sender.send(tenth_second_chunk(0, 3)).await.unwrap();
+        sender
+            .send(tenth_second_chunk(SAMPLE_RATE / 10, 4))
+            .await
+            .unwrap();
+        drop(sender);
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 1;
+
+        let response = tokio::spawn(async move {
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            tokio::time::sleep(Duration::from_millis(1_600)).await;
+            server
+                .send(result_message(
+                    -3,
+                    true,
+                    json!({ "result": { "utterances": [{
+                        "text": "provider finished after network jitter",
+                        "start_time": 0.0,
+                        "end_time": 200.0,
+                        "definite": true,
+                        "additions": { "speaker": "1" }
+                    }]}}),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let completed = stream_connected_channel(
+            socket,
+            &mut receiver,
+            &writer,
+            None,
+            &ready,
+            "combined",
+            None,
+            &mut state,
+        )
+        .await;
+        response.await.unwrap();
+
+        assert_eq!(completed, Ok(true));
+        assert!(
+            fs::read_to_string(transcript)
+                .unwrap()
+                .contains("provider finished after network jitter"),
+            "a valid provider final result must be persisted before shutdown"
+        );
+    }
+
+    #[test]
+    fn disabled_channel_never_holds_the_live_cross_channel_barrier() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, false]);
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "system-only audio".into(),
+                start: 10.0,
+                end: 11.0,
+            })
+            .unwrap();
+        writer.advance(0, 12.0).unwrap();
+
+        assert!(fs::read_to_string(transcript)
+            .unwrap()
+            .contains("system-only audio"));
+    }
+
+    #[test]
+    fn audio_buffer_capacity_is_configurable_but_strictly_bounded() {
+        assert_eq!(audio_buffer_capacity(None), 600);
+        assert_eq!(audio_buffer_capacity(Some(0)), 10);
+        assert_eq!(audio_buffer_capacity(Some(1)), 10);
+        assert_eq!(audio_buffer_capacity(Some(61)), 610);
+        assert_eq!(audio_buffer_capacity(Some(usize::MAX)), 3_000);
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_capped() {
+        let mut delay = 1;
+        let mut observed = Vec::new();
+        for _ in 0..8 {
+            observed.push(delay);
+            delay = next_retry_delay(delay);
+        }
+        assert_eq!(observed, [1, 2, 4, 8, 15, 15, 15, 15]);
+    }
+
+    #[test]
+    fn transport_failures_retry_but_provider_rejections_remain_fatal() {
+        assert!(!is_fatal_channel_error(
+            "Doubao connection failed: failed to lookup address information"
+        ));
+        assert!(!is_fatal_channel_error(
+            "Doubao stream dropped: Connection reset by peer"
+        ));
+        assert!(is_fatal_channel_error(
+            "Doubao transcription failed (45000000): invalid access token"
+        ));
+        assert!(is_fatal_channel_error(
+            "Doubao connection failed: HTTP error: 401 Unauthorized"
+        ));
+    }
+
+    #[test]
+    fn reconnect_results_keep_absolute_channel_time_for_deduplication() {
+        let payload = json!({ "result": { "utterances": [
+            { "text": "same words", "start_time": 250.0, "end_time": 750.0, "definite": true }
+        ]}});
+        let first = segments_from_connection_payload(&payload, 1, false, 12.0).remove(0);
+        let replay = segments_from_connection_payload(&payload, 1, false, 12.0).remove(0);
+        let later = segments_from_connection_payload(&payload, 1, false, 20.0).remove(0);
+
+        assert_eq!((first.channel, first.start, first.end), (1, 12.25, 12.75));
+        assert_eq!(segment_dedup_key(&first), segment_dedup_key(&replay));
+        assert_ne!(segment_dedup_key(&first), segment_dedup_key(&later));
     }
 }

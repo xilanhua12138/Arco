@@ -5,9 +5,12 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::UNIX_EPOCH;
 
 const MAX_TRANSCRIPT_BYTES: u64 = 8 * 1024 * 1024;
+static TRANSCRIPT_LINE_PATTERN: OnceLock<Regex> = OnceLock::new();
+static STARTED_AT_PATTERN: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct MeetingStore {
@@ -126,6 +129,25 @@ impl MeetingStore {
     }
 
     pub fn read(&self, id: &str, active_path: Option<&Path>) -> Result<MeetingDetail, String> {
+        let (source, path) = self.resolve_path(id)?;
+        parse_meeting(&path, &source, active_path)
+    }
+
+    pub fn read_if_changed(
+        &self,
+        id: &str,
+        known_revision: Option<&str>,
+        active_path: Option<&Path>,
+    ) -> Result<(String, Option<MeetingDetail>), String> {
+        let (source, path) = self.resolve_path(id)?;
+        let revision = transcript_revision(&path)?;
+        if known_revision == Some(revision.as_str()) {
+            return Ok((revision, None));
+        }
+        Ok((revision, Some(parse_meeting(&path, &source, active_path)?)))
+    }
+
+    fn resolve_path(&self, id: &str) -> Result<(String, PathBuf), String> {
         let (source, file_name) = id
             .split_once(':')
             .ok_or_else(|| "invalid meeting id".to_string())?;
@@ -141,8 +163,9 @@ impl MeetingStore {
                 .ok_or_else(|| "invalid meeting source".to_string())?
         };
 
-        // IDs are lookup keys, never paths. This check prevents traversal even
-        // before the directory scan below performs an exact filename match.
+        // IDs are lookup keys, never paths. Reject every path separator before
+        // joining the already-resolved storage root, then perform one direct
+        // metadata lookup instead of scanning the whole history on each live poll.
         if file_name.is_empty()
             || file_name.contains('/')
             || file_name.contains('\\')
@@ -152,23 +175,32 @@ impl MeetingStore {
             return Err("invalid meeting id".into());
         }
 
-        let entries = fs::read_dir(&dir).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                format!("meeting not found: {id}")
-            } else {
-                format!("could not read {}: {error}", dir.display())
-            }
-        })?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_transcript_file(&path)
-                && path.file_name().and_then(|name| name.to_str()) == Some(file_name)
-            {
-                return parse_meeting(&path, source, active_path);
-            }
+        let path = dir.join(file_name);
+        if is_transcript_file(&path) && path.is_file() {
+            return Ok((source.to_string(), path));
         }
         Err(format!("meeting not found: {id}"))
     }
+}
+
+fn transcript_revision(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+    if metadata.len() > MAX_TRANSCRIPT_BYTES {
+        return Err(format!(
+            "transcript is too large ({} bytes, maximum {})",
+            metadata.len(),
+            MAX_TRANSCRIPT_BYTES
+        ));
+    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok());
+    let (seconds, nanos) = modified
+        .map(|value| (value.as_secs(), value.subsec_nanos()))
+        .unwrap_or((0, 0));
+    Ok(format!("{}:{seconds}:{nanos}", metadata.len()))
 }
 
 pub fn meeting_id(source: &str, path: &Path) -> Result<String, String> {
@@ -218,10 +250,12 @@ pub fn parse_meeting(
 }
 
 pub fn parse_transcript_lines(markdown: &str) -> Vec<TranscriptLine> {
-    let pattern = Regex::new(
-        r"^\s*\*\*\[(?P<timestamp>\d{2}:\d{2}:\d{2})\]\s*(?P<speaker>[^:*]+?):\*\*\s*(?P<text>.*)\s*$",
-    )
-    .expect("transcript regex is valid");
+    let pattern = TRANSCRIPT_LINE_PATTERN.get_or_init(|| {
+        Regex::new(
+            r"^\s*\*\*\[(?P<timestamp>\d{2}:\d{2}:\d{2})\]\s*(?P<speaker>[^:*]+?):\*\*\s*(?P<text>.*)\s*$",
+        )
+        .expect("transcript regex is valid")
+    });
     markdown
         .lines()
         .filter_map(|line| pattern.captures(line))
@@ -273,8 +307,10 @@ fn parse_title(markdown: &str) -> Option<String> {
 }
 
 fn parse_started_at(markdown: &str) -> Option<DateTime<Local>> {
-    let regex =
-        Regex::new(r"(?m)^>\s*Started:\s*(?P<date>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})").ok()?;
+    let regex = STARTED_AT_PATTERN.get_or_init(|| {
+        Regex::new(r"(?m)^>\s*Started:\s*(?P<date>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
+            .expect("meeting start regex is valid")
+    });
     let raw = regex.captures(markdown)?.name("date")?.as_str();
     let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S").ok()?;
     localize(naive)
@@ -384,6 +420,7 @@ use chrono::Timelike;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn parser_preserves_identical_repeated_utterances() {
@@ -419,5 +456,41 @@ mod tests {
             "**[23:59:30] Speaker 1:** before\n**[00:01:30] Speaker 2:** after",
         );
         assert_eq!(duration_label(&lines), "2m");
+    }
+
+    #[test]
+    fn versioned_read_omits_an_unchanged_transcript_and_reopens_after_append() {
+        let root = tempfile::tempdir().unwrap();
+        let local = root.path().join("transcripts");
+        fs::create_dir_all(&local).unwrap();
+        let path = local.join("transcript-20260716-090000.md");
+        fs::write(
+            &path,
+            "# Meeting Transcript\n\n> Started: 2026-07-16 09:00:00 (live)\n\n\
+             **[09:00:01] Speaker 1:** first\n\n",
+        )
+        .unwrap();
+        let store = MeetingStore::new(local, root.path().join("legacy"));
+        let id = "local:transcript-20260716-090000.md";
+
+        let (first_revision, first) = store.read_if_changed(id, None, Some(&path)).unwrap();
+        assert_eq!(first.unwrap().lines.len(), 1);
+
+        let (same_revision, unchanged) = store
+            .read_if_changed(id, Some(&first_revision), Some(&path))
+            .unwrap();
+        assert_eq!(same_revision, first_revision);
+        assert!(unchanged.is_none());
+
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "**[09:00:03] Speaker 2:** second\n"
+        )
+        .unwrap();
+        let (next_revision, changed) = store
+            .read_if_changed(id, Some(&first_revision), Some(&path))
+            .unwrap();
+        assert_ne!(next_revision, first_revision);
+        assert_eq!(changed.unwrap().lines.len(), 2);
     }
 }

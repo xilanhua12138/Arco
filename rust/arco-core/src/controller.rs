@@ -117,6 +117,10 @@ impl Controller {
             }
             "list_meetings" => value(self.list_meetings(optional::<String>(&params, "query")?)?),
             "read_meeting" => value(self.read_meeting(required(&params, "id")?)?),
+            "poll_live_meeting" => value(self.poll_live_meeting(
+                required(&params, "meetingId")?,
+                optional::<String>(&params, "knownRevision")?,
+            )?),
             "rename_meeting" => value(self.rename_meeting(
                 required(&params, "meetingId")?,
                 optional::<String>(&params, "title")?,
@@ -354,6 +358,39 @@ impl Controller {
     fn read_meeting(&self, id: String) -> Result<crate::models::MeetingDetail, String> {
         let active = self.capture.active_transcript_path();
         read_meeting_with_artifacts(&self.meetings, &self.meeting_state, &id, active.as_deref())
+    }
+
+    fn poll_live_meeting(
+        &self,
+        meeting_id: String,
+        known_revision: Option<String>,
+    ) -> Result<crate::models::LiveMeetingPoll, String> {
+        let capture = self.capture.status();
+        if capture.phase != "recording"
+            || capture.active_meeting_id.as_deref() != Some(meeting_id.as_str())
+        {
+            return Ok(crate::models::LiveMeetingPoll {
+                capture,
+                revision: None,
+                meeting: None,
+            });
+        }
+
+        let active = self.capture.active_transcript_path();
+        let (revision, mut meeting) = self.meetings.read_if_changed(
+            &meeting_id,
+            known_revision.as_deref(),
+            active.as_deref(),
+        )?;
+        if let Some(detail) = meeting.as_mut() {
+            self.meeting_state
+                .hydrate_meeting_summary(&mut detail.summary)?;
+        }
+        Ok(crate::models::LiveMeetingPoll {
+            capture,
+            revision: Some(revision),
+            meeting,
+        })
     }
 
     fn rename_meeting(

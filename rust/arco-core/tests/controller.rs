@@ -42,6 +42,16 @@ fn controller_exposes_the_existing_command_contract_without_a_ui_framework() {
         .unwrap();
     assert_eq!(meetings, json!([]));
 
+    let live_poll = controller
+        .dispatch(
+            "poll_live_meeting",
+            json!({ "meetingId": "local:missing.md", "knownRevision": null }),
+        )
+        .unwrap();
+    assert_eq!(live_poll["capture"]["phase"], "idle");
+    assert_eq!(live_poll["revision"], serde_json::Value::Null);
+    assert_eq!(live_poll["meeting"], serde_json::Value::Null);
+
     let error = controller.dispatch("not_a_command", json!({})).unwrap_err();
     assert_eq!(error, "unknown backend command: not_a_command");
 }

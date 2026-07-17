@@ -197,7 +197,7 @@ public struct ArcoMainShellView: View {
     ) -> some View {
         let selected = controller.page == route || (selectedWhenReviewing && controller.page == .review)
         return Button {
-            Task { await controller.showPage(route) }
+            controller.requestPage(route)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
@@ -301,8 +301,7 @@ public struct ArcoMainShellView: View {
 
     private func pageStage(viewportWidth: CGFloat) -> some View {
         ZStack {
-            ArcoNativeColors.surfaceStageBase
-            ArcoStageArtwork()
+            ArcoStageArtwork().equatable()
 
             Group {
                 switch controller.page {
@@ -399,7 +398,7 @@ public struct ArcoMainShellView: View {
                 capture: controller.store.capture,
                 viewModel: controller.topBarViewModel,
                 translate: translate,
-                onBackToHistory: { Task { await controller.showPage(.history) } }
+                onBackToHistory: { controller.requestPage(.history) }
             )
             if controller.reviewingWhileRecording { liveReviewBanner }
             workspace(controller.store.meeting, viewportWidth: viewportWidth)
@@ -626,82 +625,196 @@ public struct ArcoMainShellView: View {
     }
 }
 
-private struct ArcoStageArtwork: View {
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                stops: [
-                    .init(color: Color(red: 100 / 255, green: 201 / 255, blue: 238 / 255).opacity(0.24), location: 0),
-                    .init(color: Color(red: 137 / 255, green: 204 / 255, blue: 244 / 255).opacity(0.14), location: 0.34),
-                    .init(color: Color(red: 177 / 255, green: 157 / 255, blue: 240 / 255).opacity(0.14), location: 0.64),
-                    .init(color: Color(red: 249 / 255, green: 169 / 255, blue: 145 / 255).opacity(0.20), location: 1),
-                ],
-                startPoint: UnitPoint(x: 0.0365, y: 0.3125),
-                endPoint: UnitPoint(x: 0.9635, y: 0.6875)
+@_spi(Testing)
+public enum ArcoStageGradientGeometry {
+    public static func cssEndpoints(
+        angleDegrees: Double,
+        size: CGSize
+    ) -> (start: CGPoint, end: CGPoint) {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        guard size.width > 0, size.height > 0 else { return (center, center) }
+
+        let radians = angleDegrees * Double.pi / 180
+        let directionX = CGFloat(sin(radians))
+        let directionY = CGFloat(-cos(radians))
+        let halfLength = (
+            abs(size.width * directionX) + abs(size.height * directionY)
+        ) / 2
+
+        return (
+            start: CGPoint(
+                x: center.x - directionX * halfLength,
+                y: center.y - directionY * halfLength
+            ),
+            end: CGPoint(
+                x: center.x + directionX * halfLength,
+                y: center.y + directionY * halfLength
             )
-            ArcoEllipticalWash(
-                color: Color(red: 242 / 255, green: 166 / 255, blue: 144 / 255).opacity(0.20),
-                center: UnitPoint(x: 0.88, y: 0.94),
-                radiusX: 0.62,
-                radiusY: 0.56,
-                fadeLocation: 0.74
-            )
-            ArcoEllipticalWash(
-                color: Color(red: 187 / 255, green: 174 / 255, blue: 238 / 255).opacity(0.18),
-                center: UnitPoint(x: 0.88, y: 0.12),
-                radiusX: 0.58,
-                radiusY: 0.52,
-                fadeLocation: 0.76
-            )
-            ArcoEllipticalWash(
-                color: Color(red: 111 / 255, green: 201 / 255, blue: 236 / 255).opacity(0.28),
-                center: UnitPoint(x: 0.14, y: 0.08),
-                radiusX: 0.78,
-                radiusY: 0.64,
-                fadeLocation: 0.72
-            )
-            ArcoStageDotGrid()
-                .fill(ArcoNativeColors.stageDot.opacity(0.38))
-        }
-        .allowsHitTesting(false)
+        )
     }
 }
 
-private struct ArcoEllipticalWash: View {
-    var color: Color
-    var center: UnitPoint
-    var radiusX: CGFloat
-    var radiusY: CGFloat
-    var fadeLocation: CGFloat
+private struct ArcoStageArtwork: View, Equatable {
+    private static let matrixAngleDegrees: Double = 112
+    private static let dotTileSize = CGSize(width: 8, height: 8)
+    private static let dotCenter = CGPoint(x: 4, y: 4)
+    private static let dotSolidRadius: CGFloat = 1
+    private static let dotFadeRadius: CGFloat = 1.05
+    private static let dotOverlayOpacity: Double = 0.38
+
+    private static let dotTile = Image(
+        size: dotTileSize,
+        label: nil,
+        opaque: false,
+        colorMode: .nonLinear
+    ) { context in
+        let bounds = Path(CGRect(origin: .zero, size: dotTileSize))
+        let solid = ArcoNativeColors.stageDot.opacity(dotOverlayOpacity)
+        context.fill(
+            bounds,
+            with: .radialGradient(
+                Gradient(stops: [
+                    .init(color: solid, location: 0),
+                    .init(color: solid, location: dotSolidRadius / dotFadeRadius),
+                    .init(color: .clear, location: 1),
+                ]),
+                center: dotCenter,
+                startRadius: 0,
+                endRadius: dotFadeRadius
+            )
+        )
+    }
 
     var body: some View {
-        Canvas { context, size in
+        Canvas(opaque: true, colorMode: .nonLinear, rendersAsynchronously: true) { context, size in
+            let bounds = CGRect(origin: .zero, size: size)
+            let boundsPath = Path(bounds)
+            context.fill(boundsPath, with: .color(ArcoNativeColors.surfaceStageBase))
             context.withCGContext { graphics in
-                let solid = NSColor(color).usingColorSpace(.deviceRGB)?.cgColor ?? NSColor.clear.cgColor
-                let transparent = solid.copy(alpha: 0) ?? NSColor.clear.cgColor
-                guard let gradient = CGGradient(
-                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                    colors: [solid, transparent] as CFArray,
-                    locations: [0, fadeLocation]
-                ) else { return }
-
-                graphics.saveGState()
-                graphics.translateBy(x: size.width * center.x, y: size.height * center.y)
-                graphics.scaleBy(
-                    x: max(1, size.width * radiusX),
-                    y: max(1, size.height * radiusY)
+                Self.drawMatrixWash(in: graphics, size: size)
+                Self.drawEllipticalWash(
+                    in: graphics,
+                    size: size,
+                    red: 242,
+                    green: 166,
+                    blue: 144,
+                    opacity: 0.20,
+                    center: CGPoint(x: 0.88, y: 0.94),
+                    radiusX: 0.62,
+                    radiusY: 0.56,
+                    fadeLocation: 0.74
                 )
-                graphics.drawRadialGradient(
-                    gradient,
-                    startCenter: .zero,
-                    startRadius: 0,
-                    endCenter: .zero,
-                    endRadius: 1,
-                    options: [.drawsAfterEndLocation]
+                Self.drawEllipticalWash(
+                    in: graphics,
+                    size: size,
+                    red: 187,
+                    green: 174,
+                    blue: 238,
+                    opacity: 0.18,
+                    center: CGPoint(x: 0.88, y: 0.12),
+                    radiusX: 0.58,
+                    radiusY: 0.52,
+                    fadeLocation: 0.76
                 )
-                graphics.restoreGState()
+                Self.drawEllipticalWash(
+                    in: graphics,
+                    size: size,
+                    red: 111,
+                    green: 201,
+                    blue: 236,
+                    opacity: 0.28,
+                    center: CGPoint(x: 0.14, y: 0.08),
+                    radiusX: 0.78,
+                    radiusY: 0.64,
+                    fadeLocation: 0.72
+                )
             }
+            context.fill(
+                boundsPath,
+                with: .tiledImage(
+                    Self.dotTile,
+                    origin: .zero,
+                    sourceRect: CGRect(x: 0, y: 0, width: 1, height: 1),
+                    scale: 1
+                )
+            )
         }
+        .allowsHitTesting(false)
+    }
+
+    private static func drawMatrixWash(in graphics: CGContext, size: CGSize) {
+        let colors = [
+            color(red: 100, green: 201, blue: 238, opacity: 0.24),
+            color(red: 137, green: 204, blue: 244, opacity: 0.14),
+            color(red: 177, green: 157, blue: 240, opacity: 0.14),
+            color(red: 249, green: 169, blue: 145, opacity: 0.20),
+        ]
+        guard let gradient = CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: colors as CFArray,
+            locations: [0, 0.34, 0.64, 1]
+        ) else { return }
+        let endpoints = ArcoStageGradientGeometry.cssEndpoints(
+            angleDegrees: matrixAngleDegrees,
+            size: size
+        )
+        graphics.drawLinearGradient(
+            gradient,
+            start: endpoints.start,
+            end: endpoints.end,
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        )
+    }
+
+    private static func drawEllipticalWash(
+        in graphics: CGContext,
+        size: CGSize,
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        opacity: CGFloat,
+        center: CGPoint,
+        radiusX: CGFloat,
+        radiusY: CGFloat,
+        fadeLocation: CGFloat
+    ) {
+        let solid = color(red: red, green: green, blue: blue, opacity: opacity)
+        let transparent = color(red: red, green: green, blue: blue, opacity: 0)
+        guard let gradient = CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [solid, transparent] as CFArray,
+            locations: [0, fadeLocation]
+        ) else { return }
+
+        graphics.saveGState()
+        graphics.translateBy(x: size.width * center.x, y: size.height * center.y)
+        graphics.scaleBy(
+            x: max(1, size.width * radiusX),
+            y: max(1, size.height * radiusY)
+        )
+        graphics.drawRadialGradient(
+            gradient,
+            startCenter: .zero,
+            startRadius: 0,
+            endCenter: .zero,
+            endRadius: 1,
+            options: [.drawsAfterEndLocation]
+        )
+        graphics.restoreGState()
+    }
+
+    private static func color(
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        opacity: CGFloat
+    ) -> CGColor {
+        CGColor(
+            red: red / 255,
+            green: green / 255,
+            blue: blue / 255,
+            alpha: opacity
+        )
     }
 }
 
@@ -731,22 +844,6 @@ private struct ArcoStageBorder: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .allowsHitTesting(false)
-    }
-}
-
-private struct ArcoStageDotGrid: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        var y = rect.minY + 4
-        while y <= rect.maxY {
-            var x = rect.minX + 4
-            while x <= rect.maxX {
-                path.addEllipse(in: CGRect(x: x - 1, y: y - 1, width: 2, height: 2))
-                x += 8
-            }
-            y += 8
-        }
-        return path
     }
 }
 

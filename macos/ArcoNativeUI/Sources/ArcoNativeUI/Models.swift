@@ -335,6 +335,18 @@ public struct MeetingDetail: Codable, Equatable, Sendable {
     }
 }
 
+public struct LiveMeetingPoll: Codable, Equatable, Sendable {
+    public var capture: CaptureState
+    public var revision: String?
+    public var meeting: MeetingDetail?
+
+    public init(capture: CaptureState, revision: String?, meeting: MeetingDetail?) {
+        self.capture = capture
+        self.revision = revision
+        self.meeting = meeting
+    }
+}
+
 public struct CaptureState: Codable, Equatable, Sendable {
     public var phase: CapturePhase
     public var activeMeetingId: String?

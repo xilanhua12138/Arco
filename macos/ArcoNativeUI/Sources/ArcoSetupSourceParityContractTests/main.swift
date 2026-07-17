@@ -247,6 +247,42 @@ private func testNotesTitleUsesHTMLMaxLengthSemantics() {
 }
 
 @MainActor
+private func testNotesCreateNewIsImmediateAndRequiresAMeeting() {
+    let sourceMeeting = meeting("meeting-for-note")
+    let model = NotesPageViewModel(
+        notes: [],
+        meetings: [sourceMeeting],
+        onQueryChange: { _ in },
+        onOpenMeeting: { _ in },
+        onSaveNote: { _ in nil },
+        onDeleteNote: { _ in false }
+    )
+
+    model.createNew()
+
+    expect(
+        model.visibleDraft,
+        NoteDraft.empty(meetingId: sourceMeeting.id),
+        "New note creates its empty draft synchronously and binds the first meeting"
+    )
+    expectTrue(!model.dirty, "Opening a fresh note does not mark untouched content dirty")
+
+    let modelWithoutMeetings = NotesPageViewModel(
+        notes: [],
+        meetings: [],
+        onQueryChange: { _ in },
+        onOpenMeeting: { _ in },
+        onSaveNote: { _ in nil },
+        onDeleteNote: { _ in false }
+    )
+
+    modelWithoutMeetings.createNew()
+
+    expect(modelWithoutMeetings.visibleDraft, nil, "New note is a no-op when no meeting can own it")
+    expectTrue(!modelWithoutMeetings.canCreateNote, "No-meeting state explicitly disables note creation")
+}
+
+@MainActor
 private func testNotesFormattingMatchesTextareaSelectionLogic() {
     let model = NotesPageViewModel(
         notes: [],
@@ -431,11 +467,39 @@ private func testSourceParityHooks() {
         "Notes receipt preserves the source document-kind label"
     )
     expectTrue(
-        notesView.contains("ArcoGlassSurface(cornerRadius: 8, tone: .neutral, interactive: true)")
+        notesView.contains("interactive: viewModel.canCreateNote")
             && notesView.contains("Button { viewModel.createNew() }")
             && notesView.contains(".frame(minHeight: 36)")
-            && notesView.contains(".disabled(!viewModel.canCreateNote)"),
+            && notesView.contains(".disabled(!viewModel.canCreateNote)")
+            && notesView.contains(".opacity(viewModel.canCreateNote ? 1 : 0.42)")
+            && notesView.contains(".allowsHitTesting(viewModel.canCreateNote)"),
         "Notes empty-state New note keeps the React action geometry and behavior on native regular glass"
+    )
+    let nativeToolbarActionCount = max(
+        0,
+        notesView.components(separatedBy: "ArcoNativeActionButton(").count - 1
+    )
+    expectTrue(
+        nativeToolbarActionCount >= 2
+            && !notesView.contains("private struct NotesGlassToolbarButton"),
+        "Notes list toggle and New note must reuse the shared fixed-hit-target native action instead of a private glass button"
+    )
+    let theme = source("ArcoNativeUI/Views/Theme.swift")
+    expectTrue(
+        theme.contains(
+            "Button(action: action, label: label)\n"
+                + "            .buttonStyle(.plain)\n"
+                + "            .frame(maxWidth: .infinity, maxHeight: .infinity)"
+        ),
+        "Shared native actions make the entire rendered glass control clickable instead of only the glyph"
+    )
+    expectTrue(
+        theme
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .components(separatedBy: ".frame(width:40,height:40).contentShape(Circle())")
+            .count - 1 >= 2,
+        "Toolbar action labels must own the full 40 by 40 circular hit shape so PlainButtonStyle cannot collapse clicks back to the opaque glyph"
     )
     expectTrue(notesView.contains("arcoLiquidGlass"), "Notes workspace uses native Liquid Glass")
 
@@ -487,6 +551,7 @@ private func testSourceParityHooks() {
 }
 
 testNotesTitleUsesHTMLMaxLengthSemantics()
+testNotesCreateNewIsImmediateAndRequiresAMeeting()
 testNotesFormattingMatchesTextareaSelectionLogic()
 testMeetingOutputDraftAndSaveSemantics()
 testResumedOnboardingPersistsDerivedProviderFallbacks()

@@ -1,0 +1,17 @@
+[package]
+name = "arco-audio-rt"
+version = "0.2.14"
+description = "Real-time-safe audio queue and sample-rate conversion for Arco recorder"
+authors = ["Arco contributors"]
+license = "MIT"
+repository = "https://github.com/xilanhua12138/Arco"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "arco_audio_rt"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+rtrb = "0.3.4"
+rubato = "0.16.2"

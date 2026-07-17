@@ -51,6 +51,12 @@ HELPERS="recorder arco-deepgram-transcriber arco-elevenlabs-transcriber arco-dou
 for helper in $HELPERS; do
   require_executable "$NATIVE/$helper"
 done
+if [ -e "$NATIVE/libarco_audio_rt.a" ] || [ -e "$NATIVE/arco_audio_rt.h" ]; then
+  fail "Recorder build inputs escaped into the application runtime payload"
+fi
+if find "$NATIVE" -maxdepth 1 -type f \( -name 'libarco_audio_rt*.dylib' -o -name 'libarco_audio_rt*.so' \) -print -quit | grep -q .; then
+  fail "The recorder audio runtime must be statically linked"
+fi
 
 case "$(file -b "$MAIN")" in
   *Mach-O*) ;;
@@ -86,6 +92,20 @@ done
 require_link "$NATIVE/recorder" 'ScreenCaptureKit.framework' "The recorder is missing ScreenCaptureKit"
 require_link "$NATIVE/recorder" 'AVFoundation.framework' "The recorder is missing AVFoundation"
 reject_links "$NATIVE/recorder" 'CoreML.framework' "The recorder must not load local models"
+reject_links "$NATIVE/recorder" 'libarco_audio_rt' "The recorder dynamically links its Rust audio runtime"
+if otool -l "$NATIVE/recorder" | grep -q 'LC_RPATH'; then
+  fail "The recorder must not depend on a runtime search path"
+fi
+RECORDER_SYMBOLS=$(nm -gU "$NATIVE/recorder" 2>/dev/null) || fail "Could not inspect the recorder symbol table"
+for symbol in \
+  _arco_audio_rt_source_create \
+  _arco_audio_rt_push_planar_f32 \
+  _arco_audio_rt_push_audio_buffer_list \
+  _arco_audio_rt_consumer_drain_i16 \
+  _arco_audio_rt_io_proc
+do
+  printf '%s\n' "$RECORDER_SYMBOLS" | grep -q " $symbol$" || fail "Recorder is missing statically linked Rust symbol $symbol"
+done
 require_link "$LOCAL_WORKER" 'CoreML.framework' "CoreML must remain in the local-transcriber worker"
 require_link "$LOCAL_WORKER" 'AVFAudio.framework' "The local-transcriber worker is missing its audio runtime"
 reject_links "$LOCAL_WORKER" 'WebKit|JavaScriptCore|ScreenCaptureKit' "The local worker links an unrelated UI or capture framework"

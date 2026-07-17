@@ -663,12 +663,19 @@ mod tests {
     fn detached_pipe_holder_cannot_block_a_completed_model_command() {
         let root = TempDir::new().unwrap();
         let detached_pid = root.path().join("detached.pid");
+        let detached_release = root.path().join("detached.release");
+        let detached_done = root.path().join("detached.done");
+        let top_level_done = root.path().join("top-level.done");
         let worker = root.path().join("local-model-worker");
         std::fs::write(
             &worker,
             format!(
-                "#!/bin/sh\n/usr/bin/perl -MPOSIX -e 'if (fork() == 0) {{ POSIX::setsid(); open(my $fh, \">\", \"{}\") or die; print $fh \"$$\"; close $fh; sleep 2; exit 0; }}'\nprintf '[]\\n'\n",
-                detached_pid.display()
+                "#!/bin/sh\n/usr/bin/perl -MPOSIX -e 'if (fork() == 0) {{ POSIX::setsid(); open(my $fh, \">\", \"{}\") or die; print $fh \"$$\"; close $fh; while (!-e \"{}\") {{ select(undef, undef, undef, 0.01); }} open(my $done, \">\", \"{}\") or die; close $done; exit 0; }} while (!-e \"{}\") {{ select(undef, undef, undef, 0.01); }}'\nprintf '[]\\n'\n: > \"{}\"\n",
+                detached_pid.display(),
+                detached_release.display(),
+                detached_done.display(),
+                detached_pid.display(),
+                top_level_done.display()
             ),
         )
         .unwrap();
@@ -680,14 +687,39 @@ mod tests {
             model_dir: root.path().join("models"),
         };
 
-        let started = Instant::now();
-        let statuses = runtime.statuses().unwrap();
-        let elapsed = started.elapsed();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let runner = std::thread::spawn(move || {
+            let _ = result_sender.send(runtime.statuses());
+        });
+
+        let marker_deadline = Instant::now() + Duration::from_secs(10);
+        while !top_level_done.is_file() && Instant::now() < marker_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            top_level_done.is_file() && detached_pid.is_file(),
+            "the test worker never reached its completed top-level state"
+        );
+
+        let statuses = match result_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = std::fs::write(&detached_release, b"release");
+                let _ = runner.join();
+                panic!(
+                    "a completed top-level command remained blocked by its detached output holder: {error}"
+                );
+            }
+        }
+        .unwrap();
         assert!(statuses.is_empty());
         assert!(
-            elapsed < Duration::from_millis(800),
-            "an inherited pipe blocked the completed command for {elapsed:?}"
+            !detached_done.is_file(),
+            "the runtime waited for the detached output holder instead of the completed command"
         );
+
+        let _ = runner.join();
+        let _ = std::fs::write(&detached_release, b"release");
 
         if let Ok(pid) = std::fs::read_to_string(detached_pid) {
             if let Ok(pid) = pid.trim().parse::<i32>() {

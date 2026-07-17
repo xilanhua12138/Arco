@@ -82,7 +82,7 @@ unregister_app "$APP"
 COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/recorder" \
-  app.arco.desktop
+  app.arco.desktop.recorder
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/arco-deepgram-transcriber" \
   app.arco.desktop.deepgram-transcriber
@@ -97,6 +97,8 @@ COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
   app.arco.desktop.local-transcriber
 "$ROOT/native/codesign-local.sh" "$STAGING/Arco.app" app.arco.desktop
 codesign --verify --deep --strict --verbose=2 "$STAGING/Arco.app"
+ARCO_BOUNDARY_SKIP_CODESIGN=0 \
+  "$ROOT/native/verify-native-boundaries.sh" "$STAGING/Arco.app"
 DESIGNATED_REQUIREMENT=$(codesign -d -r- "$STAGING/Arco.app" 2>&1)
 case "$DESIGNATED_REQUIREMENT" in
   *cdhash*)
@@ -152,6 +154,8 @@ fi
 hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$OUTPUT" >/dev/null
 MOUNTED=1
 codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Arco.app"
+ARCO_BOUNDARY_SKIP_CODESIGN=0 \
+  "$ROOT/native/verify-native-boundaries.sh" "$MOUNT_POINT/Arco.app"
 if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
   echo "DMG is missing the bundled ElevenLabs runtime" >&2
   exit 1

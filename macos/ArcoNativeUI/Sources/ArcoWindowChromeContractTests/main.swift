@@ -58,6 +58,13 @@ expectTrue(
     "AppKit window must keep the source overlay titlebar geometry"
 )
 expectTrue(
+    coordinatorSource.contains("created.isOpaque = true")
+        && coordinatorSource.contains("created.backgroundColor = NSColor(")
+        && coordinatorSource.contains("panel.isOpaque = false")
+        && coordinatorSource.contains("panel.backgroundColor = .clear"),
+    "The filled main window must stay opaque while only HUD and Agent panels use transparent compositing"
+)
+expectTrue(
     geometrySource.contains("sourceTrafficLightPosition = CGPoint(x: 27, y: 26)")
         && geometrySource.contains("frame.size.height = closeButtonFrame.height + sourceTrafficLightPosition.y")
         && geometrySource.contains("frame.origin.y = windowHeight - frame.height"),

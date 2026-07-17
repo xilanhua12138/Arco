@@ -1,6 +1,4 @@
 import ArcoNativeUI
-import Foundation
-import Observation
 import SwiftUI
 
 private enum HUDSourcePalette {
@@ -11,131 +9,36 @@ private enum HUDSourcePalette {
     )
 }
 
-@MainActor
-@Observable
-final class RecordingHUDModel {
-    private(set) var capture = CaptureState(
-        phase: .starting,
-        activeMeetingId: nil,
-        startedAt: nil,
-        message: nil,
-        mode: nil,
-        transcriptPath: nil,
-        error: nil,
-        transcription: nil
-    )
-    private(set) var now = Date()
-    private(set) var saving = false
-    private(set) var saved = false
-
-    private let readCapture: () async throws -> CaptureState
-    private let stopCapture: () async throws -> CaptureState
-    private let onStopped: @MainActor () -> Void
-
-    init(
-        readCapture: @escaping () async throws -> CaptureState,
-        stopCapture: @escaping () async throws -> CaptureState,
-        onStopped: @escaping @MainActor () -> Void
-    ) {
-        self.readCapture = readCapture
-        self.stopCapture = stopCapture
-        self.onStopped = onStopped
-    }
-
-    func pollCapture() async {
-        while !Task.isCancelled {
-            do {
-                let next = try await readCapture()
-                let reusedForNewRecording = saved && next.phase == .recording
-                if !saving && (!saved || reusedForNewRecording) {
-                    capture = next
-                    if reusedForNewRecording { saved = false }
-                }
-            } catch {
-                capture.phase = .error
-            }
-
-            do {
-                try await Task.sleep(for: .milliseconds(700))
-            } catch {
-                return
-            }
-        }
-    }
-
-    func runClock() async {
-        while !Task.isCancelled {
-            now = Date()
-            do {
-                try await Task.sleep(for: .seconds(1))
-            } catch {
-                return
-            }
-        }
-    }
-
-    func stop() async {
-        guard !saving, !saved else { return }
-        saving = true
-        capture.phase = .stopping
-        defer {
-            saving = false
-            // The old stop_capture command hid both owned windows whether the
-            // capture stop succeeded or failed.
-            onStopped()
-        }
-        do {
-            capture = try await stopCapture()
-            saved = true
-        } catch {
-            capture.phase = .error
-        }
-    }
-
-    var elapsed: String {
-        guard let raw = capture.startedAt,
-              let started = Self.parseDate(raw) else { return "00:00" }
-        let total = max(0, Int(now.timeIntervalSince(started)))
-        let hours = total / 3_600
-        let minutes = total % 3_600 / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    var controlsLocked: Bool {
-        saving || saved || capture.phase == .starting || capture.phase == .stopping
-    }
-
-    private static func parseDate(_ raw: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let value = formatter.date(from: raw) { return value }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: raw)
-    }
-}
-
 struct RecordingHUDView: View {
     @Bindable var model: RecordingHUDModel
     let translate: ArcoTranslate
     let onToggleAgent: @MainActor () throws -> Bool
+    let onError: @MainActor (Error) -> Void
 
     init(
         model: RecordingHUDModel,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        onToggleAgent: @escaping @MainActor () throws -> Bool
+        onToggleAgent: @escaping @MainActor () throws -> Bool,
+        onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
         self.translate = translate
         self.onToggleAgent = onToggleAgent
+        self.onError = onError
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            status
+            RecordingHUDStatusView(
+                model: RecordingHUDStatusState(
+                    phase: model.capture.phase,
+                    startedAt: model.capture.startedAt,
+                    saving: model.saving,
+                    saved: model.saved
+                ),
+                elapsedClock: model.elapsedClock,
+                translate: translate
+            )
             Spacer(minLength: 0)
             Rectangle()
                 .fill(HUDSourcePalette.ink.opacity(0.09))
@@ -155,7 +58,9 @@ struct RecordingHUDView: View {
             Button {
                 do {
                     _ = try onToggleAgent()
-                } catch {}
+                } catch {
+                    onError(error)
+                }
             } label: {
                 Label(translate("hud.askArco", [:]), systemImage: "sparkles")
                     .labelStyle(HUDLabelStyle(iconSize: 14))
@@ -169,11 +74,22 @@ struct RecordingHUDView: View {
         .background(ArcoWindowDragRegion())
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
-        .task { await model.pollCapture() }
-        .task { await model.runClock() }
     }
+}
 
-    private var status: some View {
+private struct RecordingHUDStatusState {
+    let phase: CapturePhase
+    let startedAt: String?
+    let saving: Bool
+    let saved: Bool
+}
+
+private struct RecordingHUDStatusView: View {
+    let model: RecordingHUDStatusState
+    let elapsedClock: RecordingHUDElapsedClock
+    let translate: ArcoTranslate
+
+    var body: some View {
         HStack(spacing: 7) {
             Circle()
                 .fill(ArcoNativeColors.record)
@@ -193,13 +109,14 @@ struct RecordingHUDView: View {
 
             if !model.saved,
                !model.saving,
-               model.capture.phase == .recording {
-                Text(model.elapsed)
+               model.phase == .recording {
+                let elapsed = elapsedClock.elapsed(startedAt: model.startedAt)
+                Text(elapsed)
                     .font(ArcoTypography.mono(11, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(HUDSourcePalette.ink.opacity(0.5))
                     .lineLimit(1)
-                    .accessibilityLabel(model.elapsed)
+                    .accessibilityLabel(elapsed)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -211,21 +128,21 @@ struct RecordingHUDView: View {
     private var statusAccessibilityLabel: String {
         guard !model.saved,
               !model.saving,
-              model.capture.phase == .recording else {
+              model.phase == .recording else {
             return statusText
         }
-        return "\(statusText), \(model.elapsed)"
+        return "\(statusText), \(elapsedClock.elapsed(startedAt: model.startedAt))"
     }
 
     private var statusText: String {
         if model.saved { return translate("hud.saved", [:]) }
-        if model.saving || model.capture.phase == .stopping {
+        if model.saving || model.phase == .stopping {
             return translate("common.saving", [:])
         }
-        if model.capture.phase == .starting {
+        if model.phase == .starting {
             return translate("common.starting", [:])
         }
-        if model.capture.phase == .error {
+        if model.phase == .error {
             return translate("hud.recordingStopped", [:])
         }
         return translate("common.recording", [:])
@@ -267,36 +184,14 @@ private struct HUDButtonStyleBody: View {
     let enabled: Bool
     @State private var hovering = false
 
-    @ViewBuilder
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-        if #available(macOS 26.0, *) {
-            configuration.label
-                .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
-                .contentShape(shape)
-                .glassEffect(
-                    .regular.tint(glassTint).interactive(),
-                    in: shape
-                )
-                .opacity(enabled ? 1 : 0.42)
-                .onHover { hovering = $0 }
-        } else {
-            configuration.label
-                .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
-                .background(background)
-                .clipShape(shape)
-                .opacity(enabled ? 1 : 0.42)
-                .onHover { hovering = $0 }
-        }
-    }
-
-    private var glassTint: Color {
-        switch kind {
-        case .stop:
-            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 1 : 0.92)
-        case .agent:
-            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.11 : 0.07)
-        }
+        configuration.label
+            .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
+            .contentShape(shape)
+            .background(background, in: shape)
+            .opacity(enabled ? 1 : 0.42)
+            .onHover { hovering = $0 }
     }
 
     private var background: Color {
