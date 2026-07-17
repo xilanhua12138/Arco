@@ -11,7 +11,7 @@ use crate::deepgram_credentials;
 use crate::doubao_credentials;
 use crate::elevenlabs_credentials;
 use crate::meeting_output::{
-    generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
+    generate_meeting_output, list_meetings_with_artifacts, read_meeting_with_artifacts,
 };
 use crate::meeting_state::MeetingStateStore;
 use crate::meetings::MeetingStore;
@@ -210,6 +210,7 @@ impl Controller {
                 required(&params, "meetingId")?,
                 required(&params, "kind")?,
                 required(&params, "prompt")?,
+                optional::<bool>(&params, "regenerate")?.unwrap_or(false),
             )?),
             other => Err(format!("unknown backend command: {other}")),
         }
@@ -682,9 +683,10 @@ impl Controller {
         meeting_id: String,
         kind: String,
         prompt: String,
+        regenerate: bool,
     ) -> Result<crate::models::GeneratedMeetingArtifact, String> {
         let active = self.capture.active_transcript_path();
-        let artifact = generate_meeting_output_once(
+        let artifact = generate_meeting_output(
             &self.output_run_lock,
             &self.agent,
             &self.meetings,
@@ -694,6 +696,7 @@ impl Controller {
             &kind,
             &prompt,
             active.as_deref(),
+            regenerate,
         )?;
         self.emit("arco:meeting-output-changed", &meeting_id);
         Ok(artifact)

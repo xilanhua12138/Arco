@@ -4,7 +4,8 @@ use arco_core::capture::{
     TranscriberCatalog, TranscriberDefinition,
 };
 use arco_core::meeting_output::{
-    generate_meeting_output_once, list_meetings_with_artifacts, read_meeting_with_artifacts,
+    generate_meeting_output, generate_meeting_output_once, list_meetings_with_artifacts,
+    read_meeting_with_artifacts,
 };
 use arco_core::meeting_state::MeetingStateStore;
 use arco_core::meetings::{parse_meeting, MeetingStore};
@@ -1066,6 +1067,128 @@ esac
             .unwrap();
     assert_eq!(by_generated_summary.len(), 1);
     assert_eq!(by_generated_summary[0].id, meeting_id);
+}
+
+#[cfg(unix)]
+#[test]
+fn regenerated_title_uses_latest_transcript_and_never_overwrites_manual_title() {
+    let root = TempDir::new().unwrap();
+    let local = root.path().join("transcripts");
+    let legacy = root.path().join("legacy");
+    fs::create_dir_all(&local).unwrap();
+    let transcript = local.join("meeting-20260710-111500.md");
+    fs::write(
+        &transcript,
+        "# Meeting Transcript\n\n**[11:15:02] Remote 1:** We started with launch timing.\n",
+    )
+    .unwrap();
+    let meeting_id = "local:meeting-20260710-111500.md";
+    let native_session = "019f4b00-9999-7000-8000-000000000009";
+    let count_path = root.path().join("title-refresh-count.txt");
+    let prompts_path = root.path().join("title-refresh-prompts.txt");
+    let fake = executable_script(
+        root.path(),
+        "title-refresh-claude",
+        &format!(
+            r####"#!/bin/sh
+count=0
+if [ -f '{count}' ]; then count=$(cat '{count}'); fi
+count=$((count + 1))
+printf '%s' "$count" > '{count}'
+printf '%s\n' '--- prompt ---' >> '{prompts}'
+cat >> '{prompts}'
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' '{{"session_id":"{session}","uuid":"early-title-turn","result":"Launch timing"}}'
+else
+  printf '%s\n' '{{"session_id":"{session}","uuid":"latest-title-turn","result":"Release quality gate"}}'
+fi
+"####,
+            count = count_path.display(),
+            prompts = prompts_path.display(),
+            session = native_session,
+        ),
+    );
+    let runner = AgentRunner::with_binary("claude", fake, Duration::from_secs(5));
+    let meetings = MeetingStore::new(local, legacy);
+    let state_store = MeetingStateStore::new(root.path().join("meeting-state"));
+    let output_lock = Mutex::new(());
+
+    let initial = generate_meeting_output_once(
+        &output_lock,
+        &runner,
+        &meetings,
+        &state_store,
+        "claude",
+        meeting_id,
+        "title",
+        "Name this meeting from the complete transcript.",
+        None,
+    )
+    .unwrap();
+    assert_eq!(initial.value.as_deref(), Some("Launch timing"));
+
+    let long_middle = "context ".repeat(25_000);
+    fs::write(
+        &transcript,
+        format!(
+            "# Meeting Transcript\n\n\
+             **[11:15:02] Remote 1:** We started with launch timing.\n\n\
+             {long_middle}\n\n\
+             **[11:20:03] In room 1:** The real outcome is a release quality gate.\n"
+        ),
+    )
+    .unwrap();
+    let refreshed = generate_meeting_output(
+        &output_lock,
+        &runner,
+        &meetings,
+        &state_store,
+        "claude",
+        meeting_id,
+        "title",
+        "Re-evaluate the title solely from the complete transcript.",
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(refreshed.value.as_deref(), Some("Release quality gate"));
+    assert_eq!(fs::read_to_string(&count_path).unwrap(), "2");
+    let prompts = fs::read_to_string(&prompts_path).unwrap();
+    assert_eq!(prompts.matches("--- prompt ---").count(), 2);
+    let refreshed_prompt = prompts.split("--- prompt ---").nth(2).unwrap();
+    assert!(refreshed_prompt.contains("We started with launch timing."));
+    assert!(refreshed_prompt.contains("The real outcome is a release quality gate."));
+    assert!(
+        refreshed_prompt.contains("derive the answer afresh from the complete current transcript")
+    );
+
+    state_store
+        .set_manual_title(meeting_id, Some("Manual product title"))
+        .unwrap();
+    let rejected = generate_meeting_output(
+        &output_lock,
+        &runner,
+        &meetings,
+        &state_store,
+        "claude",
+        meeting_id,
+        "title",
+        "This must not run after a manual rename.",
+        None,
+        true,
+    )
+    .unwrap_err();
+    assert!(rejected.contains("manual"));
+    assert_eq!(fs::read_to_string(&count_path).unwrap(), "2");
+
+    let mut detail = meetings.read(meeting_id, None).unwrap();
+    state_store
+        .hydrate_meeting_summary(&mut detail.summary)
+        .unwrap();
+    assert_eq!(
+        detail.summary.title.as_deref(),
+        Some("Manual product title")
+    );
 }
 
 #[cfg(unix)]
