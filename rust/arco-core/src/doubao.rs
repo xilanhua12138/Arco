@@ -31,6 +31,10 @@ const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
 const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
 const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
+const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+const SPEECH_RMS_THRESHOLD: f64 = 0.01;
 const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
@@ -53,6 +57,17 @@ impl AudioChunk {
 
     fn is_digital_silence(&self) -> bool {
         !self.data.is_empty() && self.data.iter().all(|byte| *byte == 0)
+    }
+
+    fn has_speech_energy(&self) -> bool {
+        let mut sample_count = 0usize;
+        let mut squared_sum = 0.0f64;
+        for bytes in self.data.chunks_exact(MONO_FRAME_BYTES) {
+            let sample = i16::from_le_bytes([bytes[0], bytes[1]]) as f64 / i16::MAX as f64;
+            squared_sum += sample * sample;
+            sample_count += 1;
+        }
+        sample_count > 0 && (squared_sum / sample_count as f64).sqrt() >= SPEECH_RMS_THRESHOLD
     }
 }
 
@@ -666,12 +681,18 @@ fn segments_from_payload(payload: &Value, channel: usize, include_tentative: boo
             .unwrap_or(start_ms);
             let start = start_ms / 1_000.0;
             let end = end_ms / 1_000.0;
-            let provider_speaker = utterance
-                .get("additions")
-                .and_then(|value| value.get("speaker"))
-                .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
-                .unwrap_or(1);
-            let speaker = provider_speaker.saturating_sub(1).max(0);
+            let additions = utterance.get("additions");
+            let speaker = additions
+                .and_then(|value| value.get("speaker_id"))
+                .and_then(provider_integer)
+                .map(|speaker| speaker.max(0))
+                .or_else(|| {
+                    additions
+                        .and_then(|value| value.get("speaker"))
+                        .and_then(provider_integer)
+                        .map(|speaker| speaker.saturating_sub(1).max(0))
+                })
+                .unwrap_or(0);
             Some(Segment {
                 channel,
                 speaker,
@@ -686,6 +707,12 @@ fn segments_from_payload(payload: &Value, channel: usize, include_tentative: boo
             })
         })
         .collect()
+}
+
+fn provider_integer(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
 }
 
 fn segments_from_connection_payload(
@@ -945,7 +972,19 @@ async fn stream_connected_channel(
     let dormant_deadline = Duration::from_secs(365 * 24 * 60 * 60);
     let final_response_deadline = tokio::time::sleep(dormant_deadline);
     let eof_deadline = tokio::time::sleep(dormant_deadline);
-    tokio::pin!(final_response_deadline, eof_deadline);
+    let live_response_deadline = tokio::time::sleep(dormant_deadline);
+    let heartbeat_deadline = tokio::time::sleep(dormant_deadline);
+    let first_heartbeat = tokio::time::Instant::now() + state.heartbeat_interval;
+    let mut heartbeat = tokio::time::interval_at(first_heartbeat, state.heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut live_response_pending = false;
+    let mut heartbeat_pending = false;
+    tokio::pin!(
+        final_response_deadline,
+        eof_deadline,
+        live_response_deadline,
+        heartbeat_deadline
+    );
 
     loop {
         state.observe_eof(receiver);
@@ -961,6 +1000,12 @@ async fn stream_connected_channel(
             chunk = next_channel_audio(&mut state.pending, receiver), if !closing => {
                 match chunk {
                     Some(chunk) => {
+                        if chunk.has_speech_energy() && !live_response_pending {
+                            live_response_pending = true;
+                            live_response_deadline
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + state.live_response_timeout);
+                        }
                         if !stream_started && chunk.is_digital_silence() {
                             writer
                                 .lock()
@@ -1044,6 +1089,9 @@ async fn stream_connected_channel(
                 }
             }
             message = stream.next() => {
+                if matches!(&message, Some(Ok(_))) {
+                    heartbeat_pending = false;
+                }
                 let message = match receive_protocol_message(message).await {
                     Ok(message) => message,
                     Err(error) => {
@@ -1060,6 +1108,7 @@ async fn stream_connected_channel(
                     }
                 };
                 let Some(message) = message else { continue; };
+                live_response_pending = false;
                 if trace_protocol {
                     match &message {
                         ServerMessage::Result {
@@ -1222,6 +1271,32 @@ async fn stream_connected_channel(
                     }
                 }
             }
+            _ = heartbeat.tick(), if !closing && !heartbeat_pending => {
+                if let Err(error) = await_audio_send(
+                    sink.send(Message::Ping(Vec::new().into())),
+                    state.eof_deadline,
+                    LIVE_AUDIO_SEND_TIMEOUT,
+                ).await {
+                    restore_connection_audio(
+                        &mut state.pending,
+                        &mut lookahead,
+                        &mut in_flight,
+                    );
+                    return Err(format!("Doubao heartbeat send failed: {error}"));
+                }
+                heartbeat_pending = true;
+                heartbeat_deadline
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + state.heartbeat_timeout);
+            }
+            _ = &mut heartbeat_deadline, if heartbeat_pending && !closing => {
+                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                return Err("Doubao heartbeat timed out; reconnecting with unconfirmed audio.".into());
+            }
+            _ = &mut live_response_deadline, if live_response_pending && !closing => {
+                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                return Err("Doubao provider response timed out after incoming speech; reconnecting with unconfirmed audio.".into());
+            }
             _ = &mut final_response_deadline, if closing && !in_flight.is_empty() => {
                 restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
                 return Err(if state.finalization_expired() {
@@ -1246,6 +1321,9 @@ struct ChannelState {
     channel: usize,
     connection_id: u64,
     eof_deadline: Option<tokio::time::Instant>,
+    live_response_timeout: Duration,
+    heartbeat_interval: Duration,
+    heartbeat_timeout: Duration,
 }
 
 impl ChannelState {
@@ -1258,6 +1336,9 @@ impl ChannelState {
             channel,
             connection_id: 0,
             eof_deadline: None,
+            live_response_timeout: LIVE_RESPONSE_TIMEOUT,
+            heartbeat_interval: HEARTBEAT_INTERVAL,
+            heartbeat_timeout: HEARTBEAT_TIMEOUT,
         }
     }
 
@@ -2048,6 +2129,23 @@ mod tests {
     }
 
     #[test]
+    fn speech_watchdog_ignores_room_noise_but_arms_for_voice_energy() {
+        let pcm = |sample: i16| AudioChunk {
+            data: sample
+                .to_le_bytes()
+                .into_iter()
+                .cycle()
+                .take(SAMPLE_RATE * MONO_FRAME_BYTES / 10)
+                .collect(),
+            start_frame: 0,
+        };
+
+        assert!(!pcm(0).has_speech_energy());
+        assert!(!pcm(200).has_speech_energy());
+        assert!(pcm(800).has_speech_energy());
+    }
+
+    #[test]
     fn server_error_packet_surfaces_code_and_message() {
         let message = b"invalid access token";
         let mut packet = vec![0x11, 0xf0, 0x00, 0x00];
@@ -2113,6 +2211,24 @@ mod tests {
         assert_eq!(segments[0].label, "Remote 1");
         assert_eq!(segments[1].label, "Remote 2");
         assert_eq!((segments[0].speaker, segments[1].speaker), (0, 1));
+    }
+
+    #[test]
+    fn optimized_endpoint_zero_based_speaker_ids_are_preserved() {
+        // Captured from the real bigmodel_async response with SSD 200 enabled.
+        let payload = json!({ "result": { "utterances": [
+            { "text": "first", "start_time": 0, "end_time": 500, "definite": true, "additions": { "speaker_id": "0" } },
+            { "text": "second", "start_time": 500, "end_time": 1000, "definite": true, "additions": { "speaker_id": "1" } }
+        ]}});
+
+        let segments = segments_from_payload(&payload, 1, false);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!((segments[0].speaker, segments[1].speaker), (0, 1));
+        assert_eq!(
+            (segments[0].label.as_str(), segments[1].label.as_str()),
+            ("In room 1", "In room 2")
+        );
     }
 
     #[test]
@@ -2942,6 +3058,107 @@ mod tests {
 
         assert!(error.contains("timed out"));
         assert!(error.contains("reconnecting"));
+    }
+
+    #[tokio::test]
+    async fn speech_without_any_provider_progress_reconnects_and_preserves_audio() {
+        let (socket, mut server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(16);
+        for index in 0..10 {
+            sender
+                .send(tenth_second_chunk(index * SAMPLE_RATE / 10, 3))
+                .await
+                .unwrap();
+        }
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 1;
+        state.live_response_timeout = Duration::from_millis(150);
+        let server_task =
+            tokio::spawn(async move { while matches!(server.next().await, Some(Ok(_))) {} });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            stream_connected_channel(
+                socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            ),
+        )
+        .await
+        .expect("speech on a silent half-open provider must trigger the reconnect watchdog")
+        .expect_err("a provider that stops making progress must be reconnected");
+
+        assert!(result.contains("provider response"));
+        assert!(result.contains("reconnecting"));
+        assert!(
+            state.pending.bytes() >= SAMPLE_RATE * MONO_FRAME_BYTES / 10,
+            "unconfirmed speech must remain buffered for replay after reconnect"
+        );
+        assert!(
+            !sender.is_closed(),
+            "the live audio producer must remain attached"
+        );
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_websocket_heartbeat_reconnects_and_preserves_audio() {
+        let (socket, _server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(4);
+        sender.send(tenth_second_chunk(0, 3)).await.unwrap();
+        sender
+            .send(tenth_second_chunk(SAMPLE_RATE / 10, 3))
+            .await
+            .unwrap();
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 1;
+        state.live_response_timeout = Duration::from_secs(60);
+        state.heartbeat_interval = Duration::from_millis(50);
+        state.heartbeat_timeout = Duration::from_millis(100);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            stream_connected_channel(
+                socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            ),
+        )
+        .await
+        .expect("a peer that never answers WebSocket heartbeats must be detected")
+        .expect_err("a half-open WebSocket must be reconnected");
+
+        assert!(result.contains("heartbeat"));
+        assert!(result.contains("reconnecting"));
+        assert!(
+            state.pending.bytes() >= SAMPLE_RATE * MONO_FRAME_BYTES / 10,
+            "heartbeat recovery must replay all unconfirmed audio"
+        );
+        assert!(!sender.is_closed(), "the recorder must remain attached");
     }
 
     #[tokio::test]
