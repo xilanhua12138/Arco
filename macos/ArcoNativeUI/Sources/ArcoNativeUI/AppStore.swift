@@ -321,33 +321,20 @@ public final class ArcoStore {
                 defer { captureSurfaces.releaseCaptureSurfaces() }
                 next = try await backend.call("stop_capture")
             } else {
+                do {
+                    // Present the owned HUD in the initiating click turn. Cloud
+                    // provider setup can take long enough that waiting for the
+                    // backend response makes the first click look lost.
+                    try captureSurfaces.showCaptureHUD()
+                } catch let windowError {
+                    throw BackendTransportError.backend(
+                        "recording HUD could not open; capture was not started: \(windowError.localizedDescription)"
+                    )
+                }
                 var arguments: [String: AnySendable] = ["mode": .string(mode.rawValue)]
                 arguments["transcription"] = try transcription.map(AnySendable.encodable) ?? .null
                 arguments["meetingId"] = resumeMeetingId.map(AnySendable.string) ?? .null
                 next = try await backend.call("start_capture", arguments: arguments)
-                do {
-                    try captureSurfaces.showCaptureHUD()
-                } catch let windowError {
-                    captureSurfaces.releaseCaptureSurfaces()
-                    do {
-                        _ = try await backend.request("stop_capture", arguments: [:])
-                        throw BackendTransportError.backend(
-                            "recording HUD could not open; capture was stopped: \(windowError.localizedDescription)"
-                        )
-                    } catch let rollbackError as BackendTransportError {
-                        if case let .backend(message) = rollbackError,
-                           message.hasPrefix("recording HUD could not open;") {
-                            throw rollbackError
-                        }
-                        throw BackendTransportError.backend(
-                            "recording HUD could not open (\(windowError.localizedDescription)) and capture rollback failed (\(rollbackError.localizedDescription))"
-                        )
-                    } catch let rollbackError {
-                        throw BackendTransportError.backend(
-                            "recording HUD could not open (\(windowError.localizedDescription)) and capture rollback failed (\(rollbackError.localizedDescription))"
-                        )
-                    }
-                }
             }
             applyCapture(next)
             await refreshMeetings(
@@ -366,6 +353,9 @@ public final class ArcoStore {
             }
             return next
         } catch {
+            if !stopping {
+                captureSurfaces.releaseCaptureSurfaces()
+            }
             let message = errorMessage(error, fallbackKey: "error.captureFailed")
             var failed = capture
             failed.phase = .error

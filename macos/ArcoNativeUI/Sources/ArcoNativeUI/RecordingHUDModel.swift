@@ -82,6 +82,21 @@ public final class RecordingHUDModel {
         capturePollTask != nil && clockTask != nil
     }
 
+    public func prepareForCaptureStart() {
+        saving = false
+        saved = false
+        capture = CaptureState(
+            phase: .starting,
+            activeMeetingId: nil,
+            startedAt: nil,
+            message: nil,
+            mode: nil,
+            transcriptPath: nil,
+            error: nil,
+            transcription: nil
+        )
+    }
+
     public func startMonitoring() {
         guard capturePollTask == nil, clockTask == nil else { return }
 

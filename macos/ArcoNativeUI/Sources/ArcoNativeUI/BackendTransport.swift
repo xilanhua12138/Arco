@@ -144,6 +144,9 @@ private let arcoEventFunction: ArcoEventFunction = { name, payload, context in
 
 public final class RustBackendTransport: BackendDispatching, @unchecked Sendable {
     private var runtime: ArcoRuntimePointer?
+    private let runtimeCondition = NSCondition()
+    private var activeRequests = 0
+    private var shuttingDown = false
     private let handlerLock = NSLock()
     private var eventHandler: (@Sendable (BackendEvent) -> Void)?
 
@@ -170,8 +173,25 @@ public final class RustBackendTransport: BackendDispatching, @unchecked Sendable
         return transport
     }
 
-    deinit {
-        if let runtime { arcoRuntimeDestroy(runtime) }
+    deinit { shutdown() }
+
+    /// Synchronously closes the embedded Rust runtime after every in-flight
+    /// dispatch has returned. AppKit does not guarantee enough teardown time
+    /// after `applicationWillTerminate` for relying on property destruction
+    /// alone, and the Rust capture owner must finalize an active transcript.
+    public func shutdown() {
+        setEventHandler(nil)
+        runtimeCondition.lock()
+        shuttingDown = true
+        while activeRequests > 0 {
+            runtimeCondition.wait()
+        }
+        let runtimeToDestroy = runtime
+        runtime = nil
+        runtimeCondition.unlock()
+        if let runtimeToDestroy {
+            arcoRuntimeDestroy(runtimeToDestroy)
+        }
     }
 
     public func setEventHandler(_ handler: (@Sendable (BackendEvent) -> Void)?) {
@@ -191,9 +211,6 @@ public final class RustBackendTransport: BackendDispatching, @unchecked Sendable
         _ command: String,
         arguments: [String: AnySendable] = [:]
     ) async throws -> Data {
-        guard let runtime else {
-            throw BackendTransportError.backend("Arco backend runtime is not available")
-        }
         let object = arguments.mapValues(\.foundationValue)
         guard JSONSerialization.isValidJSONObject(object) else {
             throw BackendTransportError.invalidArguments("backend arguments are not valid JSON")
@@ -203,6 +220,8 @@ public final class RustBackendTransport: BackendDispatching, @unchecked Sendable
             throw BackendTransportError.invalidArguments("backend arguments are not UTF-8")
         }
 
+        let runtime = try beginRequest()
+        defer { finishRequest() }
         return try await Task.detached(priority: .userInitiated) {
             let raw = command.withCString { commandPointer in
                 argumentsJSON.withCString { argumentsPointer in
@@ -228,6 +247,25 @@ public final class RustBackendTransport: BackendDispatching, @unchecked Sendable
             let result = envelope["result"] ?? NSNull()
             return try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
         }.value
+    }
+
+    private func beginRequest() throws -> ArcoRuntimePointer {
+        runtimeCondition.lock()
+        defer { runtimeCondition.unlock() }
+        guard !shuttingDown, let runtime else {
+            throw BackendTransportError.backend("Arco backend runtime is not available")
+        }
+        activeRequests += 1
+        return runtime
+    }
+
+    private func finishRequest() {
+        runtimeCondition.lock()
+        activeRequests -= 1
+        if activeRequests == 0 {
+            runtimeCondition.broadcast()
+        }
+        runtimeCondition.unlock()
     }
 }
 
