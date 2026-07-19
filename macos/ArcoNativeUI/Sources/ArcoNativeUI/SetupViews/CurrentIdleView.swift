@@ -37,6 +37,7 @@ public struct CurrentIdleView: View {
     public var meetings: [MeetingSummary]
     public var audioMode: AudioMode
     public var shortcut: ListeningShortcut?
+    public var initializing: Bool
     public var viewportWidth: CGFloat
     public var translate: ArcoTranslate
     public var onStart: () -> Void
@@ -50,6 +51,7 @@ public struct CurrentIdleView: View {
         meetings: [MeetingSummary],
         audioMode: AudioMode,
         shortcut: ListeningShortcut?,
+        initializing: Bool = false,
         viewportWidth: CGFloat,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onStart: @escaping () -> Void,
@@ -59,6 +61,7 @@ public struct CurrentIdleView: View {
         self.meetings = meetings
         self.audioMode = audioMode
         self.shortcut = shortcut
+        self.initializing = initializing
         self.viewportWidth = viewportWidth
         self.translate = translate
         self.onStart = onStart
@@ -135,7 +138,7 @@ public struct CurrentIdleView: View {
                     title: startLabel,
                     symbol: "waveform",
                     variant: .prominent,
-                    enabled: !busy,
+                    enabled: !initializing && !busy,
                     action: onStart
                 )
                 .frame(minWidth: 142, minHeight: 44, maxHeight: 44)
@@ -267,6 +270,7 @@ public struct CurrentIdleView: View {
     private var busy: Bool { capture.phase == .starting || capture.phase == .stopping }
 
     private var startLabel: String {
+        if initializing { return translate("common.loading", [:]) }
         if capture.phase == .stopping { return translate("common.stopping", [:]) }
         if capture.phase == .starting { return translate("common.starting", [:]) }
         return translate("capture.start", [:])

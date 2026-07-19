@@ -167,6 +167,30 @@ private actor SuspendedBackendRequest {
     }
 }
 
+private actor FirstInitializationRequestGate {
+    private var firstRequestClaimed = false
+    private var firstRequestStarted = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func suspendFirstRequestUntilReleased() async {
+        guard !firstRequestClaimed else { return }
+        firstRequestClaimed = true
+        firstRequestStarted = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !firstRequestStarted { await Task.yield() }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 @MainActor
 private final class TestCaptureSurfaces: CaptureSurfaceCoordinating {
     var failToShow = false
@@ -533,6 +557,16 @@ private func testCurrentCaptureControlSourceParity() {
     expectTrue(
         mainShellSource.contains("button.glassEffect(.regular.tint(tint).interactive(), in: Capsule())"),
         "Sidebar capture action must use the SwiftUI Liquid Glass surface directly, without an opaque prefill"
+    )
+    expectTrue(
+        currentIdleSource.contains("public var initializing: Bool")
+            && currentIdleSource.contains("enabled: !initializing && !busy"),
+        "Current Idle must not expose an actionable Start button while the initial capture snapshot is loading"
+    )
+    expectTrue(
+        mainShellSource.contains("initializing: controller.store.loading")
+            && mainShellSource.contains("let busy = controller.store.loading"),
+        "Current and Sidebar capture controls must share the same initialization gate"
     )
 }
 
@@ -1052,6 +1086,58 @@ private func testProviderStartFailureReleasesOptimisticHUD() async {
     expect(store.capture.phase, .error, "Provider startup failure is visible in capture state")
     expect(store.error, "provider handshake failed", "Provider startup failure preserves its actionable error")
     expect(backend.callNames(), ["start_capture"], "Provider failure does not dispatch a redundant stop")
+    store.dispose()
+}
+
+@MainActor
+private func testCaptureStartCannotRaceInitialSnapshot() async {
+    let backend = ScriptedBackend()
+    let gate = FirstInitializationRequestGate()
+    let surfaces = TestCaptureSurfaces()
+    backend.on("list_meetings") { _ in
+        await gate.suspendFirstRequestUntilReleased()
+        return try JSONEncoder().encode([MeetingSummary]())
+    }
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: capture(phase: .idle))
+    backend.respond(
+        "start_capture",
+        with: capture(phase: .recording, meetingId: "live", mode: .both)
+    )
+    installStorageHandlers(on: backend)
+    installSetupSuccessHandlers(on: backend)
+
+    let store = ArcoStore(backend: backend, captureSurfaces: surfaces)
+    let controller = ArcoAppShellController(
+        store: store,
+        preferences: ArcoPreferences(store: MemoryKeyValueStore()),
+        translate: { key, _ in key }
+    )
+
+    let initialization = Task { @MainActor in await controller.initialize() }
+    await gate.waitUntilStarted()
+
+    await controller.toggleCapture()
+    expect(
+        backend.callCount("start_capture"),
+        0,
+        "A Start click during initialization must not race the pending capture snapshot"
+    )
+    expect(
+        surfaces.showCount,
+        0,
+        "A gated initialization click must not flash a HUD that the stale idle snapshot can remove"
+    )
+
+    await gate.release()
+    await initialization.value
+    await controller.toggleCapture()
+    expect(
+        backend.callCount("start_capture"),
+        1,
+        "The first Start click after initialization dispatches exactly once"
+    )
+    expect(surfaces.showCount, 1, "The first ready Start click presents exactly one HUD")
     store.dispose()
 }
 
@@ -1839,6 +1925,7 @@ await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
 await testHUDFailurePreventsCaptureStart()
 await testProviderStartFailureReleasesOptimisticHUD()
+await testCaptureStartCannotRaceInitialSnapshot()
 await testReusedHUDResetsSavedStateForFirstClickFeedback()
 await testHUDMonitoringLifecycleIsExplicitAndRestartable()
 await testHUDMonitoringRejectsLatePreviousGeneration()

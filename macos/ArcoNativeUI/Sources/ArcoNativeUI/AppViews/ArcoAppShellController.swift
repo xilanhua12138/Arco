@@ -254,6 +254,7 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func toggleCapture(resumeMeetingID: String? = nil) async {
+        guard !store.loading else { return }
         guard store.capture.phase != .starting, store.capture.phase != .stopping else { return }
         if store.capture.phase == .recording, page == .current {
             topBarViewModelStorage = nil

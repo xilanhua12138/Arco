@@ -221,7 +221,9 @@ public struct ArcoMainShellView: View {
     private var captureCard: some View {
         let capture = controller.store.capture
         let recording = capture.phase == .recording
-        let busy = capture.phase == .starting || capture.phase == .stopping
+        let busy = controller.store.loading
+            || capture.phase == .starting
+            || capture.phase == .stopping
         let showAction = controller.page != .current || recording
         let mode = captureMode
         return VStack(spacing: 10) {
@@ -344,6 +346,7 @@ public struct ArcoMainShellView: View {
             meetings: controller.store.meetings,
             audioMode: controller.displayedAudioMode,
             shortcut: controller.listeningShortcut,
+            initializing: controller.store.loading,
             viewportWidth: viewportWidth,
             translate: translate,
             onStart: { Task { await controller.toggleCapture() } },
@@ -575,7 +578,8 @@ public struct ArcoMainShellView: View {
     }
 
     private var captureStatus: String {
-        switch controller.store.capture.phase {
+        if controller.store.loading { return translate("common.loading", [:]) }
+        return switch controller.store.capture.phase {
         case .recording: translate("common.listening", [:])
         case .starting: translate("capture.starting", [:])
         case .stopping: translate("capture.stopping", [:])
@@ -584,7 +588,8 @@ public struct ArcoMainShellView: View {
     }
 
     private var captureActionLabel: String {
-        switch controller.store.capture.phase {
+        if controller.store.loading { return translate("common.loading", [:]) }
+        return switch controller.store.capture.phase {
         case .recording: translate("capture.stop", [:])
         case .starting: translate("common.starting", [:])
         case .stopping: translate("common.stopping", [:])
