@@ -232,7 +232,7 @@ public struct TranscriptPaneView: View {
                                 .background(ArcoNativeColors.action)
                                 .clipShape(Capsule(style: .continuous))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
                             .padding(compact ? 10 : 16)
                         }
                     }

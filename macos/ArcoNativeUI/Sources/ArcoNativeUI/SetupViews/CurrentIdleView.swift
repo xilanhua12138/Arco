@@ -43,6 +43,7 @@ public struct CurrentIdleView: View {
     public var onOpenAudioSettings: () -> Void
 
     @State private var audioSettingsHovering = false
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     public init(
         capture: CaptureState,
@@ -152,8 +153,12 @@ public struct CurrentIdleView: View {
                         )
                         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
                 .onHover { audioSettingsHovering = $0 }
+                .animation(
+                    accessibilityReduceMotion ? nil : ArcoMotion.hover,
+                    value: audioSettingsHovering
+                )
                 .accessibilityLabel(translate("capture.nextMeetingAudio", [:]))
             }
             .frame(minHeight: 46)

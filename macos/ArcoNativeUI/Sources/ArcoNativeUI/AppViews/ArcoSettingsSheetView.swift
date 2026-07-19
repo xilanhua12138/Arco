@@ -75,7 +75,7 @@ public struct ArcoSettingsSheetView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 20)
         .background(ArcoNativeColors.surfaceSettingsNavigation)
-        .accessibilityLabel(translate("settings.sections", [:]))
+        .accessibilityElement(children: .contain)
     }
 
     private func settingsNavigation(_ page: SettingsPage, symbol: String) -> some View {
@@ -99,6 +99,9 @@ public struct ArcoSettingsSheetView: View {
                 cornerRadius: 8
             )
         )
+        .accessibilityLabel(translate("settings.\(page.rawValue)", [:]))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityRemoveTraits(selected ? [] : .isSelected)
     }
 
     private var header: some View {
@@ -1402,7 +1405,7 @@ private struct SettingsSurfaceButtonStyle: ButtonStyle {
     let fill: Color
     let hoverFill: Color
     let cornerRadius: CGFloat
-    var pressedScale: CGFloat = 1
+    var pressedScale: CGFloat = 0.985
 
     func makeBody(configuration: Configuration) -> some View {
         SettingsSurfaceButton(
@@ -1423,6 +1426,7 @@ private struct SettingsSurfaceButton: View {
     let pressedScale: CGFloat
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var hovered = false
 
     var body: some View {
@@ -1431,8 +1435,18 @@ private struct SettingsSurfaceButton: View {
                 hovered && isEnabled ? hoverFill : fill,
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
-            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .scaleEffect(
+                configuration.isPressed && isEnabled && !accessibilityReduceMotion
+                    ? pressedScale
+                    : 1
+            )
+            .opacity(configuration.isPressed && isEnabled ? 0.84 : 1)
             .onHover { hovered = $0 }
+            .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovered)
+            .animation(
+                accessibilityReduceMotion ? .easeOut(duration: 0.08) : ArcoMotion.press,
+                value: configuration.isPressed
+            )
     }
 }
 
@@ -1445,6 +1459,7 @@ private struct SettingsCloseButtonStyle: ButtonStyle {
 private struct SettingsCloseButton: View {
     let configuration: ButtonStyleConfiguration
     @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
         configuration.label
@@ -1453,7 +1468,13 @@ private struct SettingsCloseButton: View {
                 hovered ? ArcoNativeColors.surfaceHover : .clear,
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .scaleEffect(configuration.isPressed && !accessibilityReduceMotion ? 0.94 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
             .onHover { hovered = $0 }
+            .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovered)
+            .animation(
+                accessibilityReduceMotion ? .easeOut(duration: 0.08) : ArcoMotion.press,
+                value: configuration.isPressed
+            )
     }
 }

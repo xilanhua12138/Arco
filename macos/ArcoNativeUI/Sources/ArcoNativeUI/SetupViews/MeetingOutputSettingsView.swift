@@ -341,6 +341,7 @@ private struct MeetingOutputActionButton: View {
     let configuration: ButtonStyleConfiguration
     let prominent: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
 
     var body: some View {
@@ -351,6 +352,10 @@ private struct MeetingOutputActionButton: View {
                 hovered && isEnabled ? hoverFill : fill,
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovered)
             .onHover { hovered = $0 }
     }
 }
@@ -373,11 +378,16 @@ private struct MeetingOutputTextButton: View {
     let color: Color
     let hoverColor: Color
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
 
     var body: some View {
         configuration.label
             .foregroundStyle(hovered && isEnabled ? hoverColor : color)
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovered)
             .onHover { hovered = $0 }
     }
 }

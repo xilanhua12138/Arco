@@ -48,6 +48,69 @@ public enum ArcoNativeColors {
     public static let surfaceEdgeHighlight = Color.white.opacity(0.76)
 }
 
+/// One motion vocabulary for the whole product. Interactive springs start at
+/// the presentation value, remain interruptible, and settle without bounce.
+public enum ArcoMotion {
+    public static let press = Animation.interactiveSpring(
+        response: 0.11,
+        dampingFraction: 1,
+        blendDuration: 0
+    )
+    public static let hover = Animation.easeOut(duration: 0.16)
+    public static let state = Animation.interactiveSpring(
+        response: 0.22,
+        dampingFraction: 1,
+        blendDuration: 0
+    )
+    public static let sheet = Animation.interactiveSpring(
+        response: 0.26,
+        dampingFraction: 1,
+        blendDuration: 0
+    )
+}
+
+/// Immediate pointer-down feedback shared by custom plain buttons. Reduced
+/// Motion retains a contrast response while removing the spatial scale.
+public struct ArcoPressFeedbackButtonStyle: ButtonStyle {
+    private let pressedScale: CGFloat
+    private let pressedOpacity: Double
+
+    public init(pressedScale: CGFloat = 0.97, pressedOpacity: Double = 0.86) {
+        self.pressedScale = pressedScale
+        self.pressedOpacity = pressedOpacity
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        ArcoPressFeedbackButton(
+            configuration: configuration,
+            pressedScale: pressedScale,
+            pressedOpacity: pressedOpacity
+        )
+    }
+}
+
+private struct ArcoPressFeedbackButton: View {
+    let configuration: ButtonStyleConfiguration
+    let pressedScale: CGFloat
+    let pressedOpacity: Double
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
+    var body: some View {
+        configuration.label
+            .scaleEffect(
+                configuration.isPressed && isEnabled && !accessibilityReduceMotion
+                    ? pressedScale
+                    : 1
+            )
+            .opacity(configuration.isPressed && isEnabled ? pressedOpacity : 1)
+            .animation(
+                accessibilityReduceMotion ? .easeOut(duration: 0.08) : ArcoMotion.press,
+                value: configuration.isPressed
+            )
+    }
+}
+
 public extension View {
     /// macOS 26 Liquid Glass with the same regular-material fallback used by
     /// Arco's former AppKit bridge on older systems.
@@ -56,16 +119,53 @@ public extension View {
         in shape: S,
         interactive: Bool = false
     ) -> some View {
-        if #available(macOS 26.0, *) {
-            if interactive {
-                self.glassEffect(.regular.interactive(), in: shape)
-            } else {
-                self.glassEffect(.regular, in: shape)
+        modifier(ArcoLiquidGlassModifier(shape: shape, interactive: interactive))
+    }
+}
+
+private struct ArcoLiquidGlassModifier<GlassShape: Shape>: ViewModifier {
+    let shape: GlassShape
+    let interactive: Bool
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if accessibilityReduceTransparency {
+            content
+                .background(ArcoNativeColors.surfaceRaised, in: shape)
+                .overlay(
+                    shape.stroke(
+                        colorSchemeContrast == .increased
+                            ? ArcoNativeColors.inkStrong.opacity(0.44)
+                            : ArcoNativeColors.lineStrong,
+                        lineWidth: colorSchemeContrast == .increased ? 1.25 : 0.75
+                    )
+                )
+        } else if #available(macOS 26.0, *) {
+            Group {
+                if interactive {
+                    content.glassEffect(.regular.interactive(), in: shape)
+                } else {
+                    content.glassEffect(.regular, in: shape)
+                }
+            }
+            .overlay {
+                if colorSchemeContrast == .increased {
+                    shape.stroke(ArcoNativeColors.inkStrong.opacity(0.34), lineWidth: 1)
+                }
             }
         } else {
-            self
+            content
                 .background(.regularMaterial, in: shape)
-                .overlay(shape.stroke(Color.white.opacity(0.28), lineWidth: 0.75))
+                .overlay(
+                    shape.stroke(
+                        colorSchemeContrast == .increased
+                            ? ArcoNativeColors.inkStrong.opacity(0.36)
+                            : Color.white.opacity(0.28),
+                        lineWidth: colorSchemeContrast == .increased ? 1 : 0.75
+                    )
+                )
         }
     }
 }
@@ -76,15 +176,20 @@ struct ArcoSpinningRefreshIcon: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: !active)) { timeline in
-            let duration = accessibilityReduceMotion ? 1.4 : 0.8
-            let phase = active
-                ? timeline.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: duration) / duration
-                : 0
+        if accessibilityReduceMotion {
             Image(systemName: "arrow.clockwise")
                 .font(.system(size: size))
-                .rotationEffect(.degrees(phase * 360))
+                .opacity(active ? 0.72 : 1)
+        } else {
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: !active)) { timeline in
+                let phase = active
+                    ? timeline.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 0.8) / 0.8
+                    : 0
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: size))
+                    .rotationEffect(.degrees(phase * 360))
+            }
         }
     }
 }
@@ -206,24 +311,6 @@ public enum ArcoGlassSurfaceTone: Sendable {
     }
 }
 
-private struct ArcoActiveAppearanceModifier: ViewModifier {
-    var isActive: Bool
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.environment(\.appearsActive, isActive)
-        } else {
-            content.environment(\.controlActiveState, isActive ? .key : .inactive)
-        }
-    }
-}
-
-private extension View {
-    func arcoActiveAppearance(_ isActive: Bool) -> some View {
-        modifier(ArcoActiveAppearanceModifier(isActive: isActive))
-    }
-}
-
 /// Direct SwiftUI form of the source glass-surface contract. The material is
 /// the content's actual background rather than a separately hosted layer.
 public struct ArcoGlassSurface<Content: View>: View {
@@ -231,6 +318,8 @@ public struct ArcoGlassSurface<Content: View>: View {
     private let tone: ArcoGlassSurfaceTone
     private let interactive: Bool
     private let content: Content
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     public init(
         cornerRadius: CGFloat,
@@ -250,7 +339,19 @@ public struct ArcoGlassSurface<Content: View>: View {
 
     @ViewBuilder private var glass: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(macOS 26.0, *) {
+        if accessibilityReduceTransparency {
+            Color.clear
+                .background(ArcoNativeColors.surfaceRaised, in: shape)
+                .overlay(
+                    shape.strokeBorder(
+                        colorSchemeContrast == .increased
+                            ? ArcoNativeColors.inkStrong.opacity(0.44)
+                            : ArcoNativeColors.lineStrong,
+                        lineWidth: colorSchemeContrast == .increased ? 1.25 : 0.75
+                    )
+                )
+                .allowsHitTesting(false)
+        } else if #available(macOS 26.0, *) {
             GlassEffectContainer(spacing: 12) {
                 Color.clear
                     .glassEffect(
@@ -258,12 +359,23 @@ public struct ArcoGlassSurface<Content: View>: View {
                         in: shape
                     )
             }
-            .arcoActiveAppearance(true)
+            .overlay {
+                if colorSchemeContrast == .increased {
+                    shape.strokeBorder(ArcoNativeColors.inkStrong.opacity(0.34), lineWidth: 1)
+                }
+            }
             .allowsHitTesting(false)
         } else {
             Color.clear
                 .background(.regularMaterial, in: shape)
-                .overlay(shape.strokeBorder(.white.opacity(0.26), lineWidth: 0.75))
+                .overlay(
+                    shape.strokeBorder(
+                        colorSchemeContrast == .increased
+                            ? ArcoNativeColors.inkStrong.opacity(0.36)
+                            : .white.opacity(0.26),
+                        lineWidth: colorSchemeContrast == .increased ? 1 : 0.75
+                    )
+                )
                 .allowsHitTesting(false)
         }
     }
@@ -285,7 +397,8 @@ public struct ArcoNativeActionButton: View {
     private let enabled: Bool
     private let tint: Color
     private let action: () -> Void
-    @State private var isHovered = false
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     public init(
         title: String,
@@ -305,14 +418,13 @@ public struct ArcoNativeActionButton: View {
 
     public var body: some View {
         Group {
-            if #available(macOS 26.0, *) {
+            if #available(macOS 26.0, *), !accessibilityReduceTransparency {
                 GlassEffectContainer(spacing: 8) { nativeAction }
             } else {
                 fallbackAction
             }
         }
         .disabled(!enabled)
-        .arcoActiveAppearance(true)
         .allowsHitTesting(enabled)
     }
 
@@ -351,10 +463,6 @@ public struct ArcoNativeActionButton: View {
                 .glassEffect(.regular.interactive(), in: Capsule())
             }
         }
-        .scaleEffect(isHovered ? 1.018 : 1)
-        .offset(y: isHovered ? -1 : 0)
-        .onHover { isHovered = $0 }
-        .animation(.smooth(duration: 0.18), value: isHovered)
     }
 
     @ViewBuilder private var fallbackAction: some View {
@@ -367,8 +475,20 @@ public struct ArcoNativeActionButton: View {
                     .contentShape(Circle())
             }
             .contentShape(Circle())
-            .background(.regularMaterial, in: Circle())
-            .overlay(Circle().strokeBorder(.white.opacity(0.28), lineWidth: 0.75))
+            .background(
+                accessibilityReduceTransparency
+                    ? AnyShapeStyle(ArcoNativeColors.surfaceRaised)
+                    : AnyShapeStyle(.regularMaterial),
+                in: Circle()
+            )
+            .overlay(
+                Circle().strokeBorder(
+                    colorSchemeContrast == .increased
+                        ? ArcoNativeColors.inkStrong.opacity(0.42)
+                        : .white.opacity(0.28),
+                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.75
+                )
+            )
             .help(title)
         case .prominent:
             actionButton {
@@ -379,7 +499,7 @@ public struct ArcoNativeActionButton: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .contentShape(Capsule())
-            .background(Color.accentColor, in: Capsule())
+            .background(tint, in: Capsule())
         case .standard:
             actionButton {
                 Label(title, systemImage: symbol)
@@ -388,14 +508,26 @@ public struct ArcoNativeActionButton: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .contentShape(Capsule())
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 0.75))
+            .background(
+                accessibilityReduceTransparency
+                    ? AnyShapeStyle(ArcoNativeColors.surfaceRaised)
+                    : AnyShapeStyle(.regularMaterial),
+                in: Capsule()
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    colorSchemeContrast == .increased
+                        ? ArcoNativeColors.inkStrong.opacity(0.42)
+                        : .white.opacity(0.28),
+                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.75
+                )
+            )
         }
     }
 
     private func actionButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
         Button(action: action, label: label)
-            .buttonStyle(.plain)
+            .buttonStyle(ArcoPressFeedbackButtonStyle())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityLabel(title)
     }
