@@ -1,4 +1,4 @@
-use crate::models::{MeetingDetail, MeetingSummary, TranscriptLine};
+use crate::models::{LiveTranscriptSnapshot, MeetingDetail, MeetingSummary, TranscriptLine};
 use crate::storage::MeetingRoot;
 use chrono::{DateTime, Local, LocalResult, NaiveDateTime, NaiveTime, TimeZone};
 use regex::Regex;
@@ -140,7 +140,7 @@ impl MeetingStore {
         active_path: Option<&Path>,
     ) -> Result<(String, Option<MeetingDetail>), String> {
         let (source, path) = self.resolve_path(id)?;
-        let revision = transcript_revision(&path)?;
+        let revision = transcript_revision(&path, active_path)?;
         if known_revision == Some(revision.as_str()) {
             return Ok((revision, None));
         }
@@ -183,7 +183,7 @@ impl MeetingStore {
     }
 }
 
-fn transcript_revision(path: &Path) -> Result<String, String> {
+fn transcript_revision(path: &Path, active_path: Option<&Path>) -> Result<String, String> {
     let metadata = fs::metadata(path)
         .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
     if metadata.len() > MAX_TRANSCRIPT_BYTES {
@@ -200,7 +200,36 @@ fn transcript_revision(path: &Path) -> Result<String, String> {
     let (seconds, nanos) = modified
         .map(|value| (value.as_secs(), value.subsec_nanos()))
         .unwrap_or((0, 0));
-    Ok(format!("{}:{seconds}:{nanos}", metadata.len()))
+    let mut revision = format!("{}:{seconds}:{nanos}", metadata.len());
+    if active_path.is_some_and(|active| paths_refer_to_same_file(active, path)) {
+        let live_path = live_transcript_path(path);
+        match fs::metadata(&live_path) {
+            Ok(live) => {
+                let modified = live
+                    .modified()
+                    .ok()
+                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok());
+                let (seconds, nanos) = modified
+                    .map(|value| (value.as_secs(), value.subsec_nanos()))
+                    .unwrap_or((0, 0));
+                revision.push_str(&format!(":live:{}:{seconds}:{nanos}", live.len()));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                revision.push_str(":live:none");
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect {}: {error}",
+                    live_path.display()
+                ));
+            }
+        }
+    }
+    Ok(revision)
+}
+
+pub fn live_transcript_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.live.json", path.display()))
 }
 
 pub fn meeting_id(source: &str, path: &Path) -> Result<String, String> {
@@ -217,17 +246,20 @@ pub fn parse_meeting(
     active_path: Option<&Path>,
 ) -> Result<MeetingDetail, String> {
     let raw_markdown = read_transcript(path)?;
-    let lines = parse_transcript_lines(&raw_markdown);
+    let mut lines = parse_transcript_lines(&raw_markdown);
     let started = parse_started_at(&raw_markdown)
         .or_else(|| parse_started_from_filename(path))
         .or_else(|| modified_at(path))
         .unwrap_or_else(Local::now);
     let started_at = started.to_rfc3339();
     let title = parse_title(&raw_markdown);
-    let preview = transcript_preview(&raw_markdown, &lines);
     let active = active_path
         .map(|active| paths_refer_to_same_file(active, path))
         .unwrap_or(false);
+    if active {
+        append_live_transcript_lines(path, &mut lines);
+    }
+    let preview = transcript_preview(&raw_markdown, &lines);
     let summary = MeetingSummary {
         id: meeting_id(source, path)?,
         title,
@@ -247,6 +279,31 @@ pub fn parse_meeting(
         lines,
         raw_markdown,
     })
+}
+
+fn append_live_transcript_lines(path: &Path, lines: &mut Vec<TranscriptLine>) {
+    let live_path = live_transcript_path(path);
+    let Ok(bytes) = fs::read(live_path) else {
+        return;
+    };
+    let Ok(snapshot) = serde_json::from_slice::<LiveTranscriptSnapshot>(&bytes) else {
+        return;
+    };
+    let first_sequence = lines.len();
+    lines.extend(
+        snapshot
+            .lines
+            .into_iter()
+            .filter(|line| !line.text.trim().is_empty())
+            .enumerate()
+            .map(|(offset, line)| TranscriptLine {
+                id: line.id,
+                timestamp: line.timestamp,
+                speaker: line.speaker,
+                text: line.text.trim().to_string(),
+                sequence: first_sequence + offset,
+            }),
+    );
 }
 
 pub fn parse_transcript_lines(markdown: &str) -> Vec<TranscriptLine> {
@@ -482,15 +539,41 @@ mod tests {
         assert_eq!(same_revision, first_revision);
         assert!(unchanged.is_none());
 
+        fs::write(
+            live_transcript_path(&path),
+            r#"{"lines":[{"id":"doubao-live-1-0","timestamp":"09:00:02","speaker":"Speaker 1","text":"live draft"}]}"#,
+        )
+        .unwrap();
+        let (live_revision, live_changed) = store
+            .read_if_changed(id, Some(&first_revision), Some(&path))
+            .unwrap();
+        assert_ne!(live_revision, first_revision);
+        let live_changed = live_changed.unwrap();
+        assert_eq!(live_changed.lines.len(), 2);
+        assert_eq!(live_changed.lines[1].text, "live draft");
+        assert!(!live_changed.raw_markdown.contains("live draft"));
+
         writeln!(
             fs::OpenOptions::new().append(true).open(&path).unwrap(),
             "**[09:00:03] Speaker 2:** second\n"
         )
         .unwrap();
         let (next_revision, changed) = store
-            .read_if_changed(id, Some(&first_revision), Some(&path))
+            .read_if_changed(id, Some(&live_revision), Some(&path))
             .unwrap();
-        assert_ne!(next_revision, first_revision);
-        assert_eq!(changed.unwrap().lines.len(), 2);
+        assert_ne!(next_revision, live_revision);
+        assert_eq!(changed.unwrap().lines.len(), 3);
+
+        fs::remove_file(live_transcript_path(&path)).unwrap();
+        let (final_revision, final_changed) = store
+            .read_if_changed(id, Some(&next_revision), Some(&path))
+            .unwrap();
+        assert_ne!(final_revision, next_revision);
+        let final_changed = final_changed.unwrap();
+        assert_eq!(final_changed.lines.len(), 2);
+        assert!(final_changed
+            .lines
+            .iter()
+            .all(|line| line.text != "live draft"));
     }
 }

@@ -49,6 +49,25 @@ pub struct TranscriptLine {
     pub sequence: usize,
 }
 
+/// Display-only transcript text that has not reached the provider's second-pass
+/// finalization boundary yet. The capture sidecar owns this snapshot; meeting
+/// history never persists it into Markdown.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTranscriptSnapshot {
+    #[serde(default)]
+    pub lines: Vec<LiveTranscriptLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTranscriptLine {
+    pub id: String,
+    pub timestamp: String,
+    pub speaker: String,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingDetail {
