@@ -38,8 +38,6 @@ public struct NotesPageView: View {
             .background(ArcoNativeColors.surfaceDocument)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(ArcoNativeColors.lineThin))
-            .shadow(color: Color(red: 38 / 255, green: 53 / 255, blue: 70 / 255).opacity(0.07), radius: 22, y: 18)
-            .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(alignment: .topLeading) { indexToggle }
         }
         .padding(
@@ -790,6 +788,7 @@ private struct NotesSecondaryButtonStyle: ButtonStyle {
 
 private struct NotesSecondaryButtonBody: View {
     let configuration: ButtonStyle.Configuration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -799,6 +798,10 @@ private struct NotesSecondaryButtonBody: View {
                 hovering ? ArcoNativeColors.surfaceHover : Color.clear,
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovering)
             .onHover { hovering = $0 }
     }
 }
@@ -807,6 +810,7 @@ private struct NotesHoverButtonBody: View {
     let configuration: ButtonStyle.Configuration
     let selected: Bool
     let cornerRadius: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -815,6 +819,10 @@ private struct NotesHoverButtonBody: View {
                 hovering && !selected ? ArcoNativeColors.surfaceHover : Color.clear,
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.99)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovering)
             .onHover { hovering = $0 }
     }
 }

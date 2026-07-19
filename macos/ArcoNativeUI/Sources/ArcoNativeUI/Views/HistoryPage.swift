@@ -297,6 +297,7 @@ private struct HistoryMeetingRow: View {
     var onSelect: () -> Void
 
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
         Button(action: onSelect) {
@@ -350,14 +351,44 @@ private struct HistoryMeetingRow: View {
             .padding(.vertical, 8)
             .frame(minHeight: 64)
             .contentShape(Rectangle())
-            .background(hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+            .background(
+                isSelected
+                    ? ArcoNativeColors.surfaceSelected
+                    : hovering ? ArcoNativeColors.surfaceHover : Color.clear
+            )
             .overlay(alignment: .bottom) {
                 if showsDivider { ArcoNativeColors.lineThin.frame(height: 1) }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HistoryMeetingRowButtonStyle())
         .onHover { hovering = $0 }
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovering)
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.state, value: isSelected)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct HistoryMeetingRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HistoryMeetingRowButton(configuration: configuration)
+    }
+}
+
+private struct HistoryMeetingRowButton: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
+    var body: some View {
+        configuration.label
+            .scaleEffect(
+                configuration.isPressed && isEnabled && !accessibilityReduceMotion ? 0.995 : 1
+            )
+            .opacity(configuration.isPressed && isEnabled ? 0.82 : 1)
+            .animation(
+                accessibilityReduceMotion ? .easeOut(duration: 0.08) : ArcoMotion.press,
+                value: configuration.isPressed
+            )
     }
 }

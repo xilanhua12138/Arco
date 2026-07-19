@@ -6,6 +6,8 @@ public struct ArcoMainShellView: View {
     @State private var liveReviewHovered = false
     @FocusState private var settingsTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     private let translate: ArcoTranslate
 
     @MainActor
@@ -90,7 +92,11 @@ public struct ArcoMainShellView: View {
             if let message = controller.store.error ?? controller.store.storageError ?? controller.interfaceError {
                 errorToast(message)
                     .padding(16)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(
+                        accessibilityReduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .move(edge: .bottom))
+                    )
             }
 
             if controller.settingsOpen {
@@ -101,7 +107,9 @@ public struct ArcoMainShellView: View {
                 .transition(
                     accessibilityReduceMotion
                         ? .opacity
-                        : .opacity.combined(with: .scale(scale: 0.985))
+                        : .opacity.combined(
+                            with: .scale(scale: 0.96, anchor: .bottomLeading)
+                        )
                 )
                 .zIndex(4)
             }
@@ -118,8 +126,8 @@ public struct ArcoMainShellView: View {
                 .zIndex(5)
             }
         }
-        .animation(.easeOut(duration: 0.18), value: controller.settingsOpen)
-        .animation(.easeOut(duration: 0.18), value: controller.providerSetupOpen)
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.sheet, value: controller.settingsOpen)
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.state, value: controller.providerSetupOpen)
         .accessibilityElement(children: .contain)
     }
 
@@ -182,11 +190,22 @@ public struct ArcoMainShellView: View {
             .padding(.vertical, 8)
         }
         .foregroundStyle(ArcoNativeGlassPalette.ink)
-        .background(ArcoNativeGlassPalette.shellBase.opacity(0.92), in: shape)
-        .background(.ultraThickMaterial, in: shape)
+        .background {
+            if accessibilityReduceTransparency {
+                shape.fill(ArcoNativeGlassPalette.shellBase)
+            } else {
+                shape.fill(.ultraThickMaterial)
+                    .background(ArcoNativeGlassPalette.shellBase.opacity(0.92), in: shape)
+            }
+        }
         .clipShape(shape)
         .overlay(shape.strokeBorder(Color.white.opacity(0.78), lineWidth: 0.75))
-        .overlay(shape.strokeBorder(ArcoNativeGlassPalette.ink.opacity(0.08), lineWidth: 0.5))
+        .overlay(
+            shape.strokeBorder(
+                ArcoNativeGlassPalette.ink.opacity(colorSchemeContrast == .increased ? 0.38 : 0.08),
+                lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
+            )
+        )
     }
 
     private func navigationButton(
@@ -210,10 +229,9 @@ public struct ArcoMainShellView: View {
             .foregroundStyle(selected ? ArcoNativeGlassPalette.ink : ArcoNativeGlassPalette.secondaryInk)
             .padding(.horizontal, 10)
             .frame(height: 38)
-            .background(selected ? Color.white.opacity(0.72) : Color.clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarNavigationButtonStyle(selected: selected))
         .accessibilityLabel(translate(route == .current ? "nav.openCurrent" : route == .history ? "nav.openHistory" : "nav.openNotes", [:]))
     }
 
@@ -270,7 +288,7 @@ public struct ArcoMainShellView: View {
             .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.985))
         .disabled(!enabled)
         .accessibilityLabel(captureActionLabel)
 
@@ -282,21 +300,14 @@ public struct ArcoMainShellView: View {
     }
 
     @ViewBuilder private var sidebarSettingsButton: some View {
-        let button = Button { controller.openSettings() } label: {
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 32, height: 32)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
+        ArcoNativeActionButton(
+            title: translate("nav.openSettings", [:]),
+            symbol: "slider.horizontal.3",
+            variant: .toolbar,
+            action: { controller.openSettings() }
+        )
+        .frame(width: 40, height: 40)
         .focused($settingsTriggerFocused)
-        .accessibilityLabel(translate("nav.openSettings", [:]))
-
-        if #available(macOS 26.0, *) {
-            button.glassEffect(.regular.interactive(), in: Circle())
-        } else {
-            button.background(.regularMaterial, in: Circle())
-        }
     }
 
     private func pageStage(viewportWidth: CGFloat) -> some View {
@@ -442,7 +453,7 @@ public struct ArcoMainShellView: View {
                 in: RoundedRectangle(cornerRadius: 8)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.985))
         .onHover { liveReviewHovered = $0 }
         .accessibilityLabel(translate("app.returnToLiveMeeting", ["title": title]))
     }
@@ -548,7 +559,7 @@ public struct ArcoMainShellView: View {
                     .font(.system(size: 15))
                     .frame(width: 22, height: 22)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
             .foregroundStyle(ArcoNativeColors.inkMuted)
             .accessibilityLabel(translate("app.dismissError", [:]))
         }
@@ -844,6 +855,43 @@ private struct ArcoStageBorder: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .allowsHitTesting(false)
+    }
+}
+
+private struct SidebarNavigationButtonStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        SidebarNavigationButton(configuration: configuration, selected: selected)
+    }
+}
+
+private struct SidebarNavigationButton: View {
+    let configuration: ButtonStyleConfiguration
+    let selected: Bool
+    @State private var hovered = false
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
+    var body: some View {
+        configuration.label
+            .background(background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .scaleEffect(
+                configuration.isPressed && isEnabled && !accessibilityReduceMotion ? 0.985 : 1
+            )
+            .opacity(configuration.isPressed && isEnabled ? 0.84 : 1)
+            .onHover { hovered = $0 }
+            .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovered)
+            .animation(
+                accessibilityReduceMotion ? .easeOut(duration: 0.08) : ArcoMotion.press,
+                value: configuration.isPressed
+            )
+    }
+
+    private var background: Color {
+        if selected { return Color.white.opacity(0.72) }
+        if hovered && isEnabled { return Color.white.opacity(0.34) }
+        return .clear
     }
 }
 

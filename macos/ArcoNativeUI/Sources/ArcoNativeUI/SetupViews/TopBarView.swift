@@ -130,9 +130,10 @@ public struct TopBarView: View {
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
                     .foregroundStyle(backHovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
                     .onHover { backHovering = $0 }
+                    .animation(reduceMotion ? nil : ArcoMotion.hover, value: backHovering)
                     .accessibilityLabel(translate("history.back", [:]))
                     .help(translate("history.back", [:]))
                 }
@@ -166,13 +167,14 @@ public struct TopBarView: View {
                             in: Circle()
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
                 .foregroundStyle(
                     detailsHovering || viewModel.detailsMeetingID == meeting.id
                         ? ArcoNativeColors.inkStrong
                         : ArcoNativeColors.inkMuted
                 )
                 .onHover { detailsHovering = $0 }
+                .animation(reduceMotion ? nil : ArcoMotion.hover, value: detailsHovering)
                 .focused($detailsFocused)
                 .background(TopBarInteractionRegion(monitor: detailsInteractionMonitor))
                 .accessibilityLabel(translate("topbar.meetingDetails", [:]))
@@ -206,7 +208,7 @@ public struct TopBarView: View {
                 .zIndex(10)
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: viewModel.detailsMeetingID)
+        .animation(reduceMotion ? nil : ArcoMotion.state, value: viewModel.detailsMeetingID)
         .onChange(of: viewModel.detailsMeetingID) { _, value in
             updateDetailsInteractionMonitor(open: value != nil)
         }
@@ -310,7 +312,7 @@ public struct TopBarView: View {
                             .opacity(titleHovering || titleTriggerFocused ? 0.48 : 0)
                             .offset(x: titleHovering || titleTriggerFocused ? 0 : -3)
                             .animation(
-                                reduceMotion ? nil : .easeOut(duration: 0.14),
+                                reduceMotion ? nil : ArcoMotion.hover,
                                 value: titleHovering || titleTriggerFocused
                             )
                     }
@@ -324,7 +326,7 @@ public struct TopBarView: View {
                         in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.985))
                 .focused($titleTriggerFocused)
                 .onHover { titleHovering = $0 }
                 .padding(.horizontal, -7)

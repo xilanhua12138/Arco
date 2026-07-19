@@ -216,7 +216,7 @@ public struct InsightPanelView: View {
                         )
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
                 .foregroundStyle(closeHovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
                 .onHover { closeHovering = $0 }
                 .accessibilityLabel(translate("agent.close", [:]))
@@ -276,7 +276,7 @@ public struct InsightPanelView: View {
                         .background(ArcoNativeColors.action)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle())
                 .padding(.top, 18)
             }
         }
@@ -423,7 +423,7 @@ public struct InsightPanelView: View {
                     .padding(.vertical, layout == .agentOverlay ? 11 : 13)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
                 .disabled(actionsDisabled)
                 .opacity(actionsDisabled ? 0.4 : 1)
                 .modifier(InsightHoverBackground(cornerRadius: 0))
@@ -631,7 +631,7 @@ public struct InsightPanelView: View {
             .padding(.vertical, 6)
             .frame(minHeight: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcoPressFeedbackButtonStyle())
         .disabled(disabled)
         .opacity(disabled ? 0.55 : 1)
         .modifier(InsightHoverBackground(cornerRadius: 6, active: selected))
@@ -718,7 +718,7 @@ public struct InsightPanelView: View {
                         .background(sendButtonBackground)
                         .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
                 .disabled(sendDisabled)
                 .accessibilityLabel(translate("agent.send", [:]))
             }
@@ -743,7 +743,7 @@ public struct InsightPanelView: View {
         Group {
             if let action {
                 Button(action: action) { contextChipLabel(label: label, icon: icon, fixed: fixed) }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ArcoPressFeedbackButtonStyle())
             } else {
                 contextChipLabel(label: label, icon: icon, fixed: fixed)
             }
@@ -783,7 +783,7 @@ public struct InsightPanelView: View {
                     )
                     .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
             .onHover { contextButtonHovering = $0 }
             .accessibilityLabel(translate("agent.addContext", [:]))
             .help(translate("agent.contextMenu", [:]))
@@ -1035,7 +1035,7 @@ private struct AgentWorkDisclosure: View {
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
         .disabled(!canExpand)
         .accessibilityLabel(label)
         .accessibilityValue(expanded ? translate("agent.work.expanded", [:]) : translate("agent.work.collapsed", [:]))
@@ -1111,7 +1111,7 @@ private struct AgentToolActivityRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
             .disabled(!hasDetails)
             .accessibilityLabel("\(activity.name), \(statusLabel)")
             .accessibilityValue(expanded ? translate("agent.work.expanded", [:]) : translate("agent.work.collapsed", [:]))
@@ -1229,7 +1229,7 @@ private struct InsightContextMenuItem: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
         .onHover { hovering = $0 }
         .accessibilityLabel(label)
     }

@@ -488,10 +488,10 @@ private func testSourceParityHooks() {
     expectTrue(
         theme.contains(
             "Button(action: action, label: label)\n"
-                + "            .buttonStyle(.plain)\n"
+                + "            .buttonStyle(ArcoPressFeedbackButtonStyle())\n"
                 + "            .frame(maxWidth: .infinity, maxHeight: .infinity)"
         ),
-        "Shared native actions make the entire rendered glass control clickable instead of only the glyph"
+        "Shared native actions keep the entire rendered glass control clickable and provide pointer-down feedback"
     )
     expectTrue(
         theme
@@ -501,7 +501,12 @@ private func testSourceParityHooks() {
             .count - 1 >= 2,
         "Toolbar action labels must own the full 40 by 40 circular hit shape so PlainButtonStyle cannot collapse clicks back to the opaque glyph"
     )
-    expectTrue(notesView.contains("arcoLiquidGlass"), "Notes workspace uses native Liquid Glass")
+    expectTrue(
+        notesView.contains("ArcoNativeActionButton")
+            && notesView.contains("ArcoGlassSurface")
+            && notesView.contains(".background(ArcoNativeColors.surfaceDocument)"),
+        "Notes keeps Liquid Glass on functional controls and a stable document reading surface"
+    )
 
     let onboarding = source("ArcoNativeUI/SetupViews/OnboardingView.swift")
     expectTrue(
