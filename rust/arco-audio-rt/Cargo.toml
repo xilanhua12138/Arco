@@ -1,6 +1,6 @@
 [package]
 name = "arco-audio-rt"
-version = "0.2.19"
+version = "0.3.0"
 description = "Real-time-safe audio queue and sample-rate conversion for Arco recorder"
 authors = ["Arco contributors"]
 license = "MIT"
