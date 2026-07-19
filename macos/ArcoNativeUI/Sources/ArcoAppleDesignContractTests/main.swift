@@ -64,6 +64,12 @@ expectTrue(
     "Primary navigation and global actions must respond immediately on pointer-down"
 )
 expectTrue(
+    shell.contains(".arcoLiquidGlass(in: shape)")
+        && !shell.contains(".ultraThickMaterial")
+        && !shell.contains("shellBase.opacity(0.92)"),
+    "The sidebar must use one native Liquid Glass layer instead of an opaque tint stacked over thick material"
+)
+expectTrue(
     history.contains("isSelected")
         && history.contains("? ArcoNativeColors.surfaceSelected")
         && history.contains("HistoryMeetingRowButtonStyle"),

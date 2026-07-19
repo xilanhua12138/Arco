@@ -6,8 +6,6 @@ public struct ArcoMainShellView: View {
     @State private var liveReviewHovered = false
     @FocusState private var settingsTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     private let translate: ArcoTranslate
 
     @MainActor
@@ -190,22 +188,7 @@ public struct ArcoMainShellView: View {
             .padding(.vertical, 8)
         }
         .foregroundStyle(ArcoNativeGlassPalette.ink)
-        .background {
-            if accessibilityReduceTransparency {
-                shape.fill(ArcoNativeGlassPalette.shellBase)
-            } else {
-                shape.fill(.ultraThickMaterial)
-                    .background(ArcoNativeGlassPalette.shellBase.opacity(0.92), in: shape)
-            }
-        }
-        .clipShape(shape)
-        .overlay(shape.strokeBorder(Color.white.opacity(0.78), lineWidth: 0.75))
-        .overlay(
-            shape.strokeBorder(
-                ArcoNativeGlassPalette.ink.opacity(colorSchemeContrast == .increased ? 0.38 : 0.08),
-                lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-            )
-        )
+        .arcoLiquidGlass(in: shape)
     }
 
     private func navigationButton(
