@@ -20,6 +20,7 @@ private final class ArcoApplicationDelegate: NSObject, NSApplicationDelegate {
     private var runtime: NativeApplicationRuntime?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ArcoProcessSignalPolicy.install()
         NSApp.setActivationPolicy(.regular)
         do {
             let runtime = try NativeApplicationRuntime()

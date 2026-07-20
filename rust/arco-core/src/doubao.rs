@@ -6,7 +6,7 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,8 +30,11 @@ const MIN_SPEECH_BEFORE_ENDPOINT_MS: usize = 1_000;
 const AUDIO_CHUNKS_PER_SECOND: usize = SAMPLE_RATE * STEREO_FRAME_BYTES / READ_CHUNK_BYTES;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
-const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
-const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
+// Volcengine recommends 100-200 ms between 200 ms PCM packets. During recovery
+// we use the documented lower bound, which catches up at 2x without flooding
+// the optimized two-pass endpoint.
+const MAX_REPLAY_RATE_NUMERATOR: u128 = 2;
+const MAX_REPLAY_RATE_DENOMINATOR: u128 = 1;
 const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
 const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -73,33 +76,192 @@ impl AudioChunk {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BufferedAudio {
+    Memory(AudioChunk),
+    Spool {
+        start_frame: usize,
+        offset: u64,
+        len: usize,
+    },
+}
+
+impl From<AudioChunk> for BufferedAudio {
+    fn from(chunk: AudioChunk) -> Self {
+        Self::Memory(chunk)
+    }
+}
+
+impl BufferedAudio {
+    fn start_frame(&self) -> usize {
+        match self {
+            Self::Memory(chunk) => chunk.start_frame,
+            Self::Spool { start_frame, .. } => *start_frame,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(chunk) => chunk.data.len(),
+            Self::Spool { len, .. } => *len,
+        }
+    }
+
+    fn end_frame(&self) -> usize {
+        self.start_frame() + self.len() / MONO_FRAME_BYTES
+    }
+}
+
+struct AudioSpool {
+    file: File,
+    next_offset: u64,
+}
+
+impl AudioSpool {
+    fn create() -> Result<Self, String> {
+        let file = tempfile::tempfile()
+            .map_err(|error| format!("could not create Doubao recovery spool: {error}"))?;
+        Ok(Self {
+            file,
+            next_offset: 0,
+        })
+    }
+
+    fn store(&mut self, chunk: AudioChunk) -> Result<BufferedAudio, String> {
+        let offset = self.next_offset;
+        self.file
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| self.file.write_all(&chunk.data))
+            .map_err(|error| format!("could not append Doubao recovery audio: {error}"))?;
+        self.next_offset = self.next_offset.saturating_add(chunk.data.len() as u64);
+        Ok(BufferedAudio::Spool {
+            start_frame: chunk.start_frame,
+            offset,
+            len: chunk.data.len(),
+        })
+    }
+
+    fn load(&mut self, chunk: &BufferedAudio) -> Result<AudioChunk, String> {
+        match chunk {
+            BufferedAudio::Memory(chunk) => Ok(chunk.clone()),
+            BufferedAudio::Spool {
+                start_frame,
+                offset,
+                len,
+            } => {
+                let mut data = vec![0; *len];
+                self.file
+                    .seek(SeekFrom::Start(*offset))
+                    .and_then(|_| self.file.read_exact(&mut data))
+                    .map_err(|error| format!("could not read Doubao recovery audio: {error}"))?;
+                Ok(AudioChunk {
+                    data,
+                    start_frame: *start_frame,
+                })
+            }
+        }
+    }
+
+    fn reset(&mut self) -> Result<(), String> {
+        self.file
+            .set_len(0)
+            .and_then(|_| self.file.seek(SeekFrom::Start(0)).map(|_| ()))
+            .map_err(|error| format!("could not reclaim Doubao recovery audio: {error}"))?;
+        self.next_offset = 0;
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct PendingAudio {
-    chunks: VecDeque<AudioChunk>,
+    chunks: VecDeque<BufferedAudio>,
+    spool: Option<AudioSpool>,
 }
 
 impl PendingAudio {
-    fn restore(&mut self, chunk: AudioChunk) {
-        self.chunks.push_front(chunk);
+    fn spooled() -> Result<Self, String> {
+        Ok(Self {
+            chunks: VecDeque::new(),
+            spool: Some(AudioSpool::create()?),
+        })
     }
 
-    fn take(&mut self) -> Option<AudioChunk> {
+    fn persist(&mut self, chunk: impl Into<BufferedAudio>) -> Result<BufferedAudio, String> {
+        let chunk = chunk.into();
+        match (&mut self.spool, chunk) {
+            (_, chunk @ BufferedAudio::Spool { .. }) => Ok(chunk),
+            (Some(spool), BufferedAudio::Memory(chunk)) => spool.store(chunk),
+            (None, chunk) => Ok(chunk),
+        }
+    }
+
+    fn restore(&mut self, chunk: impl Into<BufferedAudio>) {
+        let chunk = chunk.into();
+        let persisted = self.persist(chunk.clone()).unwrap_or_else(|error| {
+            eprintln!("[doubao recovery] {error}; retaining audio in memory");
+            chunk
+        });
+        self.chunks.push_front(persisted);
+    }
+
+    fn enqueue(&mut self, chunk: impl Into<BufferedAudio>) -> Result<(), String> {
+        let chunk = self.persist(chunk)?;
+        self.chunks.push_back(chunk);
+        Ok(())
+    }
+
+    fn take_buffered(&mut self) -> Option<BufferedAudio> {
         self.chunks.pop_front()
     }
 
+    fn load(&mut self, chunk: &BufferedAudio) -> Result<AudioChunk, String> {
+        match &mut self.spool {
+            Some(spool) => spool.load(chunk),
+            None => match chunk {
+                BufferedAudio::Memory(chunk) => Ok(chunk.clone()),
+                BufferedAudio::Spool { .. } => {
+                    Err("Doubao recovery spool is unavailable".to_string())
+                }
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn take(&mut self) -> Option<AudioChunk> {
+        let chunk = self.take_buffered()?;
+        self.load(&chunk).ok()
+    }
+
     fn bytes(&self) -> usize {
-        self.chunks.iter().map(|chunk| chunk.data.len()).sum()
+        self.chunks.iter().map(BufferedAudio::len).sum()
+    }
+
+    fn resident_audio_bytes(&self) -> usize {
+        self.chunks
+            .iter()
+            .map(|chunk| match chunk {
+                BufferedAudio::Memory(chunk) => chunk.data.len(),
+                BufferedAudio::Spool { .. } => 0,
+            })
+            .sum()
     }
 
     fn is_empty(&self) -> bool {
         self.chunks.is_empty()
+    }
+
+    fn reset_spool(&mut self) -> Result<(), String> {
+        if let Some(spool) = &mut self.spool {
+            spool.reset()?;
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SentAudio {
     sequence: i32,
-    chunk: AudioChunk,
+    chunk: BufferedAudio,
     final_packet: bool,
 }
 
@@ -126,11 +288,11 @@ struct InFlightAudio {
 }
 
 impl InFlightAudio {
-    fn record(&mut self, sequence: i32, chunk: AudioChunk, final_packet: bool) {
+    fn record(&mut self, sequence: i32, chunk: impl Into<BufferedAudio>, final_packet: bool) {
         debug_assert!(sequence > 0);
         self.chunks.push_back(SentAudio {
             sequence,
-            chunk,
+            chunk: chunk.into(),
             final_packet,
         });
     }
@@ -218,13 +380,13 @@ struct ReplayPacer {
 }
 
 impl ReplayPacer {
-    fn new(first: &AudioChunk) -> Self {
+    fn new(first: &BufferedAudio) -> Self {
         Self {
             origin_end_frame: first.end_frame(),
         }
     }
 
-    fn delay_for(&self, chunk: &AudioChunk, elapsed: Duration) -> Duration {
+    fn delay_for(&self, chunk: &BufferedAudio, elapsed: Duration) -> Duration {
         let replay_frames = chunk.end_frame().saturating_sub(self.origin_end_frame) as u128;
         let target_nanos = replay_frames
             .saturating_mul(1_000_000_000)
@@ -838,6 +1000,14 @@ fn next_retry_delay(current: u64) -> u64 {
     current.saturating_mul(2).min(15)
 }
 
+fn retry_delay_after_attempt(current: u64, made_progress: bool) -> u64 {
+    if made_progress {
+        1
+    } else {
+        current
+    }
+}
+
 fn is_fatal_channel_error(error: &str) -> bool {
     let lowercase = error.to_ascii_lowercase();
     error.starts_with(FATAL_ERROR_PREFIX)
@@ -972,13 +1142,28 @@ async fn wait_for_initialization(socket: &mut DoubaoSocket) -> Result<(), String
     }
 }
 
+fn drain_audio_input(
+    pending: &mut PendingAudio,
+    receiver: &mut mpsc::Receiver<AudioChunk>,
+) -> Result<(), String> {
+    loop {
+        match receiver.try_recv() {
+            Ok(chunk) => pending.enqueue(chunk)?,
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                return Ok(())
+            }
+        }
+    }
+}
+
 async fn next_channel_audio(
     pending: &mut PendingAudio,
     receiver: &mut mpsc::Receiver<AudioChunk>,
-) -> Option<AudioChunk> {
-    match pending.take() {
-        Some(chunk) => Some(chunk),
-        None => receiver.recv().await,
+) -> Result<Option<BufferedAudio>, String> {
+    drain_audio_input(pending, receiver)?;
+    match pending.take_buffered() {
+        Some(chunk) => Ok(Some(chunk)),
+        None => Ok(receiver.recv().await.map(BufferedAudio::from)),
     }
 }
 
@@ -1039,15 +1224,16 @@ async fn stream_connected_channel(
     let (mut sink, mut stream) = socket.split();
     if state.connection_id > 1 {
         eprintln!(
-            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} max_replay_rate=1.25",
+            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={} max_replay_rate=2.00",
             state.channel,
             state.connection_id,
             replay_buffered_seconds,
             state.pending.bytes(),
+            state.pending.resident_audio_bytes(),
         );
     }
     let mut sequence = 2i32;
-    let mut lookahead: Option<AudioChunk> = None;
+    let mut lookahead: Option<BufferedAudio> = None;
     let mut in_flight = InFlightAudio::default();
     let mut connection_origin: Option<f64> = None;
     let mut stream_started = false;
@@ -1086,15 +1272,17 @@ async fn stream_connected_channel(
 
         tokio::select! {
             chunk = next_channel_audio(&mut state.pending, receiver), if !closing => {
-                match chunk {
+                match chunk? {
                     Some(chunk) => {
-                        if chunk.has_speech_energy() && !live_response_pending {
+                        let audio = state.pending.load(&chunk)
+                            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                        if audio.has_speech_energy() && !live_response_pending {
                             live_response_pending = true;
                             live_response_deadline
                                 .as_mut()
                                 .reset(tokio::time::Instant::now() + state.live_response_timeout);
                         }
-                        if !stream_started && chunk.is_digital_silence() {
+                        if !stream_started && audio.is_digital_silence() {
                             writer
                                 .lock()
                                 .await
@@ -1107,10 +1295,11 @@ async fn stream_connected_channel(
                         }
                         stream_started = true;
                         connection_origin
-                            .get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
+                            .get_or_insert(chunk.start_frame() as f64 / SAMPLE_RATE as f64);
                         if let Err((error, previous, newer)) = queue_audio_chunk(
                             &mut sink,
                             &mut sequence,
+                            &mut state.pending,
                             &mut lookahead,
                             chunk,
                             &mut in_flight,
@@ -1147,6 +1336,7 @@ async fn stream_connected_channel(
                             .expect("a started stream must retain its last real audio chunk");
                         if let Err(error) = send_audio_chunk(
                             &mut sink,
+                            &mut state.pending,
                             &final_audio,
                             sequence,
                             &mut pacer,
@@ -1196,6 +1386,9 @@ async fn stream_connected_channel(
                     }
                 };
                 let Some(message) = message else { continue; };
+                if !matches!(&message, ServerMessage::Error { .. }) {
+                    state.made_progress = true;
+                }
                 live_response_pending = false;
                 if trace_protocol {
                     match &message {
@@ -1378,6 +1571,12 @@ async fn stream_connected_channel(
 
                     }
                 }
+                reclaim_recovery_spool(
+                    &mut state.pending,
+                    &mut lookahead,
+                    &in_flight,
+                )
+                .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
             }
             _ = heartbeat.tick(), if !closing && !heartbeat_pending => {
                 if let Err(error) = await_audio_send(
@@ -1428,6 +1627,7 @@ struct ChannelState {
     ready_announced: bool,
     channel: usize,
     connection_id: u64,
+    made_progress: bool,
     eof_deadline: Option<tokio::time::Instant>,
     live_response_timeout: Duration,
     heartbeat_interval: Duration,
@@ -1443,11 +1643,24 @@ impl ChannelState {
             ready_announced: false,
             channel,
             connection_id: 0,
+            made_progress: false,
             eof_deadline: None,
             live_response_timeout: LIVE_RESPONSE_TIMEOUT,
             heartbeat_interval: HEARTBEAT_INTERVAL,
             heartbeat_timeout: HEARTBEAT_TIMEOUT,
         }
+    }
+
+    fn enable_disk_recovery(&mut self) -> Result<(), String> {
+        self.pending = PendingAudio::spooled()?;
+        Ok(())
+    }
+
+    fn drain_audio_input(
+        &mut self,
+        receiver: &mut mpsc::Receiver<AudioChunk>,
+    ) -> Result<(), String> {
+        drain_audio_input(&mut self.pending, receiver)
     }
 
     fn observe_eof(&mut self, receiver: &mpsc::Receiver<AudioChunk>) {
@@ -1475,7 +1688,8 @@ impl ChannelState {
 
 async fn send_audio_chunk<S>(
     sink: &mut S,
-    chunk: &AudioChunk,
+    pending: &mut PendingAudio,
+    chunk: &BufferedAudio,
     sequence: i32,
     pacer: &mut Option<ReplayPacer>,
     connection_started: Instant,
@@ -1500,6 +1714,7 @@ where
             tokio::time::sleep(delay).await;
         }
     }
+    let chunk = pending.load(chunk)?;
     let packet = encode_audio_request(sequence, &chunk.data)?;
     await_audio_send(
         sink.send(Message::Binary(packet.into())),
@@ -1552,13 +1767,14 @@ where
 async fn queue_audio_chunk<S>(
     sink: &mut S,
     sequence: &mut i32,
-    lookahead: &mut Option<AudioChunk>,
-    next: AudioChunk,
+    pending: &mut PendingAudio,
+    lookahead: &mut Option<BufferedAudio>,
+    next: BufferedAudio,
     in_flight: &mut InFlightAudio,
     pacer: &mut Option<ReplayPacer>,
     connection_started: Instant,
     eof_deadline: Option<tokio::time::Instant>,
-) -> Result<(), (String, AudioChunk, AudioChunk)>
+) -> Result<(), (String, BufferedAudio, BufferedAudio)>
 where
     S: Sink<Message> + Unpin,
     S::Error: std::fmt::Display,
@@ -1568,6 +1784,7 @@ where
     };
     if let Err(error) = send_audio_chunk(
         sink,
+        pending,
         &previous,
         *sequence,
         pacer,
@@ -1588,13 +1805,30 @@ where
 
 fn restore_connection_audio(
     pending: &mut PendingAudio,
-    lookahead: &mut Option<AudioChunk>,
+    lookahead: &mut Option<BufferedAudio>,
     in_flight: &mut InFlightAudio,
 ) {
     if let Some(chunk) = lookahead.take() {
         pending.restore(chunk);
     }
     in_flight.restore_into(pending);
+}
+
+fn reclaim_recovery_spool(
+    pending: &mut PendingAudio,
+    lookahead: &mut Option<BufferedAudio>,
+    in_flight: &InFlightAudio,
+) -> Result<(), String> {
+    if !pending.is_empty() || !in_flight.is_empty() {
+        return Ok(());
+    }
+    let live_lookahead = match lookahead.take() {
+        Some(chunk) => Some(pending.load(&chunk)?),
+        None => None,
+    };
+    pending.reset_spool()?;
+    *lookahead = live_lookahead.map(BufferedAudio::Memory);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1604,7 +1838,7 @@ async fn connect_channel_socket(
     request_id: &str,
     language: &str,
     enable_speaker_info: bool,
-    receiver: &mpsc::Receiver<AudioChunk>,
+    receiver: &mut mpsc::Receiver<AudioChunk>,
     state: &mut ChannelState,
 ) -> Result<DoubaoSocket, String> {
     let connect_deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
@@ -1617,6 +1851,7 @@ async fn connect_channel_socket(
     );
     tokio::pin!(connect);
     loop {
+        state.drain_audio_input(receiver)?;
         state.observe_eof(receiver);
         if state.finalization_expired() {
             return Err(state.finalization_error());
@@ -1633,45 +1868,57 @@ async fn connect_channel_socket(
                 "Doubao connection timed out.".into()
             });
         }
-        let slice = deadline.duration_since(now).min(Duration::from_millis(50));
-        match tokio::time::timeout(slice, connect.as_mut()).await {
-            Ok(result) => return result,
-            Err(_) => continue,
+        if receiver.is_closed() {
+            tokio::select! {
+                result = connect.as_mut() => return result,
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+        } else {
+            tokio::select! {
+                result = connect.as_mut() => return result,
+                chunk = receiver.recv() => {
+                    if let Some(chunk) = chunk {
+                        state.pending.enqueue(chunk)?;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
         }
     }
 }
 
 async fn wait_before_retry(
     delay: Duration,
-    receiver: &mpsc::Receiver<AudioChunk>,
+    receiver: &mut mpsc::Receiver<AudioChunk>,
     state: &mut ChannelState,
 ) -> Result<(), String> {
     let live_deadline = tokio::time::Instant::now() + delay;
     loop {
+        state.drain_audio_input(receiver)?;
         state.observe_eof(receiver);
         if state.finalization_expired() {
             return Err(state.finalization_error());
-        }
-        if let Some(deadline) = state.eof_deadline {
-            let now = tokio::time::Instant::now();
-            tokio::time::sleep(
-                deadline
-                    .saturating_duration_since(now)
-                    .min(Duration::from_millis(50)),
-            )
-            .await;
-            return Ok(());
         }
         let now = tokio::time::Instant::now();
         if now >= live_deadline {
             return Ok(());
         }
-        tokio::time::sleep(
-            live_deadline
-                .duration_since(now)
-                .min(Duration::from_millis(50)),
-        )
-        .await;
+        let deadline = state
+            .eof_deadline
+            .map(|eof| eof.min(live_deadline))
+            .unwrap_or(live_deadline);
+        if receiver.is_closed() {
+            tokio::time::sleep_until(deadline).await;
+        } else {
+            tokio::select! {
+                chunk = receiver.recv() => {
+                    if let Some(chunk) = chunk {
+                        state.pending.enqueue(chunk)?;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+        }
     }
 }
 
@@ -1731,6 +1978,7 @@ async fn run_channel(
         return Ok(());
     }
     let mut state = ChannelState::new(channel);
+    state.enable_disk_recovery()?;
     let mut retry = 1u64;
     loop {
         if !prime_channel_before_connect(&mut receiver, &writer, &ready, &mut state)
@@ -1747,6 +1995,7 @@ async fn run_channel(
                 .to_string());
         }
         state.connection_id += 1;
+        state.made_progress = false;
         let request_id = uuid::Uuid::new_v4().to_string();
         let attempt = match connect_channel_socket(
             app_id,
@@ -1754,12 +2003,13 @@ async fn run_channel(
             &request_id,
             language,
             role != "asr",
-            &receiver,
+            &mut receiver,
             &mut state,
         )
         .await
         {
             Ok(socket) => {
+                state.made_progress = true;
                 announce_channel_ready(&ready, &mut state).await?;
                 stream_connected_channel(
                     socket,
@@ -1775,6 +2025,7 @@ async fn run_channel(
             }
             Err(error) => Err(error),
         };
+        let retry_delay = retry_delay_after_attempt(retry, state.made_progress);
         match attempt {
             Ok(true) => return Ok(()),
             Ok(false) => {}
@@ -1782,15 +2033,16 @@ async fn run_channel(
                 return Err(error.trim_start_matches(FATAL_ERROR_PREFIX).to_string());
             }
             Err(error) => eprintln!(
-                "[doubao channel {channel}] {error}; retrying in {retry}s; buffered_audio={:.3}s pending_bytes={}",
+                "[doubao channel {channel}] {error}; retrying in {retry_delay}s; buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={}",
                 buffered_audio_seconds(&state.pending, &receiver),
                 state.pending.bytes(),
+                state.pending.resident_audio_bytes(),
             ),
         }
-        wait_before_retry(Duration::from_secs(retry), &receiver, &mut state)
+        wait_before_retry(Duration::from_secs(retry_delay), &mut receiver, &mut state)
             .await
             .map_err(|error| error.trim_start_matches(FATAL_ERROR_PREFIX).to_string())?;
-        retry = next_retry_delay(retry);
+        retry = next_retry_delay(retry_delay);
     }
 }
 
@@ -2389,14 +2641,16 @@ mod tests {
         drop(sender);
         let mut sink = ResettingSink;
         let mut sequence = 2;
-        let mut lookahead = Some(failed.clone());
+        let mut pending = PendingAudio::default();
+        let mut lookahead = Some(failed.clone().into());
         let mut in_flight = InFlightAudio::default();
         let mut pacer = None;
         let (error, failed_again, newer_again) = queue_audio_chunk(
             &mut sink,
             &mut sequence,
+            &mut pending,
             &mut lookahead,
-            newer.clone(),
+            newer.clone().into(),
             &mut in_flight,
             &mut pacer,
             Instant::now(),
@@ -2407,7 +2661,6 @@ mod tests {
         assert_eq!(error, "connection reset");
         assert_eq!(sequence, 2, "failed sends must not consume a sequence");
 
-        let mut pending = PendingAudio::default();
         pending.restore(newer_again);
         pending.restore(failed_again);
 
@@ -2419,34 +2672,37 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_replay_is_capped_at_one_point_two_five_times_realtime() {
-        let first = AudioChunk {
+    fn reconnect_replay_is_capped_at_two_times_realtime() {
+        let first: BufferedAudio = AudioChunk {
             data: vec![1; READ_CHUNK_BYTES / 2],
             start_frame: SAMPLE_RATE,
-        };
+        }
+        .into();
         let pacer = ReplayPacer::new(&first);
         assert_eq!(pacer.delay_for(&first, Duration::ZERO), Duration::ZERO);
 
-        let second = AudioChunk {
+        let second: BufferedAudio = AudioChunk {
             data: vec![2; READ_CHUNK_BYTES / 2],
             start_frame: first.end_frame(),
-        };
+        }
+        .into();
         assert_eq!(
             pacer.delay_for(&second, Duration::ZERO),
-            Duration::from_millis(160)
+            Duration::from_millis(100)
         );
         assert_eq!(
             pacer.delay_for(&second, Duration::from_millis(200)),
             Duration::ZERO
         );
 
-        let ten_seconds = AudioChunk {
+        let ten_seconds: BufferedAudio = AudioChunk {
             data: vec![3; READ_CHUNK_BYTES / 2],
             start_frame: first.end_frame() + SAMPLE_RATE * 10 - READ_CHUNK_BYTES / 4,
-        };
+        }
+        .into();
         assert_eq!(
             pacer.delay_for(&ten_seconds, Duration::ZERO),
-            Duration::from_secs(8)
+            Duration::from_secs(5)
         );
     }
 
@@ -2491,7 +2747,7 @@ mod tests {
         in_flight.record(3, second.clone(), false);
         let mut pending = PendingAudio::default();
         pending.restore(queued.clone());
-        let mut lookahead = Some(held.clone());
+        let mut lookahead = Some(held.clone().into());
 
         restore_connection_audio(&mut pending, &mut lookahead, &mut in_flight);
 
@@ -3108,6 +3364,7 @@ mod tests {
         state.connection_id = 2;
         state.pending.chunks = (0..30)
             .map(|index| tenth_second_chunk(index * SAMPLE_RATE / 10, 3))
+            .map(BufferedAudio::from)
             .collect();
 
         let response = tokio::spawn(async move {
@@ -3625,6 +3882,90 @@ mod tests {
             delay = next_retry_delay(delay);
         }
         assert_eq!(observed, [1, 2, 4, 8, 15, 15, 15, 15]);
+    }
+
+    #[test]
+    fn provider_progress_resets_reconnect_backoff_before_the_next_outage() {
+        assert_eq!(retry_delay_after_attempt(15, true), 1);
+        assert_eq!(retry_delay_after_attempt(8, false), 8);
+    }
+
+    #[tokio::test]
+    async fn reconnect_wait_keeps_draining_live_audio_instead_of_blocking_the_recorder() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        let producer = tokio::spawn(async move {
+            for index in 0..8 {
+                sender
+                    .send(tenth_second_chunk(
+                        index * SAMPLE_RATE / 10,
+                        index as u8 + 1,
+                    ))
+                    .await
+                    .expect("the Doubao input queue must stay attached during reconnect");
+            }
+        });
+
+        tokio::time::timeout(Duration::from_millis(500), async {
+            let (wait, produced) = tokio::join!(
+                wait_before_retry(Duration::from_millis(120), &mut receiver, &mut state),
+                producer,
+            );
+            wait.expect("the reconnect delay should complete");
+            produced.expect("the recorder producer should not be backpressured");
+        })
+        .await
+        .expect("reconnect backoff must keep draining audio into recovery storage");
+
+        assert_eq!(
+            state.pending.bytes(),
+            8 * SAMPLE_RATE * MONO_FRAME_BYTES / 10,
+            "every chunk received during reconnect must remain available for recovery",
+        );
+    }
+
+    #[test]
+    fn recovery_queue_keeps_audio_on_disk_and_replays_it_in_order() {
+        let mut pending = PendingAudio::spooled().expect("create an unlinked recovery spool");
+        for index in 0..100 {
+            pending
+                .enqueue(tenth_second_chunk(index * SAMPLE_RATE / 10, index as u8))
+                .expect("append audio to the recovery spool");
+        }
+
+        assert_eq!(
+            pending.resident_audio_bytes(),
+            0,
+            "queued PCM must not grow RAM"
+        );
+        assert_eq!(
+            pending.bytes(),
+            100 * SAMPLE_RATE * MONO_FRAME_BYTES / 10,
+            "the disk queue retains the full outage window",
+        );
+        for index in 0..100 {
+            let chunk = pending.take().expect("replay every spooled chunk");
+            assert_eq!(chunk.start_frame, index * SAMPLE_RATE / 10);
+            assert_eq!(chunk.data[0], index as u8);
+        }
+        assert!(pending.take().is_none());
+    }
+
+    #[test]
+    fn recovery_spool_is_reclaimed_after_all_sent_audio_is_confirmed() {
+        let mut pending = PendingAudio::spooled().expect("create an unlinked recovery spool");
+        let expected = tenth_second_chunk(0, 9);
+        pending
+            .enqueue(expected.clone())
+            .expect("append recovery audio");
+        let mut lookahead = pending.take_buffered();
+        let in_flight = InFlightAudio::default();
+
+        reclaim_recovery_spool(&mut pending, &mut lookahead, &in_flight)
+            .expect("reclaim confirmed recovery storage");
+
+        assert_eq!(pending.spool.as_ref().unwrap().next_offset, 0);
+        assert_eq!(lookahead, Some(BufferedAudio::Memory(expected)));
     }
 
     #[test]
