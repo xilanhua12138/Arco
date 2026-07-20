@@ -1,4 +1,5 @@
 @_spi(Testing) import ArcoNativeUI
+import Darwin
 import Foundation
 import Observation
 
@@ -1906,6 +1907,26 @@ private func testElevenLabsConsolePreservesReactDestination() async {
     controller.store.dispose()
 }
 
+@MainActor
+private func testBrokenCapturePipeReturnsEPIPEInsteadOfTerminatingArco() {
+    let previousHandler = signal(SIGPIPE, SIG_DFL)
+    defer { signal(SIGPIPE, previousHandler) }
+
+    ArcoProcessSignalPolicy.install()
+
+    var descriptors = [Int32](repeating: -1, count: 2)
+    expect(pipe(&descriptors), 0, "Regression fixture creates a capture pipe")
+    guard descriptors[0] >= 0, descriptors[1] >= 0 else { return }
+    close(descriptors[0])
+    defer { close(descriptors[1]) }
+
+    errno = 0
+    var byte: UInt8 = 0
+    let result = Darwin.write(descriptors[1], &byte, 1)
+    expect(result, -1, "A closed transcriber pipe returns a write error")
+    expect(errno, EPIPE, "A closed transcriber pipe surfaces EPIPE without killing Arco")
+}
+
 testNavigationAndCaptureInvariants()
 testProviderRouting()
 testConfigurationContracts()
@@ -1946,6 +1967,7 @@ await testSetupStatusAppliesIndependentSuccesses()
 await testSetupRefreshStartsInParallelWithOpeningAndInitialization()
 await testOnboardingReceivesLiveModelProgress()
 await testElevenLabsConsolePreservesReactDestination()
+testBrokenCapturePipeReturnsEPIPEInsteadOfTerminatingArco()
 
 if failures.isEmpty {
     print("ArcoNativeUI contract tests passed (\(assertionCount) assertions)")
