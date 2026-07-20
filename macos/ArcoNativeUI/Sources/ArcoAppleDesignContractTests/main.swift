@@ -26,6 +26,7 @@ private let notes = source("SetupViews/NotesPageView.swift")
 private let topBar = source("SetupViews/TopBarView.swift")
 private let transcript = source("Views/TranscriptPane.swift")
 private let meetingOutput = source("SetupViews/MeetingOutputSettingsView.swift")
+private let appStore = source("AppStore.swift")
 
 expectTrue(!theme.isEmpty, "Theme source must resolve")
 expectTrue(!shell.isEmpty, "Main shell source must resolve")
@@ -33,6 +34,7 @@ expectTrue(!history.isEmpty, "History source must resolve")
 expectTrue(!settings.isEmpty, "Settings source must resolve")
 expectTrue(!notes.isEmpty, "Notes source must resolve")
 expectTrue(!topBar.isEmpty, "Top bar source must resolve")
+expectTrue(!appStore.isEmpty, "App store source must resolve")
 
 expectTrue(
     theme.contains("public enum ArcoMotion")
@@ -62,6 +64,12 @@ expectTrue(
     shell.contains("SidebarNavigationButtonStyle(selected: selected)")
         && shell.contains("ArcoPressFeedbackButtonStyle"),
     "Primary navigation and global actions must respond immediately on pointer-down"
+)
+expectTrue(
+    shell.contains(".arcoLiquidGlass(in: shape)")
+        && !shell.contains(".ultraThickMaterial")
+        && !shell.contains("shellBase.opacity(0.92)"),
+    "The sidebar must use one native Liquid Glass layer instead of an opaque tint stacked over thick material"
 )
 expectTrue(
     history.contains("isSelected")
@@ -100,6 +108,10 @@ expectTrue(
 expectTrue(
     transcript.contains("ArcoPressFeedbackButtonStyle"),
     "The transcript live-edge control must acknowledge pointer-down immediately"
+)
+expectTrue(
+    appStore.contains("Task.sleep(for: .milliseconds(450))"),
+    "Live first-pass captions must be polled quickly enough to feel real-time"
 )
 expectTrue(
     notes.contains("@Environment(\\.accessibilityReduceMotion)")

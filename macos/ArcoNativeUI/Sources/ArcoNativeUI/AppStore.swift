@@ -925,7 +925,7 @@ public final class ArcoStore {
         pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .milliseconds(1_200))
+                    try await Task.sleep(for: .milliseconds(450))
                 } catch {
                     return
                 }

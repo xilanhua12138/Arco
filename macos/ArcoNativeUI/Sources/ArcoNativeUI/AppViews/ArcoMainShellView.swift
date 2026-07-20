@@ -6,8 +6,6 @@ public struct ArcoMainShellView: View {
     @State private var liveReviewHovered = false
     @FocusState private var settingsTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     private let translate: ArcoTranslate
 
     @MainActor
@@ -190,22 +188,7 @@ public struct ArcoMainShellView: View {
             .padding(.vertical, 8)
         }
         .foregroundStyle(ArcoNativeGlassPalette.ink)
-        .background {
-            if accessibilityReduceTransparency {
-                shape.fill(ArcoNativeGlassPalette.shellBase)
-            } else {
-                shape.fill(.ultraThickMaterial)
-                    .background(ArcoNativeGlassPalette.shellBase.opacity(0.92), in: shape)
-            }
-        }
-        .clipShape(shape)
-        .overlay(shape.strokeBorder(Color.white.opacity(0.78), lineWidth: 0.75))
-        .overlay(
-            shape.strokeBorder(
-                ArcoNativeGlassPalette.ink.opacity(colorSchemeContrast == .increased ? 0.38 : 0.08),
-                lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-            )
-        )
+        .arcoLiquidGlass(in: shape)
     }
 
     private func navigationButton(
@@ -238,7 +221,9 @@ public struct ArcoMainShellView: View {
     private var captureCard: some View {
         let capture = controller.store.capture
         let recording = capture.phase == .recording
-        let busy = capture.phase == .starting || capture.phase == .stopping
+        let busy = controller.store.loading
+            || capture.phase == .starting
+            || capture.phase == .stopping
         let showAction = controller.page != .current || recording
         let mode = captureMode
         return VStack(spacing: 10) {
@@ -361,6 +346,7 @@ public struct ArcoMainShellView: View {
             meetings: controller.store.meetings,
             audioMode: controller.displayedAudioMode,
             shortcut: controller.listeningShortcut,
+            initializing: controller.store.loading,
             viewportWidth: viewportWidth,
             translate: translate,
             onStart: { Task { await controller.toggleCapture() } },
@@ -592,7 +578,8 @@ public struct ArcoMainShellView: View {
     }
 
     private var captureStatus: String {
-        switch controller.store.capture.phase {
+        if controller.store.loading { return translate("common.loading", [:]) }
+        return switch controller.store.capture.phase {
         case .recording: translate("common.listening", [:])
         case .starting: translate("capture.starting", [:])
         case .stopping: translate("capture.stopping", [:])
@@ -601,7 +588,8 @@ public struct ArcoMainShellView: View {
     }
 
     private var captureActionLabel: String {
-        switch controller.store.capture.phase {
+        if controller.store.loading { return translate("common.loading", [:]) }
+        return switch controller.store.capture.phase {
         case .recording: translate("capture.stop", [:])
         case .starting: translate("common.starting", [:])
         case .stopping: translate("common.stopping", [:])

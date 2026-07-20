@@ -1859,6 +1859,40 @@ fn empty_and_malformed_transcripts_are_safe_and_do_not_fabricate_lines() {
 }
 
 #[test]
+fn active_meeting_surfaces_tentative_doubao_text_without_persisting_it() {
+    let root = TempDir::new().unwrap();
+    let transcript = root.path().join("transcript-20260720-002545.md");
+    fs::write(
+        &transcript,
+        "# Meeting Transcript\n\n> Started: 2026-07-20 00:25:45 (live)\n\n",
+    )
+    .unwrap();
+    let live_snapshot = PathBuf::from(format!("{}.live.json", transcript.display()));
+    fs::write(
+        &live_snapshot,
+        r#"{"lines":[{"id":"doubao-live-1-2682","timestamp":"00:25:48","speaker":"In room 1","text":"正在实时识别的第一遍文字"}]}"#,
+    )
+    .unwrap();
+
+    let active = parse_meeting(&transcript, "local", Some(&transcript)).unwrap();
+    assert_eq!(active.lines.len(), 1);
+    assert_eq!(active.lines[0].id, "doubao-live-1-2682");
+    assert_eq!(active.lines[0].timestamp, "00:25:48");
+    assert_eq!(active.lines[0].speaker, "In room 1");
+    assert_eq!(active.lines[0].text, "正在实时识别的第一遍文字");
+    assert!(
+        !active.raw_markdown.contains("正在实时识别的第一遍文字"),
+        "first-pass text is display-only and must not contaminate the final Markdown"
+    );
+
+    let stopped = parse_meeting(&transcript, "local", None).unwrap();
+    assert!(
+        stopped.lines.is_empty(),
+        "a stale live snapshot must be ignored after capture stops"
+    );
+}
+
+#[test]
 fn meeting_list_hides_empty_history_but_keeps_active_zero_line_capture() {
     let root = TempDir::new().unwrap();
     let local = root.path().join("local");

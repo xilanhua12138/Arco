@@ -17,6 +17,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::models::{LiveTranscriptLine, LiveTranscriptSnapshot};
+
 const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const SAMPLE_RATE: usize = 16_000;
@@ -290,10 +292,12 @@ impl SpeakerRegistry {
 
 struct TranscriptWriter {
     path: PathBuf,
+    live_path: PathBuf,
     session_started_at: f64,
     active_channels: [bool; 2],
     processed_until: [f64; 2],
     pending: Vec<Segment>,
+    live_lines: [Vec<LiveTranscriptLine>; 2],
 }
 
 impl TranscriptWriter {
@@ -303,12 +307,25 @@ impl TranscriptWriter {
                 "The desktop host must initialize the transcript before transcription".into(),
             );
         }
+        let live_path = crate::meetings::live_transcript_path(&path);
+        match fs::remove_file(&live_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not reset live Doubao transcript {}: {error}",
+                    live_path.display()
+                ));
+            }
+        }
         Ok(Self {
             path,
+            live_path,
             session_started_at,
             active_channels: [true, true],
             processed_until: [0.0, 0.0],
             pending: Vec::new(),
+            live_lines: [Vec::new(), Vec::new()],
         })
     }
 
@@ -329,6 +346,77 @@ impl TranscriptWriter {
         }
         self.pending.push(segment.clone());
         self.flush_ready()
+    }
+
+    fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {
+        let channel = channel.min(1);
+        self.live_lines[channel] = segments
+            .iter()
+            .map(|segment| {
+                let seconds = self.session_started_at + segment.start;
+                let timestamp = Local
+                    .timestamp_opt(seconds as i64, 0)
+                    .single()
+                    .unwrap_or_else(Local::now)
+                    .format("%H:%M:%S")
+                    .to_string();
+                LiveTranscriptLine {
+                    id: format!(
+                        "doubao-live-{}-{}",
+                        segment.channel,
+                        (segment.start * 1_000.0).round() as i64
+                    ),
+                    timestamp,
+                    speaker: segment.label.clone(),
+                    text: segment.text.clone(),
+                }
+            })
+            .collect();
+        self.persist_live_snapshot()
+    }
+
+    fn clear_live(&mut self) -> Result<(), String> {
+        self.live_lines = [Vec::new(), Vec::new()];
+        self.persist_live_snapshot()
+    }
+
+    fn persist_live_snapshot(&self) -> Result<(), String> {
+        let mut lines = self
+            .live_lines
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        lines.sort_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if lines.is_empty() {
+            return match fs::remove_file(&self.live_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "could not clear live Doubao transcript {}: {error}",
+                    self.live_path.display()
+                )),
+            };
+        }
+        let payload = serde_json::to_vec(&LiveTranscriptSnapshot { lines })
+            .map_err(|error| format!("could not encode live Doubao transcript: {error}"))?;
+        let temporary = PathBuf::from(format!("{}.tmp", self.live_path.display()));
+        fs::write(&temporary, payload).map_err(|error| {
+            format!(
+                "could not write live Doubao transcript {}: {error}",
+                temporary.display()
+            )
+        })?;
+        fs::rename(&temporary, &self.live_path).map_err(|error| {
+            format!(
+                "could not publish live Doubao transcript {}: {error}",
+                self.live_path.display()
+            )
+        })
     }
 
     fn advance(&mut self, channel: usize, processed_until: f64) -> Result<(), String> {
@@ -1191,6 +1279,26 @@ async fn stream_connected_channel(
                             false,
                             origin,
                         );
+                        if role != "diarization" {
+                            let definite = segments
+                                .iter()
+                                .map(segment_dedup_key)
+                                .collect::<HashSet<_>>();
+                            let tentative = segments_from_connection_payload(
+                                &payload,
+                                state.channel,
+                                true,
+                                origin,
+                            )
+                            .into_iter()
+                            .filter(|segment| !definite.contains(&segment_dedup_key(segment)))
+                            .collect::<Vec<_>>();
+                            writer
+                                .lock()
+                                .await
+                                .update_live(state.channel, &tentative)
+                                .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                        }
                         let mut processed_until = confirmation
                             .confirmed_through_frame
                             .map(|frame| frame as f64 / SAMPLE_RATE as f64)
@@ -1821,12 +1929,18 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         signal_ready()
     };
     let run_result = tokio::try_join!(pump, remote, room, readiness);
-    let flush_result = writer.lock().await.flush_all();
+    let mut writer = writer.lock().await;
+    let flush_result = writer.flush_all();
+    let clear_live_result = writer.clear_live();
+    drop(writer);
     match run_result {
-        Ok(_) => flush_result,
+        Ok(_) => flush_result.and(clear_live_result),
         Err(error) => {
             if let Err(flush_error) = flush_result {
                 eprintln!("[doubao transcript] final ordered flush failed: {flush_error}");
+            }
+            if let Err(clear_error) = clear_live_result {
+                eprintln!("[doubao transcript] live snapshot cleanup failed: {clear_error}");
             }
             Err(error)
         }
@@ -3027,7 +3141,7 @@ mod tests {
             .await
         });
 
-        tokio::time::timeout(Duration::from_millis(750), async {
+        tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if fs::read_to_string(&transcript)
                     .unwrap()
@@ -3040,6 +3154,84 @@ mod tests {
         })
         .await
         .expect("provider results must be consumed while replay audio remains queued");
+
+        stream.abort();
+        response.abort();
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn optimized_first_pass_text_is_published_before_vad_finalization() {
+        let (socket, mut server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        let live_snapshot = root.path().join("transcript.md.live.json");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(3);
+        sender.send(tenth_second_chunk(0, 3)).await.unwrap();
+        sender
+            .send(tenth_second_chunk(SAMPLE_RATE / 10, 4))
+            .await
+            .unwrap();
+        sender
+            .send(tenth_second_chunk(SAMPLE_RATE / 5, 5))
+            .await
+            .unwrap();
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 1;
+        let response = tokio::spawn(async move {
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            server
+                .send(result_message(
+                    2,
+                    false,
+                    json!({ "result": { "utterances": [{
+                        "text": "first-pass words while speaking",
+                        "start_time": 0.0,
+                        "end_time": 100.0,
+                        "definite": false
+                    }]}}),
+                ))
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let stream = tokio::spawn(async move {
+            stream_connected_channel(
+                socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(750), async {
+            loop {
+                if fs::read_to_string(&live_snapshot)
+                    .is_ok_and(|contents| contents.contains("first-pass words while speaking"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the optimized first pass must reach the live UI before an 800ms VAD final");
+        assert!(
+            !fs::read_to_string(&transcript)
+                .unwrap()
+                .contains("first-pass words while speaking"),
+            "tentative text must not be appended to final Markdown"
+        );
 
         stream.abort();
         response.abort();
