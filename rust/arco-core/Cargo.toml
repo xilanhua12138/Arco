@@ -1,6 +1,6 @@
 [package]
 name = "arco-core"
-version = "0.3.1"
+version = "0.3.2"
 description = "Framework-independent backend for the native Arco macOS app"
 authors = ["Arco contributors"]
 license = "MIT"
