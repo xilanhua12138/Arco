@@ -37,6 +37,7 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const SPEECH_RMS_THRESHOLD: f64 = 0.01;
 const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_STREAM_RETRIES: usize = 3;
 const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
 const MAX_PENDING_TRANSCRIPT_SEGMENTS: usize = 10_000;
 const FATAL_ERROR_PREFIX: &str = "ARCO_DOUBAO_FATAL:";
@@ -350,10 +351,16 @@ impl InFlightAudio {
         confirmation
     }
 
-    fn restore_into(&mut self, pending: &mut PendingAudio) {
-        while let Some(sent) = self.chunks.pop_back() {
-            pending.restore(sent.chunk);
+    fn abandon(&mut self) -> AudioConfirmation {
+        let mut abandoned = AudioConfirmation::default();
+        while let Some(sent) = self.chunks.pop_front() {
+            abandoned.confirmed_chunks += 1;
+            abandoned.final_confirmed |= sent.final_packet;
+            abandoned.confirmed_through_frame = abandoned
+                .confirmed_through_frame
+                .max(Some(sent.chunk.end_frame()));
         }
+        abandoned
     }
 
     #[cfg(test)]
@@ -508,6 +515,11 @@ impl TranscriptWriter {
                 }
             })
             .collect();
+        self.persist_live_snapshot()
+    }
+
+    fn clear_live_channel(&mut self, channel: usize) -> Result<(), String> {
+        self.live_lines[channel.min(1)].clear();
         self.persist_live_snapshot()
     }
 
@@ -974,11 +986,35 @@ fn next_retry_delay(current: u64) -> u64 {
     current.saturating_mul(2).min(15)
 }
 
-fn retry_delay_after_attempt(current: u64, made_progress: bool) -> u64 {
-    if made_progress {
+fn retry_delay_after_attempt(current: u64, made_final_progress: bool) -> u64 {
+    if made_final_progress {
         1
     } else {
         current
+    }
+}
+
+#[derive(Default)]
+struct StreamRetryBudget {
+    consecutive_failures: usize,
+}
+
+impl StreamRetryBudget {
+    fn record_final_progress(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    fn record_failure(&mut self, made_final_progress: bool) -> bool {
+        if made_final_progress {
+            self.record_final_progress();
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures <= MAX_STREAM_RETRIES
+    }
+
+    #[cfg(test)]
+    fn consecutive_failures(&self) -> usize {
+        self.consecutive_failures
     }
 }
 
@@ -1194,14 +1230,14 @@ async fn stream_connected_channel(
     timeline_store: Option<&Arc<Mutex<crate::speaker_timeline::SpeakerTimelineStore>>>,
     state: &mut ChannelState,
 ) -> Result<bool, String> {
-    let replay_buffered_seconds = buffered_audio_seconds(&state.pending, receiver);
+    let catchup_buffered_seconds = buffered_audio_seconds(&state.pending, receiver);
     let (mut sink, mut stream) = socket.split();
     if state.connection_id > 1 {
         eprintln!(
-            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={} replay_pacing=socket_backpressure",
+            "ARCO_DOUBAO_RECONNECT channel={} connection={} queued_audio={:.3}s pending_bytes={} pending_ram_bytes={} catchup_pacing=socket_backpressure",
             state.channel,
             state.connection_id,
-            replay_buffered_seconds,
+            catchup_buffered_seconds,
             state.pending.bytes(),
             state.pending.resident_audio_bytes(),
         );
@@ -1213,7 +1249,7 @@ async fn stream_connected_channel(
     let mut stream_started = false;
     let connection_started = Instant::now();
     let trace_protocol = std::env::var("ARCO_DOUBAO_TRACE").as_deref() == Ok("1");
-    let mut replay_reported = state.connection_id == 1 || replay_buffered_seconds == 0.0;
+    let mut catchup_reported = state.connection_id == 1 || catchup_buffered_seconds == 0.0;
     let mut closing = false;
     let mut flush_sent = false;
     let dormant_deadline = Duration::from_secs(365 * 24 * 60 * 60);
@@ -1236,7 +1272,15 @@ async fn stream_connected_channel(
     loop {
         state.observe_eof(receiver);
         if state.finalization_expired() {
-            restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+            close_disconnected_segment(
+                writer,
+                state.channel,
+                &mut state.pending,
+                &mut lookahead,
+                &mut in_flight,
+            )
+            .await
+            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
             return Err(state.finalization_error());
         }
         if let Some(deadline) = state.eof_deadline {
@@ -1280,15 +1324,23 @@ async fn stream_connected_channel(
                         ).await {
                             state.pending.restore(newer);
                             state.pending.restore(previous);
-                            in_flight.restore_into(&mut state.pending);
+                            close_disconnected_segment(
+                                writer,
+                                state.channel,
+                                &mut state.pending,
+                                &mut lookahead,
+                                &mut in_flight,
+                            )
+                            .await
+                            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                             return Err(format!("Doubao audio send failed: {error}"));
                         }
-                        if !replay_reported && state.pending.is_empty() && receiver.is_empty() {
+                        if !catchup_reported && state.pending.is_empty() && receiver.is_empty() {
                             eprintln!(
-                                "ARCO_DOUBAO_REPLAY_CAUGHT_UP channel={} connection={} replayed_audio={:.3}s",
-                                state.channel, state.connection_id, replay_buffered_seconds
+                                "ARCO_DOUBAO_CATCHUP_COMPLETE channel={} connection={} queued_audio={:.3}s",
+                                state.channel, state.connection_id, catchup_buffered_seconds
                             );
-                            replay_reported = true;
+                            catchup_reported = true;
                         }
                     }
                     None => {
@@ -1312,19 +1364,34 @@ async fn stream_connected_channel(
                             sequence,
                             state.eof_deadline,
                         ).await {
-                            state.pending.restore(final_audio);
-                            in_flight.restore_into(&mut state.pending);
+                            in_flight.record(sequence, final_audio, true);
+                            close_disconnected_segment(
+                                writer,
+                                state.channel,
+                                &mut state.pending,
+                                &mut lookahead,
+                                &mut in_flight,
+                            )
+                            .await
+                            .map_err(|cleanup| format!("{FATAL_ERROR_PREFIX}{cleanup}"))?;
                             return Err(format!("Doubao final audio send failed: {error}"));
                         }
-                        // Mark the last real chunk as the logical EOF boundary
-                        // for replay, even though it was an ordinary wire packet.
+                        // Mark the last real chunk as the logical EOF boundary.
                         in_flight.record(sequence, final_audio, true);
                         sequence = sequence.saturating_add(1);
                         if let Err(error) = send_audio_flush(
                             &mut sink,
                             state.eof_deadline,
                         ).await {
-                            in_flight.restore_into(&mut state.pending);
+                            close_disconnected_segment(
+                                writer,
+                                state.channel,
+                                &mut state.pending,
+                                &mut lookahead,
+                                &mut in_flight,
+                            )
+                            .await
+                            .map_err(|cleanup| format!("{FATAL_ERROR_PREFIX}{cleanup}"))?;
                             return Err(format!("Doubao final flush failed: {error}"));
                         }
                         flush_sent = true;
@@ -1342,11 +1409,15 @@ async fn stream_connected_channel(
                 let message = match receive_protocol_message(message).await {
                     Ok(message) => message,
                     Err(error) => {
-                        restore_connection_audio(
+                        close_disconnected_segment(
+                            writer,
+                            state.channel,
                             &mut state.pending,
                             &mut lookahead,
                             &mut in_flight,
-                        );
+                        )
+                        .await
+                        .map_err(|cleanup| format!("{FATAL_ERROR_PREFIX}{cleanup}"))?;
                         return Err(if state.finalization_expired() {
                             state.finalization_error()
                         } else {
@@ -1355,9 +1426,6 @@ async fn stream_connected_channel(
                     }
                 };
                 let Some(message) = message else { continue; };
-                if !matches!(&message, ServerMessage::Error { .. }) {
-                    state.made_progress = true;
-                }
                 live_response_pending = false;
                 if trace_protocol {
                     match &message {
@@ -1422,6 +1490,15 @@ async fn stream_connected_channel(
                 }
                 match message {
                     ServerMessage::Error { code, message } => {
+                        close_disconnected_segment(
+                            writer,
+                            state.channel,
+                            &mut state.pending,
+                            &mut lookahead,
+                            &mut in_flight,
+                        )
+                        .await
+                        .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                         return Err(format!(
                             "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
                         ));
@@ -1441,6 +1518,9 @@ async fn stream_connected_channel(
                             false,
                             origin,
                         );
+                        if !segments.is_empty() {
+                            state.made_final_progress = true;
+                        }
                         if role != "diarization" {
                             let definite = segments
                                 .iter()
@@ -1508,11 +1588,15 @@ async fn stream_connected_channel(
                         }
 
                         if state.finalization_expired() {
-                            restore_connection_audio(
+                            close_disconnected_segment(
+                                writer,
+                                state.channel,
                                 &mut state.pending,
                                 &mut lookahead,
                                 &mut in_flight,
-                            );
+                            )
+                            .await
+                            .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                             return Err(state.finalization_error());
                         }
                         let mut transcript = writer.lock().await;
@@ -1553,11 +1637,15 @@ async fn stream_connected_channel(
                     state.eof_deadline,
                     LIVE_AUDIO_SEND_TIMEOUT,
                 ).await {
-                    restore_connection_audio(
+                    close_disconnected_segment(
+                        writer,
+                        state.channel,
                         &mut state.pending,
                         &mut lookahead,
                         &mut in_flight,
-                    );
+                    )
+                    .await
+                    .map_err(|cleanup| format!("{FATAL_ERROR_PREFIX}{cleanup}"))?;
                     return Err(format!("Doubao heartbeat send failed: {error}"));
                 }
                 heartbeat_pending = true;
@@ -1566,23 +1654,31 @@ async fn stream_connected_channel(
                     .reset(tokio::time::Instant::now() + state.heartbeat_timeout);
             }
             _ = &mut heartbeat_deadline, if heartbeat_pending && !closing => {
-                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
-                return Err("Doubao heartbeat timed out; reconnecting with unconfirmed audio.".into());
+                close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
+                    .await
+                    .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                return Err("Doubao heartbeat timed out; reconnecting with queued audio.".into());
             }
             _ = &mut live_response_deadline, if live_response_pending && !closing => {
-                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
-                return Err("Doubao provider response timed out after incoming speech; reconnecting with unconfirmed audio.".into());
+                close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
+                    .await
+                    .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
+                return Err("Doubao provider response timed out after incoming speech; reconnecting with queued audio.".into());
             }
             _ = &mut final_response_deadline, if closing && !in_flight.is_empty() => {
-                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
+                    .await
+                    .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                 return Err(if state.finalization_expired() {
                     state.finalization_error()
                 } else {
-                    "Doubao final result timed out; reconnecting with unconfirmed audio.".into()
+                    "Doubao final result timed out; closing the stale segment.".into()
                 });
             }
             _ = &mut eof_deadline, if state.eof_deadline.is_some() => {
-                restore_connection_audio(&mut state.pending, &mut lookahead, &mut in_flight);
+                close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
+                    .await
+                    .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                 return Err(state.finalization_error());
             }
         }
@@ -1596,7 +1692,7 @@ struct ChannelState {
     ready_announced: bool,
     channel: usize,
     connection_id: u64,
-    made_progress: bool,
+    made_final_progress: bool,
     eof_deadline: Option<tokio::time::Instant>,
     live_response_timeout: Duration,
     heartbeat_interval: Duration,
@@ -1612,7 +1708,7 @@ impl ChannelState {
             ready_announced: false,
             channel,
             connection_id: 0,
-            made_progress: false,
+            made_final_progress: false,
             eof_deadline: None,
             live_response_timeout: LIVE_RESPONSE_TIMEOUT,
             heartbeat_interval: HEARTBEAT_INTERVAL,
@@ -1693,7 +1789,7 @@ where
         tokio::time::timeout(live_timeout, send)
             .await
             .map_err(|_| {
-                "Doubao audio send timed out; reconnecting with unconfirmed audio.".to_string()
+                "Doubao audio send timed out; reconnecting with queued audio.".to_string()
             })?
     };
     result.map_err(|error| error.to_string())
@@ -1743,15 +1839,28 @@ where
     Ok(())
 }
 
-fn restore_connection_audio(
+fn abandon_sent_audio_after_disconnect(
     pending: &mut PendingAudio,
     lookahead: &mut Option<BufferedAudio>,
     in_flight: &mut InFlightAudio,
-) {
+) -> AudioConfirmation {
     if let Some(chunk) = lookahead.take() {
         pending.restore(chunk);
     }
-    in_flight.restore_into(pending);
+    in_flight.abandon()
+}
+
+async fn close_disconnected_segment(
+    writer: &Arc<Mutex<TranscriptWriter>>,
+    channel: usize,
+    pending: &mut PendingAudio,
+    lookahead: &mut Option<BufferedAudio>,
+    in_flight: &mut InFlightAudio,
+) -> Result<(), String> {
+    let abandoned = abandon_sent_audio_after_disconnect(pending, lookahead, in_flight);
+    let mut transcript = writer.lock().await;
+    transcript.clear_live_channel(channel)?;
+    transcript.advance_from_confirmation(channel, &abandoned)
 }
 
 fn reclaim_recovery_spool(
@@ -1920,6 +2029,7 @@ async fn run_channel(
     let mut state = ChannelState::new(channel);
     state.enable_disk_recovery()?;
     let mut retry = 1u64;
+    let mut retry_budget = StreamRetryBudget::default();
     loop {
         if !prime_channel_before_connect(&mut receiver, &writer, &ready, &mut state)
             .await
@@ -1935,7 +2045,7 @@ async fn run_channel(
                 .to_string());
         }
         state.connection_id += 1;
-        state.made_progress = false;
+        state.made_final_progress = false;
         let request_id = uuid::Uuid::new_v4().to_string();
         let attempt = match connect_channel_socket(
             app_id,
@@ -1949,7 +2059,6 @@ async fn run_channel(
         .await
         {
             Ok(socket) => {
-                state.made_progress = true;
                 announce_channel_ready(&ready, &mut state).await?;
                 stream_connected_channel(
                     socket,
@@ -1965,19 +2074,26 @@ async fn run_channel(
             }
             Err(error) => Err(error),
         };
-        let retry_delay = retry_delay_after_attempt(retry, state.made_progress);
+        let retry_delay = retry_delay_after_attempt(retry, state.made_final_progress);
         match attempt {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) if is_fatal_channel_error(&error) => {
                 return Err(error.trim_start_matches(FATAL_ERROR_PREFIX).to_string());
             }
-            Err(error) => eprintln!(
-                "[doubao channel {channel}] {error}; retrying in {retry_delay}s; buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={}",
-                buffered_audio_seconds(&state.pending, &receiver),
-                state.pending.bytes(),
-                state.pending.resident_audio_bytes(),
-            ),
+            Err(error) => {
+                if !retry_budget.record_failure(state.made_final_progress) {
+                    return Err(format!(
+                        "Doubao channel {channel} failed after {MAX_STREAM_RETRIES} recovery attempts: {error}"
+                    ));
+                }
+                eprintln!(
+                    "[doubao channel {channel}] {error}; retrying in {retry_delay}s; queued_audio={:.3}s pending_bytes={} pending_ram_bytes={}",
+                    buffered_audio_seconds(&state.pending, &receiver),
+                    state.pending.bytes(),
+                    state.pending.resident_audio_bytes(),
+                );
+            }
         }
         wait_before_retry(Duration::from_secs(retry_delay), &mut receiver, &mut state)
             .await
@@ -2609,25 +2725,39 @@ mod tests {
     }
 
     #[test]
-    fn reset_after_final_send_replays_the_final_audio_on_the_next_connection() {
+    fn livekit_style_disconnect_drops_sent_audio_and_keeps_only_unsent_audio() {
         let final_audio = AudioChunk {
             data: vec![21, 22, 23, 24],
             start_frame: 9_900,
         };
+        let held = AudioChunk {
+            data: vec![25, 26, 27, 28],
+            start_frame: 9_902,
+        };
         let mut pending = PendingAudio::default();
-        let mut lookahead = None;
+        let mut lookahead = Some(held.clone().into());
         let mut in_flight = InFlightAudio::default();
         in_flight.record(2, final_audio.clone(), true);
 
-        restore_connection_audio(&mut pending, &mut lookahead, &mut in_flight);
+        let abandoned =
+            abandon_sent_audio_after_disconnect(&mut pending, &mut lookahead, &mut in_flight);
 
-        assert_eq!(pending.take(), Some(final_audio));
+        assert_eq!(
+            abandoned.confirmed_through_frame,
+            Some(final_audio.end_frame()),
+            "the abandoned sent tail must advance the stream watermark"
+        );
+        assert!(
+            abandoned.final_confirmed,
+            "an abandoned logical EOF must not be replayed forever"
+        );
+        assert_eq!(pending.take(), Some(held));
         assert_eq!(pending.take(), None);
         assert!(in_flight.is_empty());
     }
 
     #[test]
-    fn reset_replays_every_unacknowledged_sent_chunk_in_original_order() {
+    fn livekit_style_disconnect_never_requeues_already_sent_frames() {
         let first = AudioChunk {
             data: vec![1, 2],
             start_frame: 100,
@@ -2651,17 +2781,59 @@ mod tests {
         pending.restore(queued.clone());
         let mut lookahead = Some(held.clone().into());
 
-        restore_connection_audio(&mut pending, &mut lookahead, &mut in_flight);
+        let abandoned =
+            abandon_sent_audio_after_disconnect(&mut pending, &mut lookahead, &mut in_flight);
 
-        assert_eq!(pending.take(), Some(first));
-        assert_eq!(pending.take(), Some(second));
+        assert_eq!(abandoned.confirmed_chunks, 2);
+        assert_eq!(abandoned.confirmed_through_frame, Some(second.end_frame()));
         assert_eq!(pending.take(), Some(held));
         assert_eq!(pending.take(), Some(queued));
         assert_eq!(pending.take(), None);
     }
 
     #[test]
-    fn acknowledgements_advance_a_monotonic_watermark_and_only_replay_the_tail() {
+    fn disconnect_closes_only_the_stale_interim_segment_for_that_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        let live = root.path().join("transcript.md.live.json");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        writer
+            .update_live(
+                0,
+                &[Segment {
+                    channel: 0,
+                    speaker: 0,
+                    label: "Remote 1".into(),
+                    text: "stale remote interim".into(),
+                    start: 0.0,
+                    end: 0.5,
+                }],
+            )
+            .unwrap();
+        writer
+            .update_live(
+                1,
+                &[Segment {
+                    channel: 1,
+                    speaker: 0,
+                    label: "In room 1".into(),
+                    text: "still live room interim".into(),
+                    start: 0.6,
+                    end: 1.0,
+                }],
+            )
+            .unwrap();
+
+        writer.clear_live_channel(0).unwrap();
+
+        let snapshot = fs::read_to_string(live).unwrap();
+        assert!(!snapshot.contains("stale remote interim"));
+        assert!(snapshot.contains("still live room interim"));
+    }
+
+    #[test]
+    fn acknowledgements_advance_a_monotonic_watermark_before_disconnect_drops_the_tail() {
         let chunks: Vec<_> = (0..3)
             .map(|index| AudioChunk {
                 data: vec![index as u8; 2],
@@ -2678,14 +2850,17 @@ mod tests {
         assert!(!confirmation.final_confirmed);
         assert_eq!(in_flight.len(), 1);
 
-        let mut pending = PendingAudio::default();
-        in_flight.restore_into(&mut pending);
-        assert_eq!(pending.take(), Some(chunks[2].clone()));
-        assert_eq!(pending.take(), None);
+        let abandoned = in_flight.abandon();
+        assert_eq!(abandoned.confirmed_chunks, 1);
+        assert_eq!(
+            abandoned.confirmed_through_frame,
+            Some(chunks[2].end_frame())
+        );
+        assert!(in_flight.is_empty());
     }
 
     #[test]
-    fn replay_tracking_never_discards_unconfirmed_audio() {
+    fn in_flight_tracking_retains_sent_audio_until_result_or_disconnect() {
         let mut in_flight = InFlightAudio::default();
         for sequence in 2..102 {
             in_flight.record(
@@ -2815,7 +2990,7 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_final_result_before_client_eof_preserves_unconfirmed_audio_for_replay() {
+    fn unexpected_final_result_before_client_eof_does_not_confirm_sent_audio() {
         let chunks: Vec<_> = (0..2)
             .map(|index| AudioChunk {
                 data: vec![index as u8; MONO_FRAME_BYTES],
@@ -2838,10 +3013,14 @@ mod tests {
         );
 
         assert!(!confirmation.final_confirmed);
-        let mut pending = PendingAudio::default();
-        in_flight.restore_into(&mut pending);
-        assert_eq!(pending.take(), Some(chunks[0].clone()));
-        assert_eq!(pending.take(), Some(chunks[1].clone()));
+        assert_eq!(in_flight.len(), 2);
+        let abandoned = in_flight.abandon();
+        assert_eq!(abandoned.confirmed_chunks, 2);
+        assert_eq!(
+            abandoned.confirmed_through_frame,
+            Some(chunks[1].end_frame())
+        );
+        assert!(in_flight.is_empty());
     }
 
     #[test]
@@ -2924,7 +3103,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_empty_receiver_does_not_start_finalization_while_replay_is_pending() {
+    async fn closed_empty_receiver_does_not_start_finalization_while_queued_audio_is_pending() {
         let (sender, receiver) = mpsc::channel(1);
         drop(sender);
         let mut state = ChannelState::new(0);
@@ -3252,7 +3431,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnect_backlog_is_drained_at_socket_speed_instead_of_audio_clock_speed() {
+    async fn reconnect_queue_is_drained_at_socket_speed_instead_of_audio_clock_speed() {
         let (socket, mut server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
@@ -3287,19 +3466,19 @@ mod tests {
             for packet_index in 0..29 {
                 assert!(
                     matches!(server.next().await, Some(Ok(Message::Binary(_)))),
-                    "replay packet {packet_index} must remain ordered and binary"
+                    "queued packet {packet_index} must remain ordered and binary"
                 );
             }
         })
         .await
-        .expect("reconnect backlog must be limited by socket backpressure, not audio timestamps");
+        .expect("reconnect queue must be limited by socket backpressure, not audio timestamps");
 
         stream.abort();
         drop(sender);
     }
 
     #[tokio::test]
-    async fn replay_backlog_does_not_delay_provider_results_until_all_audio_is_resent() {
+    async fn reconnect_queue_does_not_delay_provider_results_until_all_audio_is_sent() {
         let (socket, mut server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
@@ -3323,7 +3502,7 @@ mod tests {
                     2,
                     false,
                     json!({ "result": { "utterances": [{
-                        "text": "result while replaying",
+                        "text": "result while catching up",
                         "start_time": 0.0,
                         "end_time": 100.0,
                         "definite": true
@@ -3351,7 +3530,7 @@ mod tests {
             loop {
                 if fs::read_to_string(&transcript)
                     .unwrap()
-                    .contains("result while replaying")
+                    .contains("result while catching up")
                 {
                     break;
                 }
@@ -3359,7 +3538,7 @@ mod tests {
             }
         })
         .await
-        .expect("provider results must be consumed while replay audio remains queued");
+        .expect("provider results must be consumed while reconnect audio remains queued");
 
         stream.abort();
         response.abort();
@@ -3459,7 +3638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn speech_without_any_provider_progress_reconnects_and_preserves_audio() {
+    async fn repeated_provider_stalls_do_not_multiply_the_reconnect_backlog() {
         let (socket, mut server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
@@ -3468,6 +3647,7 @@ mod tests {
         transcript_writer.set_active_channels([true, false]);
         let writer = Arc::new(Mutex::new(transcript_writer));
         let (sender, mut receiver) = mpsc::channel(16);
+        let chunk_bytes = tenth_second_chunk(0, 3).data.len();
         for index in 0..10 {
             sender
                 .send(tenth_second_chunk(index * SAMPLE_RATE / 10, 3))
@@ -3500,19 +3680,63 @@ mod tests {
 
         assert!(result.contains("provider response"));
         assert!(result.contains("reconnecting"));
+        assert_eq!(
+            state.pending.bytes(),
+            chunk_bytes,
+            "only the one unsent lookahead may cross a LiveKit-style reconnect"
+        );
         assert!(
-            state.pending.bytes() >= SAMPLE_RATE * MONO_FRAME_BYTES / 10,
-            "unconfirmed speech must remain buffered for replay after reconnect"
+            (writer.lock().await.processed_until[0] - 0.9).abs() < 0.000_001,
+            "already-sent audio must advance the abandoned connection watermark"
         );
         assert!(
             !sender.is_closed(),
             "the live audio producer must remain attached"
         );
         server_task.abort();
+
+        let (next_socket, mut next_server) = local_websocket_pair().await;
+        for index in 10..15 {
+            sender
+                .send(tenth_second_chunk(index * SAMPLE_RATE / 10, 4))
+                .await
+                .unwrap();
+        }
+        state.connection_id = 2;
+        let next_server_task =
+            tokio::spawn(async move { while matches!(next_server.next().await, Some(Ok(_))) {} });
+        let next_result = tokio::time::timeout(
+            Duration::from_secs(1),
+            stream_connected_channel(
+                next_socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            ),
+        )
+        .await
+        .expect("a second silent provider connection must also hit the watchdog")
+        .expect_err("the second stalled connection must be replaced");
+
+        assert!(next_result.contains("provider response"));
+        assert_eq!(
+            state.pending.bytes(),
+            chunk_bytes,
+            "a second outage must not re-add audio already sent by the first or second connection"
+        );
+        assert!(
+            (writer.lock().await.processed_until[0] - 1.4).abs() < 0.000_001,
+            "the stream watermark must continue moving across repeated outages"
+        );
+        next_server_task.abort();
     }
 
     #[tokio::test]
-    async fn missing_websocket_heartbeat_reconnects_and_preserves_audio() {
+    async fn missing_websocket_heartbeat_keeps_only_the_unsent_lookahead() {
         let (socket, _server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
@@ -3552,10 +3776,12 @@ mod tests {
 
         assert!(result.contains("heartbeat"));
         assert!(result.contains("reconnecting"));
-        assert!(
-            state.pending.bytes() >= SAMPLE_RATE * MONO_FRAME_BYTES / 10,
-            "heartbeat recovery must replay all unconfirmed audio"
+        assert_eq!(
+            state.pending.bytes(),
+            tenth_second_chunk(0, 3).data.len(),
+            "heartbeat recovery must not replay frames already consumed by the failed connection"
         );
+        assert!((writer.lock().await.processed_until[0] - 0.1).abs() < 0.000_001);
         assert!(!sender.is_closed(), "the recorder must remain attached");
     }
 
@@ -3834,7 +4060,30 @@ mod tests {
     }
 
     #[test]
-    fn provider_progress_resets_reconnect_backoff_before_the_next_outage() {
+    fn livekit_style_retry_budget_is_bounded_and_only_final_progress_resets_it() {
+        let mut budget = StreamRetryBudget::default();
+        assert!(budget.record_failure(false));
+        assert!(budget.record_failure(false));
+        assert!(budget.record_failure(false));
+        assert!(
+            !budget.record_failure(false),
+            "the fourth consecutive failed stream must fail capture instead of reconnecting forever"
+        );
+
+        budget.record_final_progress();
+        assert!(
+            budget.record_failure(false),
+            "a committed final transcript starts a fresh recovery budget"
+        );
+        assert!(
+            budget.record_failure(true),
+            "final progress during an attempt resets the budget before that connection later fails"
+        );
+        assert_eq!(budget.consecutive_failures(), 1);
+    }
+
+    #[test]
+    fn finalized_progress_resets_reconnect_backoff_before_the_next_outage() {
         assert_eq!(retry_delay_after_attempt(15, true), 1);
         assert_eq!(retry_delay_after_attempt(8, false), 8);
     }
