@@ -164,8 +164,11 @@ by sequenced audio frames.
   Token pair and are stored in a dedicated macOS Keychain service. Arco never
   falls back to the generic Ark/LLM `DOUBAO_API_KEY`.
 - The worker is ready only after every active channel receives a server
-  response. Provider handshake errors and stream disconnects fail the owned
-  capture pipeline rather than silently switching providers.
+  response. Provider handshake errors remain terminal. A transient disconnect
+  receives at most three recovery attempts; only a new finalized utterance
+  resets that budget. Recovery retains audio that has not yet been sent, closes
+  the disconnected channel's stale tentative edge, and advances past already
+  sent frames instead of replaying them into every replacement connection.
 
 Primary references:
 
@@ -198,7 +201,7 @@ Primary references:
 
 The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; all cloud providers remain streaming-only.
 
-Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. Deepgram and ElevenLabs retry transient network failures with bounded backoff while stdin continues draining; the current Doubao worker fails the owned capture pipeline on a dropped stream. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
+Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. The cloud adapters retry transient network failures with bounded backoff while stdin continues draining. Doubao additionally limits a stream to three consecutive recovery attempts and resets that budget only after finalized transcript progress. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
 
 ## Echo caveat
 

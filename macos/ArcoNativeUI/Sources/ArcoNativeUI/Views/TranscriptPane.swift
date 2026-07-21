@@ -20,6 +20,24 @@ public enum TranscriptPaneLayout: Sendable {
     case agentOverlay
 }
 
+@_spi(Testing)
+public struct TranscriptLiveEdgeRevision: Equatable, Sendable {
+    public let lineCount: Int
+    public let lastLine: TranscriptLine?
+
+    public init(lines: [TranscriptLine]) {
+        lineCount = lines.count
+        lastLine = lines.last
+    }
+}
+
+@_spi(Testing)
+public enum TranscriptLiveFollowPolicy {
+    public static func shouldFollow(active: Bool, followingLive: Bool) -> Bool {
+        active && followingLive
+    }
+}
+
 public struct TranscriptPaneView: View {
     public var meeting: MeetingDetail?
     public var capture: CaptureState
@@ -139,7 +157,7 @@ public struct TranscriptPaneView: View {
         let active = capture.phase == .recording && meeting.summary.id == capture.activeMeetingId
         let generatedSummary = meeting.summary.generatedSummary?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let lastSequence = meeting.lines.last?.sequence
+        let liveEdgeRevision = TranscriptLiveEdgeRevision(lines: meeting.lines)
 
         return VStack(spacing: 0) {
             if showHeader { header }
@@ -195,8 +213,11 @@ public struct TranscriptPaneView: View {
                         guard active else { return }
                         proxy.scrollTo("transcript-live-edge", anchor: .bottom)
                     }
-                    .onChange(of: lastSequence) {
-                        guard active && followingLive else { return }
+                    .onChange(of: liveEdgeRevision) {
+                        guard TranscriptLiveFollowPolicy.shouldFollow(
+                            active: active,
+                            followingLive: followingLive
+                        ) else { return }
                         if reduceMotion {
                             proxy.scrollTo("transcript-live-edge", anchor: .bottom)
                         } else {

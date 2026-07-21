@@ -89,6 +89,15 @@ expectTrue(
     transcriptSource.contains("minHeight: viewport.size.height"),
     "The transcript document must retain a viewport-height flex container"
 )
+expectTrue(
+    transcriptSource.contains("let liveEdgeRevision = TranscriptLiveEdgeRevision(lines: meeting.lines)")
+        && transcriptSource.contains(".onChange(of: liveEdgeRevision)"),
+    "Live transcript following must observe tentative text refinements, not only new sequences"
+)
+expectTrue(
+    !transcriptSource.contains("let lastSequence = meeting.lines.last?.sequence"),
+    "The stale sequence-only live-edge trigger must not return"
+)
 
 let replyWidthUseCount = insightSource.components(
     separatedBy: "maxWidth: ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 70)"

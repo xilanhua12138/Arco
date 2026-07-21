@@ -1927,6 +1927,55 @@ private func testBrokenCapturePipeReturnsEPIPEInsteadOfTerminatingArco() {
     expect(errno, EPIPE, "A closed transcriber pipe surfaces EPIPE without killing Arco")
 }
 
+@MainActor
+private func testLiveTranscriptEdgeTracksTentativeTextRefinements() {
+    let draft = TranscriptLine(
+        id: "doubao-live-0-1200",
+        timestamp: "14:32:31",
+        speaker: "Remote 1",
+        text: "first pass",
+        sequence: 7
+    )
+    var refinedDraft = draft
+    refinedDraft.text = "first pass refined without a new sequence"
+
+    let initial = TranscriptLiveEdgeRevision(lines: [draft])
+    let refined = TranscriptLiveEdgeRevision(lines: [refinedDraft])
+    expectTrue(
+        initial != refined,
+        "A same-ID same-sequence tentative text refinement invalidates the live edge"
+    )
+    expect(
+        initial,
+        TranscriptLiveEdgeRevision(lines: [draft]),
+        "An unchanged tentative line keeps a stable live-edge revision"
+    )
+
+    let finalized = TranscriptLine(
+        id: "line-8",
+        timestamp: "14:32:33",
+        speaker: "Remote 1",
+        text: "second finalized utterance",
+        sequence: 8
+    )
+    expectTrue(
+        refined != TranscriptLiveEdgeRevision(lines: [refinedDraft, finalized]),
+        "Appending a finalized utterance also invalidates the live edge"
+    )
+    expectTrue(
+        TranscriptLiveFollowPolicy.shouldFollow(active: true, followingLive: true),
+        "A live transcript that is already following stays pinned to its changing edge"
+    )
+    expectTrue(
+        !TranscriptLiveFollowPolicy.shouldFollow(active: true, followingLive: false),
+        "A user who scrolled away from live is never forced back to the edge"
+    )
+    expectTrue(
+        !TranscriptLiveFollowPolicy.shouldFollow(active: false, followingLive: true),
+        "A completed transcript does not keep applying live-edge scrolls"
+    )
+}
+
 testNavigationAndCaptureInvariants()
 testProviderRouting()
 testConfigurationContracts()
@@ -1968,6 +2017,7 @@ await testSetupRefreshStartsInParallelWithOpeningAndInitialization()
 await testOnboardingReceivesLiveModelProgress()
 await testElevenLabsConsolePreservesReactDestination()
 testBrokenCapturePipeReturnsEPIPEInsteadOfTerminatingArco()
+testLiveTranscriptEdgeTracksTentativeTextRefinements()
 
 if failures.isEmpty {
     print("ArcoNativeUI contract tests passed (\(assertionCount) assertions)")
