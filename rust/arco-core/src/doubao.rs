@@ -30,11 +30,6 @@ const MIN_SPEECH_BEFORE_ENDPOINT_MS: usize = 1_000;
 const AUDIO_CHUNKS_PER_SECOND: usize = SAMPLE_RATE * STEREO_FRAME_BYTES / READ_CHUNK_BYTES;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
-// Volcengine recommends 100-200 ms between 200 ms PCM packets. During recovery
-// we use the documented lower bound, which catches up at 2x without flooding
-// the optimized two-pass endpoint.
-const MAX_REPLAY_RATE_NUMERATOR: u128 = 2;
-const MAX_REPLAY_RATE_DENOMINATOR: u128 = 1;
 const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
 const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -372,27 +367,6 @@ impl InFlightAudio {
 
     fn contains_final_packet(&self) -> bool {
         self.chunks.iter().any(|sent| sent.final_packet)
-    }
-}
-
-struct ReplayPacer {
-    origin_end_frame: usize,
-}
-
-impl ReplayPacer {
-    fn new(first: &BufferedAudio) -> Self {
-        Self {
-            origin_end_frame: first.end_frame(),
-        }
-    }
-
-    fn delay_for(&self, chunk: &BufferedAudio, elapsed: Duration) -> Duration {
-        let replay_frames = chunk.end_frame().saturating_sub(self.origin_end_frame) as u128;
-        let target_nanos = replay_frames
-            .saturating_mul(1_000_000_000)
-            .saturating_mul(MAX_REPLAY_RATE_DENOMINATOR)
-            / ((SAMPLE_RATE as u128).saturating_mul(MAX_REPLAY_RATE_NUMERATOR));
-        Duration::from_nanos(target_nanos.min(u64::MAX as u128) as u64).saturating_sub(elapsed)
     }
 }
 
@@ -1224,7 +1198,7 @@ async fn stream_connected_channel(
     let (mut sink, mut stream) = socket.split();
     if state.connection_id > 1 {
         eprintln!(
-            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={} max_replay_rate=2.00",
+            "ARCO_DOUBAO_RECONNECT channel={} connection={} buffered_audio={:.3}s pending_bytes={} pending_ram_bytes={} replay_pacing=socket_backpressure",
             state.channel,
             state.connection_id,
             replay_buffered_seconds,
@@ -1239,7 +1213,6 @@ async fn stream_connected_channel(
     let mut stream_started = false;
     let connection_started = Instant::now();
     let trace_protocol = std::env::var("ARCO_DOUBAO_TRACE").as_deref() == Ok("1");
-    let mut pacer = None;
     let mut replay_reported = state.connection_id == 1 || replay_buffered_seconds == 0.0;
     let mut closing = false;
     let mut flush_sent = false;
@@ -1303,8 +1276,6 @@ async fn stream_connected_channel(
                             &mut lookahead,
                             chunk,
                             &mut in_flight,
-                            &mut pacer,
-                            connection_started,
                             state.eof_deadline,
                         ).await {
                             state.pending.restore(newer);
@@ -1339,8 +1310,6 @@ async fn stream_connected_channel(
                             &mut state.pending,
                             &final_audio,
                             sequence,
-                            &mut pacer,
-                            connection_started,
                             state.eof_deadline,
                         ).await {
                             state.pending.restore(final_audio);
@@ -1691,29 +1660,12 @@ async fn send_audio_chunk<S>(
     pending: &mut PendingAudio,
     chunk: &BufferedAudio,
     sequence: i32,
-    pacer: &mut Option<ReplayPacer>,
-    connection_started: Instant,
     eof_deadline: Option<tokio::time::Instant>,
 ) -> Result<(), String>
 where
     S: Sink<Message> + Unpin,
     S::Error: std::fmt::Display,
 {
-    let pacer = pacer.get_or_insert_with(|| ReplayPacer::new(chunk));
-    let delay = pacer.delay_for(chunk, connection_started.elapsed());
-    if !delay.is_zero() {
-        if let Some(deadline) = eof_deadline {
-            tokio::time::timeout_at(deadline, tokio::time::sleep(delay))
-                .await
-                .map_err(|_| {
-                    format!(
-                        "{FATAL_ERROR_PREFIX}Doubao audio replay exceeded the finalization deadline."
-                    )
-                })?;
-        } else {
-            tokio::time::sleep(delay).await;
-        }
-    }
     let chunk = pending.load(chunk)?;
     let packet = encode_audio_request(sequence, &chunk.data)?;
     await_audio_send(
@@ -1771,8 +1723,6 @@ async fn queue_audio_chunk<S>(
     lookahead: &mut Option<BufferedAudio>,
     next: BufferedAudio,
     in_flight: &mut InFlightAudio,
-    pacer: &mut Option<ReplayPacer>,
-    connection_started: Instant,
     eof_deadline: Option<tokio::time::Instant>,
 ) -> Result<(), (String, BufferedAudio, BufferedAudio)>
 where
@@ -1782,17 +1732,7 @@ where
     let Some(previous) = lookahead.replace(next) else {
         return Ok(());
     };
-    if let Err(error) = send_audio_chunk(
-        sink,
-        pending,
-        &previous,
-        *sequence,
-        pacer,
-        connection_started,
-        eof_deadline,
-    )
-    .await
-    {
+    if let Err(error) = send_audio_chunk(sink, pending, &previous, *sequence, eof_deadline).await {
         let newer = lookahead
             .take()
             .expect("queue_audio_chunk must retain the newer lookahead");
@@ -2644,7 +2584,6 @@ mod tests {
         let mut pending = PendingAudio::default();
         let mut lookahead = Some(failed.clone().into());
         let mut in_flight = InFlightAudio::default();
-        let mut pacer = None;
         let (error, failed_again, newer_again) = queue_audio_chunk(
             &mut sink,
             &mut sequence,
@@ -2652,8 +2591,6 @@ mod tests {
             &mut lookahead,
             newer.clone().into(),
             &mut in_flight,
-            &mut pacer,
-            Instant::now(),
             None,
         )
         .await
@@ -2669,41 +2606,6 @@ mod tests {
         assert_eq!(pending.take(), None);
         assert_eq!(receiver.recv().await, Some(newest));
         assert_eq!(receiver.recv().await, None);
-    }
-
-    #[test]
-    fn reconnect_replay_is_capped_at_two_times_realtime() {
-        let first: BufferedAudio = AudioChunk {
-            data: vec![1; READ_CHUNK_BYTES / 2],
-            start_frame: SAMPLE_RATE,
-        }
-        .into();
-        let pacer = ReplayPacer::new(&first);
-        assert_eq!(pacer.delay_for(&first, Duration::ZERO), Duration::ZERO);
-
-        let second: BufferedAudio = AudioChunk {
-            data: vec![2; READ_CHUNK_BYTES / 2],
-            start_frame: first.end_frame(),
-        }
-        .into();
-        assert_eq!(
-            pacer.delay_for(&second, Duration::ZERO),
-            Duration::from_millis(100)
-        );
-        assert_eq!(
-            pacer.delay_for(&second, Duration::from_millis(200)),
-            Duration::ZERO
-        );
-
-        let ten_seconds: BufferedAudio = AudioChunk {
-            data: vec![3; READ_CHUNK_BYTES / 2],
-            start_frame: first.end_frame() + SAMPLE_RATE * 10 - READ_CHUNK_BYTES / 4,
-        }
-        .into();
-        assert_eq!(
-            pacer.delay_for(&ten_seconds, Duration::ZERO),
-            Duration::from_secs(5)
-        );
     }
 
     #[test]
@@ -3344,6 +3246,53 @@ mod tests {
         })
         .await
         .expect("sparse ASR results must not impose a 20-packet sender barrier");
+
+        stream.abort();
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn reconnect_backlog_is_drained_at_socket_speed_instead_of_audio_clock_speed() {
+        let (socket, mut server) = local_websocket_pair().await;
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.connection_id = 2;
+        state.pending.chunks = (0..30)
+            .map(|index| tenth_second_chunk(index * SAMPLE_RATE / 10, 3))
+            .map(BufferedAudio::from)
+            .collect();
+
+        let stream = tokio::spawn(async move {
+            stream_connected_channel(
+                socket,
+                &mut receiver,
+                &writer,
+                None,
+                &ready,
+                "combined",
+                None,
+                &mut state,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(750), async {
+            for packet_index in 0..29 {
+                assert!(
+                    matches!(server.next().await, Some(Ok(Message::Binary(_)))),
+                    "replay packet {packet_index} must remain ordered and binary"
+                );
+            }
+        })
+        .await
+        .expect("reconnect backlog must be limited by socket backpressure, not audio timestamps");
 
         stream.abort();
         drop(sender);
