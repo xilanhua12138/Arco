@@ -127,6 +127,7 @@ wss://api.deepgram.com/v1/listen
   &punctuate=true
   &smart_format=true
   &endpointing=300
+  &interim_results=true
 ```
 
 When Deepgram is ASR-only, Arco omits `diarize_model` and attributes finalized segments from the selected external timeline. When Deepgram is diarization-only, it keeps word-level diarization enabled, publishes those intervals to the timeline, and does not write a second transcript. Therefore local ASR plus Deepgram diarization does send audio to Deepgram.
@@ -143,6 +144,10 @@ Primary references:
 - [Live Audio API](https://developers.deepgram.com/reference/speech-to-text/listen-streaming)
 
 Deepgram sends a separate streaming `Results` object for each channel. Speaker numbers are channel-local, and one alternative can contain a speaker change, so Arco groups consecutive words with the same `(channel, speaker)` instead of assigning the whole alternative from its first word.
+
+Non-final Deepgram results replace a display-only live edge and never enter the Markdown transcript. A final result commits durable speaker segments and clears that channel's tentative edge. On disconnect, Arco clears the whole stale Deepgram live edge, retains only audio still waiting in the bounded input channel, and drains it into the replacement WebSocket at socket-backpressure speed rather than replaying already-attempted frames against an audio clock.
+
+Deepgram receives at most three consecutive recovery attempts. Opening a socket, sending a keepalive, or receiving metadata does not reset that budget; only a non-empty finalized transcript does.
 
 Deepgram may restart numbering after a reconnect. Arco namespaces identities by connection and allocates new session-wide display numbers. This can split the same human into two anonymous labels after a network interruption, but avoids the more damaging false claim that two different humans are one person.
 
@@ -201,7 +206,7 @@ Primary references:
 
 The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; all cloud providers remain streaming-only.
 
-Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. The cloud adapters retry transient network failures with bounded backoff while stdin continues draining. Doubao additionally limits a stream to three consecutive recovery attempts and resets that budget only after finalized transcript progress. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
+Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. The cloud adapters retry transient network failures with bounded backoff while stdin continues draining. Deepgram and Doubao each limit a stream to three consecutive recovery attempts and reset that budget only after finalized transcript progress. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
 
 ## Echo caveat
 

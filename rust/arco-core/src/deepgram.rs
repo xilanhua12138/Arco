@@ -1,14 +1,15 @@
+use crate::models::{LiveTranscriptLine, LiveTranscriptSnapshot};
 use crate::speaker_timeline::{
     wait_for_speaker, SpeakerInterval as TimelineInterval, SpeakerTimelineStore,
 };
 use chrono::{Local, TimeZone};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, Stdin};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -21,8 +22,11 @@ const FRAME_BYTES: usize = 4;
 const READ_CHUNK_BYTES: usize = 6_400;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
-const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
-const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
+const MAX_STREAM_RETRIES: usize = 3;
+
+// UNVERIFIED BY LIVEKIT DOCS MCP (not configured): the parity contract below
+// was checked against the official livekit/agents Deepgram plugin and STT
+// retry loop at commit f1af069 on 2026-07-21.
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -78,74 +82,48 @@ struct AudioChunk {
     start_frame: usize,
 }
 
-impl AudioChunk {
-    fn end_frame(&self) -> usize {
-        self.start_frame + self.data.len() / FRAME_BYTES
+async fn send_queued_audio_chunk<S>(sink: &mut S, chunk: &AudioChunk) -> Result<(), S::Error>
+where
+    S: Sink<Message> + Unpin,
+{
+    sink.send(Message::Binary(chunk.data.clone().into())).await
+}
+
+fn buffered_audio_seconds(receiver: &mpsc::Receiver<AudioChunk>) -> f64 {
+    let bytes = receiver.len() * READ_CHUNK_BYTES;
+    bytes as f64 / (SAMPLE_RATE * FRAME_BYTES) as f64
+}
+
+fn next_retry_delay(current: u64) -> u64 {
+    current.saturating_mul(2).min(15)
+}
+
+fn retry_delay_after_attempt(current: u64, made_final_progress: bool) -> u64 {
+    if made_final_progress {
+        1
+    } else {
+        current
     }
 }
 
 #[derive(Default)]
-struct PendingAudio {
-    failed: VecDeque<AudioChunk>,
+struct StreamRetryBudget {
+    consecutive_failures: usize,
 }
 
-impl PendingAudio {
-    fn restore(&mut self, chunk: AudioChunk) {
-        self.failed.push_front(chunk);
-    }
-
-    fn take(&mut self) -> Option<AudioChunk> {
-        self.failed.pop_front()
-    }
-
-    fn bytes(&self) -> usize {
-        self.failed.iter().map(|chunk| chunk.data.len()).sum()
-    }
-}
-
-struct ReplayPacer {
-    origin_end_frame: usize,
-}
-
-impl ReplayPacer {
-    fn new(first: &AudioChunk) -> Self {
-        Self {
-            origin_end_frame: first.end_frame(),
+impl StreamRetryBudget {
+    fn record_failure(&mut self, made_final_progress: bool) -> bool {
+        if made_final_progress {
+            self.consecutive_failures = 0;
         }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures <= MAX_STREAM_RETRIES
     }
 
-    fn delay_for(&self, chunk: &AudioChunk, elapsed: Duration) -> Duration {
-        let replay_frames = chunk.end_frame().saturating_sub(self.origin_end_frame) as u128;
-        let target_nanos = replay_frames
-            .saturating_mul(1_000_000_000)
-            .saturating_mul(MAX_REPLAY_RATE_DENOMINATOR)
-            / ((SAMPLE_RATE as u128).saturating_mul(MAX_REPLAY_RATE_NUMERATOR));
-        Duration::from_nanos(target_nanos.min(u64::MAX as u128) as u64).saturating_sub(elapsed)
+    #[cfg(test)]
+    fn consecutive_failures(&self) -> usize {
+        self.consecutive_failures
     }
-}
-
-async fn send_audio_chunk<S>(
-    sink: &mut S,
-    chunk: &AudioChunk,
-    pacer: &mut Option<ReplayPacer>,
-    connection_started: Instant,
-) -> Result<Duration, S::Error>
-where
-    S: Sink<Message> + Unpin,
-{
-    let pacer = pacer.get_or_insert_with(|| ReplayPacer::new(chunk));
-    let delay = pacer.delay_for(chunk, connection_started.elapsed());
-    if !delay.is_zero() {
-        tokio::time::sleep(delay).await;
-    }
-    sink.send(Message::Binary(chunk.data.clone().into()))
-        .await?;
-    Ok(delay)
-}
-
-fn buffered_audio_seconds(pending: &PendingAudio, receiver: &mpsc::Receiver<AudioChunk>) -> f64 {
-    let bytes = pending.bytes() + receiver.len() * READ_CHUNK_BYTES;
-    bytes as f64 / (SAMPLE_RATE * FRAME_BYTES) as f64
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,7 +197,7 @@ pub fn deepgram_url_with_diarization(model: &str, language: &str, diarization: b
         _ => "zh-Hans",
     };
     let mut url = format!(
-        "wss://api.deepgram.com/v1/listen?model={}&language={}&encoding=linear16&sample_rate=16000&channels=2&multichannel=true&punctuate=true&smart_format=true&endpointing=300",
+        "wss://api.deepgram.com/v1/listen?model={}&language={}&encoding=linear16&sample_rate=16000&channels=2&multichannel=true&punctuate=true&smart_format=true&endpointing=300&interim_results=true",
         urlencoding::encode(if model.trim().is_empty() { "nova-3" } else { model }),
         urlencoding::encode(language),
     );
@@ -391,6 +369,31 @@ pub fn segments_from_result(payload: &Value) -> Vec<Segment> {
     }]
 }
 
+fn tentative_segment_from_result(payload: &Value) -> Option<Segment> {
+    if payload.get("type").and_then(Value::as_str) != Some("Results")
+        || payload.get("is_final").and_then(Value::as_bool) != Some(false)
+    {
+        return None;
+    }
+    let alternative = payload.pointer("/channel/alternatives/0")?;
+    let text = alternative.get("transcript")?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let channel = response_channel(payload);
+    let start = number(payload.get("start"), 0.0);
+    let end = start + number(payload.get("duration"), 0.0);
+    Some(Segment {
+        channel,
+        speaker: None,
+        label: participant_label(channel, None),
+        text: text.into(),
+        start,
+        end: end.max(start),
+        connection_id: None,
+    })
+}
+
 fn timeline_update_from_result(payload: &Value, origin: f64) -> Option<TimelineUpdate> {
     if payload.get("type").and_then(Value::as_str) != Some("Results")
         || payload.get("is_final").and_then(Value::as_bool) != Some(true)
@@ -524,7 +527,9 @@ impl SpeakerRegistry {
 
 struct TranscriptWriter {
     path: PathBuf,
+    live_path: PathBuf,
     session_started_at: f64,
+    live_lines: [Vec<LiveTranscriptLine>; 2],
 }
 
 impl TranscriptWriter {
@@ -534,13 +539,26 @@ impl TranscriptWriter {
                 "The desktop host must initialize the transcript before transcription".into(),
             );
         }
+        let live_path = crate::meetings::live_transcript_path(&path);
+        match fs::remove_file(&live_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not reset live Deepgram transcript {}: {error}",
+                    live_path.display()
+                ));
+            }
+        }
         Ok(Self {
             path,
+            live_path,
             session_started_at,
+            live_lines: [Vec::new(), Vec::new()],
         })
     }
 
-    fn append(&self, segment: &Segment) -> Result<(), String> {
+    fn append(&mut self, segment: &Segment) -> Result<(), String> {
         let seconds = self.session_started_at + segment.start;
         let timestamp = Local
             .timestamp_opt(seconds as i64, 0)
@@ -578,6 +596,82 @@ impl TranscriptWriter {
         .map_err(|error| format!("could not append live transcript: {error}"))?;
         file.flush()
             .map_err(|error| format!("could not flush live transcript: {error}"))
+    }
+
+    fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {
+        let channel = channel.min(1);
+        self.live_lines[channel] = segments
+            .iter()
+            .map(|segment| {
+                let seconds = self.session_started_at + segment.start;
+                let timestamp = Local
+                    .timestamp_opt(seconds as i64, 0)
+                    .single()
+                    .unwrap_or_else(Local::now)
+                    .format("%H:%M:%S")
+                    .to_string();
+                LiveTranscriptLine {
+                    id: format!(
+                        "deepgram-live-{}-{}",
+                        segment.channel,
+                        (segment.start * 1_000.0).round() as i64
+                    ),
+                    timestamp,
+                    speaker: segment.label.clone(),
+                    text: segment.text.clone(),
+                }
+            })
+            .collect();
+        self.persist_live_snapshot()
+    }
+
+    fn clear_live_channel(&mut self, channel: usize) -> Result<(), String> {
+        self.live_lines[channel.min(1)].clear();
+        self.persist_live_snapshot()
+    }
+
+    fn clear_live(&mut self) -> Result<(), String> {
+        self.live_lines = [Vec::new(), Vec::new()];
+        self.persist_live_snapshot()
+    }
+
+    fn persist_live_snapshot(&self) -> Result<(), String> {
+        let mut lines = self
+            .live_lines
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        lines.sort_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if lines.is_empty() {
+            return match fs::remove_file(&self.live_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "could not clear live Deepgram transcript {}: {error}",
+                    self.live_path.display()
+                )),
+            };
+        }
+        let payload = serde_json::to_vec(&LiveTranscriptSnapshot { lines })
+            .map_err(|error| format!("could not encode live Deepgram transcript: {error}"))?;
+        let temporary = PathBuf::from(format!("{}.tmp", self.live_path.display()));
+        fs::write(&temporary, payload).map_err(|error| {
+            format!(
+                "could not write live Deepgram transcript {}: {error}",
+                temporary.display()
+            )
+        })?;
+        fs::rename(&temporary, &self.live_path).map_err(|error| {
+            format!(
+                "could not publish live Deepgram transcript {}: {error}",
+                self.live_path.display()
+            )
+        })
     }
 }
 
@@ -634,15 +728,15 @@ async fn stream_connection(
     api_key: &str,
     url: &str,
     receiver: &mut mpsc::Receiver<AudioChunk>,
-    pending: &mut PendingAudio,
-    writer: Option<&TranscriptWriter>,
+    mut writer: Option<&mut TranscriptWriter>,
     timeline_store: &mut Option<SpeakerTimelineStore>,
     external_timeline: Option<&Path>,
     role: TranscriberRole,
     speakers: &mut SpeakerRegistry,
     connection_id: u64,
+    made_final_progress: &mut bool,
 ) -> Result<bool, String> {
-    let replay_buffered_seconds = buffered_audio_seconds(pending, receiver);
+    let catchup_buffered_seconds = buffered_audio_seconds(receiver);
     let mut request = url
         .into_client_request()
         .map_err(|error| format!("invalid Deepgram request: {error}"))?;
@@ -658,43 +752,18 @@ async fn stream_connection(
     let (mut sink, mut stream) = socket.split();
     if connection_id > 1 {
         eprintln!(
-            "ARCO_DEEPGRAM_RECONNECT connection={} buffered_audio={:.3}s pending_bytes={} max_replay_rate=1.25",
+            "ARCO_DEEPGRAM_RECONNECT connection={} queued_audio={:.3}s catchup_pacing=socket_backpressure",
             connection_id,
-            replay_buffered_seconds,
-            pending.bytes(),
+            catchup_buffered_seconds,
         );
     }
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     let mut connection_origin: Option<f64> = None;
-    let connection_started = Instant::now();
-    let mut pacer = None;
-    let mut replay_reported = connection_id == 1 || replay_buffered_seconds == 0.0;
+    let mut catchup_reported = connection_id == 1 || catchup_buffered_seconds == 0.0;
     let mut closing = false;
     let close_deadline = tokio::time::sleep(Duration::from_secs(8));
     tokio::pin!(close_deadline);
     loop {
-        // A websocket send error happens after the mpsc receive has completed.
-        // Retry that exact chunk before polling newer buffered audio. Keeping
-        // this outside select avoids cancellation dropping a ready pending item.
-        if !closing {
-            if let Some(chunk) = pending.take() {
-                connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
-                if let Err(error) =
-                    send_audio_chunk(&mut sink, &chunk, &mut pacer, connection_started).await
-                {
-                    pending.restore(chunk);
-                    return Err(format!("Deepgram replay send failed: {error}"));
-                }
-                if !replay_reported && receiver.is_empty() {
-                    eprintln!(
-                        "ARCO_DEEPGRAM_REPLAY_CAUGHT_UP connection={} replayed_audio={:.3}s",
-                        connection_id, replay_buffered_seconds
-                    );
-                    replay_reported = true;
-                }
-                continue;
-            }
-        }
         tokio::select! {
             _ = keepalive.tick(), if !closing => {
                 sink.send(Message::Text(r#"{"type":"KeepAlive"}"#.into())).await.map_err(|error| format!("Deepgram keepalive failed: {error}"))?;
@@ -703,21 +772,15 @@ async fn stream_connection(
                 match chunk {
                     Some(chunk) => {
                         connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
-                        if let Err(error) = send_audio_chunk(
-                            &mut sink,
-                            &chunk,
-                            &mut pacer,
-                            connection_started,
-                        ).await {
-                            pending.restore(chunk);
+                        if let Err(error) = send_queued_audio_chunk(&mut sink, &chunk).await {
                             return Err(format!("Deepgram audio send failed: {error}"));
                         }
-                        if !replay_reported && receiver.is_empty() {
+                        if !catchup_reported && receiver.is_empty() {
                             eprintln!(
-                                "ARCO_DEEPGRAM_REPLAY_CAUGHT_UP connection={} replayed_audio={:.3}s",
-                                connection_id, replay_buffered_seconds
+                                "ARCO_DEEPGRAM_CATCHUP_COMPLETE connection={} queued_audio={:.3}s",
+                                connection_id, catchup_buffered_seconds
                             );
-                            replay_reported = true;
+                            catchup_reported = true;
                         }
                     }
                     None => {
@@ -737,6 +800,17 @@ async fn stream_connection(
                             observation.log(role);
                         }
                         let origin = connection_origin.unwrap_or(0.0);
+                        let final_channel = response_channel(&payload).min(1);
+                        let is_final_result = payload.get("type").and_then(Value::as_str) == Some("Results")
+                            && payload.get("is_final").and_then(Value::as_bool) == Some(true);
+                        let shifted: Vec<_> = segments_from_result(&payload).into_iter().map(|mut segment| {
+                            segment.start += origin;
+                            segment.end += origin;
+                            segment
+                        }).collect();
+                        if !shifted.is_empty() {
+                            *made_final_progress = true;
+                        }
                         if role == TranscriberRole::Diarization {
                             if let Some(mut update) = timeline_update_from_result(&payload, origin) {
                                 for interval in &mut update.finalized {
@@ -758,11 +832,18 @@ async fn stream_connection(
                             continue;
                         }
 
-                        let shifted: Vec<_> = segments_from_result(&payload).into_iter().map(|mut segment| {
-                            segment.start += origin;
-                            segment.end += origin;
-                            segment
-                        }).collect();
+                        if !is_final_result {
+                            if let Some(mut tentative) = tentative_segment_from_result(&payload) {
+                                tentative.start += origin;
+                                tentative.end += origin;
+                                let transcript = writer.as_deref_mut().ok_or_else(|| {
+                                    "Deepgram ASR has no transcript writer".to_string()
+                                })?;
+                                transcript.update_live(tentative.channel, &[tentative])?;
+                            }
+                            continue;
+                        }
+
                         let attributed = if role == TranscriberRole::Combined {
                             speakers.relabel(shifted, connection_id)
                         } else {
@@ -788,12 +869,18 @@ async fn stream_connection(
                             }
                             attributed
                         };
-                        let writer = writer.ok_or_else(|| "Deepgram ASR has no transcript writer".to_string())?;
+                        let transcript = writer.as_deref_mut().ok_or_else(|| {
+                            "Deepgram ASR has no transcript writer".to_string()
+                        })?;
                         for segment in attributed {
-                            writer.append(&segment)?;
+                            transcript.append(&segment)?;
                         }
+                        transcript.clear_live_channel(final_channel)?;
                     }
-                    Some(Ok(Message::Close(_))) | None => return Ok(closing),
+                    Some(Ok(Message::Close(_))) | None if closing => return Ok(true),
+                    Some(Ok(Message::Close(_))) | None => {
+                        return Err("Deepgram connection closed unexpectedly".into())
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => return Err(format!("Deepgram stream dropped: {error}")),
                 }
@@ -819,7 +906,7 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
-    let writer = if role == TranscriberRole::Diarization {
+    let mut writer = if role == TranscriberRole::Diarization {
         None
     } else {
         Some(TranscriptWriter::new(
@@ -839,19 +926,19 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
     let capacity = buffer_seconds * 10;
     let (sender, mut receiver) = mpsc::channel(capacity);
     tokio::spawn(pump_stdin(tokio::io::stdin(), sender));
-    let mut pending = PendingAudio::default();
     let mut speakers = SpeakerRegistry::default();
     let mut connection_id = 0u64;
     let mut retry = 1u64;
+    let mut retry_budget = StreamRetryBudget::default();
     let url = deepgram_url_with_diarization(&model, &language, role != TranscriberRole::Asr);
     loop {
         connection_id += 1;
-        match stream_connection(
+        let mut made_final_progress = false;
+        let attempt = stream_connection(
             api_key.trim(),
             &url,
             &mut receiver,
-            &mut pending,
-            writer.as_ref(),
+            writer.as_mut(),
             &mut timeline_store,
             timeline_path
                 .as_deref()
@@ -859,26 +946,35 @@ pub async fn run_transcriber(transcript_path: &Path) -> Result<(), String> {
             role,
             &mut speakers,
             connection_id,
+            &mut made_final_progress,
         )
-        .await
-        {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(error)
-                if error.contains("HTTP 401")
-                    || error.contains("HTTP 403")
-                    || error.contains("rejected the streaming configuration") =>
-            {
-                return Err(error)
-            }
-            Err(error) => eprintln!(
-                "[reconnect] {error}; retrying in {retry}s; buffered_audio={:.3}s pending_bytes={}",
-                buffered_audio_seconds(&pending, &receiver),
-                pending.bytes(),
-            ),
+        .await;
+        if let Some(transcript) = writer.as_mut() {
+            transcript.clear_live()?;
         }
-        tokio::time::sleep(Duration::from_secs(retry)).await;
-        retry = (retry * 2).min(15);
+        let error = match attempt {
+            Ok(true) => return Ok(()),
+            Ok(false) => "Deepgram connection closed unexpectedly".to_string(),
+            Err(error) => error,
+        };
+        if error.contains("HTTP 401")
+            || error.contains("HTTP 403")
+            || error.contains("rejected the streaming configuration")
+        {
+            return Err(error);
+        }
+        if !retry_budget.record_failure(made_final_progress) {
+            return Err(format!(
+                "Deepgram failed after {MAX_STREAM_RETRIES} recovery attempts: {error}"
+            ));
+        }
+        let retry_delay = retry_delay_after_attempt(retry, made_final_progress);
+        eprintln!(
+            "[deepgram] {error}; retrying in {retry_delay}s; queued_audio={:.3}s",
+            buffered_audio_seconds(&receiver),
+        );
+        tokio::time::sleep(Duration::from_secs(retry_delay)).await;
+        retry = next_retry_delay(retry_delay);
     }
 }
 
@@ -903,10 +999,10 @@ mod tests {
             "diarize_model=latest",
             "endpointing=300",
             "smart_format=true",
+            "interim_results=true",
         ] {
             assert!(url.contains(expected), "missing {expected} from {url}");
         }
-        assert!(!url.contains("interim_results"));
     }
 
     #[test]
@@ -988,8 +1084,26 @@ mod tests {
     }
 
     #[test]
-    fn non_final_results_and_success_metadata_are_ignored() {
+    fn interim_results_are_a_revisable_live_edge_not_a_durable_segment() {
+        let interim = result(0, json!([]), "draft words", false);
         assert!(segments_from_result(&result(0, json!([]), "draft", false)).is_empty());
+        assert_eq!(
+            tentative_segment_from_result(&interim),
+            Some(Segment {
+                channel: 0,
+                speaker: None,
+                label: "Remote".into(),
+                text: "draft words".into(),
+                start: 0.0,
+                end: 1.5,
+                connection_id: None,
+            })
+        );
+        assert_eq!(
+            tentative_segment_from_result(&result(0, json!([]), "committed", true)),
+            None,
+            "final text must leave the tentative edge and commit through segments_from_result"
+        );
         assert_eq!(
             deepgram_payload_error(&json!({"type":"Metadata", "request_id":"ok"})),
             None
@@ -1019,71 +1133,97 @@ mod tests {
         );
     }
 
-    #[test]
-    fn replay_pacer_caps_backlog_at_one_point_two_five_times_realtime() {
+    #[tokio::test]
+    async fn reconnect_backlog_is_drained_at_socket_speed() {
         let first = AudioChunk {
             data: vec![1; READ_CHUNK_BYTES],
             start_frame: 32_000,
         };
-        let pacer = ReplayPacer::new(&first);
-        assert_eq!(pacer.delay_for(&first, Duration::ZERO), Duration::ZERO);
-
         let second = AudioChunk {
             data: vec![2; READ_CHUNK_BYTES],
             start_frame: first.start_frame + READ_CHUNK_BYTES / FRAME_BYTES,
         };
-        assert_eq!(
-            pacer.delay_for(&second, Duration::ZERO),
-            Duration::from_millis(80),
-            "the second 100 ms chunk may not be flushed immediately"
-        );
-        assert_eq!(
-            pacer.delay_for(&second, Duration::from_millis(100)),
-            Duration::ZERO,
-            "live audio that arrives at realtime speed must not be delayed"
-        );
-
-        let ten_seconds_queued = AudioChunk {
-            data: vec![4; READ_CHUNK_BYTES],
-            start_frame: first.end_frame() + SAMPLE_RATE * 10 - READ_CHUNK_BYTES / FRAME_BYTES,
-        };
-        assert_eq!(
-            pacer.delay_for(&ten_seconds_queued, Duration::ZERO),
-            Duration::from_secs(8),
-            "ten seconds of audio must take at least eight seconds at 1.25x"
-        );
-        assert_eq!(
-            pacer.delay_for(&ten_seconds_queued, Duration::from_secs(2)),
-            Duration::from_secs(6),
-        );
-
-        let stale = AudioChunk {
-            data: vec![3; FRAME_BYTES],
-            start_frame: first.start_frame.saturating_sub(1),
-        };
-        assert_eq!(pacer.delay_for(&stale, Duration::ZERO), Duration::ZERO);
+        let mut sink = futures_util::sink::drain();
+        tokio::time::timeout(Duration::from_millis(20), async {
+            send_queued_audio_chunk(&mut sink, &first).await.unwrap();
+            send_queued_audio_chunk(&mut sink, &second).await.unwrap();
+        })
+        .await
+        .expect("queued Deepgram audio must not be delayed by an application replay clock");
     }
 
     #[tokio::test]
-    async fn failed_audio_chunk_is_retried_byte_for_byte_before_new_audio() {
+    async fn failed_send_consumes_only_the_attempted_chunk_without_multiplying_backlog() {
         let failed = AudioChunk {
             data: vec![7, 8, 9, 10],
-            start_frame: 4_200,
+            start_frame: 0,
         };
         let newer = AudioChunk {
-            data: vec![11, 12, 13, 14],
-            start_frame: 4_201,
+            data: vec![11; READ_CHUNK_BYTES],
+            start_frame: 1,
         };
         let (sender, mut receiver) = mpsc::channel(2);
+        sender.send(failed.clone()).await.unwrap();
         sender.send(newer.clone()).await.unwrap();
         drop(sender);
-        let mut pending = PendingAudio::default();
-        pending.restore(failed.clone());
 
-        assert_eq!(pending.take(), Some(failed));
+        assert_eq!(receiver.recv().await, Some(failed));
+        assert_eq!(
+            buffered_audio_seconds(&receiver),
+            0.1,
+            "the attempted frame must not be restored ahead of unsent channel audio"
+        );
         assert_eq!(receiver.recv().await, Some(newer));
-        assert_eq!(pending.take(), None);
         assert_eq!(receiver.recv().await, None);
+    }
+
+    #[test]
+    fn livekit_style_retry_budget_is_bounded_and_only_final_progress_resets_it() {
+        let mut budget = StreamRetryBudget::default();
+        assert!(budget.record_failure(false));
+        assert!(budget.record_failure(false));
+        assert!(budget.record_failure(false));
+        assert!(
+            !budget.record_failure(false),
+            "the fourth consecutive failed stream must stop instead of reconnecting forever"
+        );
+
+        assert!(budget.record_failure(true));
+        assert_eq!(budget.consecutive_failures(), 1);
+    }
+
+    #[test]
+    fn tentative_text_is_published_separately_and_cleared_when_final_commits() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        let live = crate::meetings::live_transcript_path(&transcript);
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        let draft = tentative_segment_from_result(&result(
+            1,
+            json!([]),
+            "a revisable Deepgram hypothesis",
+            false,
+        ))
+        .unwrap();
+
+        writer.update_live(draft.channel, &[draft]).unwrap();
+        let snapshot: crate::models::LiveTranscriptSnapshot =
+            serde_json::from_slice(&fs::read(&live).unwrap()).unwrap();
+        assert_eq!(snapshot.lines.len(), 1);
+        assert_eq!(snapshot.lines[0].text, "a revisable Deepgram hypothesis");
+        assert!(
+            !fs::read_to_string(&transcript)
+                .unwrap()
+                .contains("revisable Deepgram"),
+            "interim text must never become durable Markdown"
+        );
+
+        writer.clear_live_channel(1).unwrap();
+        assert!(
+            !live.exists(),
+            "committing or disconnecting must remove the stale tentative edge"
+        );
     }
 
     #[test]
