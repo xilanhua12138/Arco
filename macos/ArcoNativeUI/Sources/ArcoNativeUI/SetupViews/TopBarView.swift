@@ -95,6 +95,7 @@ public struct TopBarView: View {
     @State private var titleHovering = false
     @State private var detailsHovering = false
     @State private var titleCommitInProgress = false
+    @State private var pathCopied = false
     @State private var availableWidth: CGFloat = TopBarDetailsLayout.maximumWidth + TopBarDetailsLayout.viewportMargin
     @State private var viewportWidth: CGFloat = TopBarSourceLayout.maximumEditingTitleWidth
         / TopBarSourceLayout.editingTitleViewportFraction
@@ -357,7 +358,7 @@ public struct TopBarView: View {
                 value: "\(translate(utterances == 1 ? "topbar.utteranceCountOne" : "topbar.utteranceCount", ["count": "\(utterances)"])) · \(translate(speakers.count == 1 ? "topbar.speakerCountOne" : "topbar.speakerCount", ["count": "\(speakers.count)"]))",
                 accessibilityLabel: nil
             ),
-            TopBarDetailRow(key: "topbar.storage", value: translate("common.onThisMac", [:]), accessibilityLabel: nil)
+            TopBarDetailRow(key: "topbar.storage", value: translate("common.onThisMac", [:]), accessibilityLabel: nil, copyValue: summary.path)
         ]
         if let provider = transcriptionProvider {
             rows.append(TopBarDetailRow(key: "topbar.transcription", value: provider, accessibilityLabel: nil))
@@ -380,7 +381,7 @@ public struct TopBarView: View {
                         .frame(height: 1)
                         .padding(.top, 5)
                 }
-                detailRow(row.key, value: row.value, emphasizedTop: index == 4)
+                detailRow(row.key, value: row.value, emphasizedTop: index == 4, copyValue: row.copyValue)
                     .modifier(TopBarAccessibilityLabel(label: row.accessibilityLabel))
             }
             Text(translate("topbar.locationLabels", [:]))
@@ -447,7 +448,7 @@ public struct TopBarView: View {
         }
     }
 
-    private func detailRow(_ key: String, value: String, emphasizedTop: Bool = false) -> some View {
+    private func detailRow(_ key: String, value: String, emphasizedTop: Bool = false, copyValue: String? = nil) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(translate(key, [:]))
                 .font(ArcoTypography.small)
@@ -457,6 +458,22 @@ public struct TopBarView: View {
                 .font(ArcoTypography.small)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let copyValue {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(copyValue, forType: .string)
+                    pathCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        pathCopied = false
+                    }
+                } label: {
+                    ArcoLucideIcon(pathCopied ? .check : .copy, size: 13)
+                        .foregroundStyle(pathCopied ? ArcoNativeColors.brand : ArcoNativeColors.inkMuted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(translate(pathCopied ? "topbar.pathCopied" : "topbar.copyPath", [:]))
+                .help(translate(pathCopied ? "topbar.pathCopied" : "topbar.copyPath", [:]))
+            }
         }
         .padding(.top, emphasizedTop ? 10 : 5)
         .padding(.bottom, 5)
@@ -700,6 +717,7 @@ private struct TopBarDetailRow {
     let key: String
     let value: String
     let accessibilityLabel: String?
+    var copyValue: String? = nil
 }
 
 private struct TopBarAccessibilityLabel: ViewModifier {

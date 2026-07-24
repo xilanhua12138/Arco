@@ -116,6 +116,19 @@ expectTrue(
     "Every TopBar call site must raise zIndex above the workspace so the meeting-details card is not covered by the transcript and agent docks"
 )
 
+expectTrue(
+    source.contains("NSPasteboard.general"),
+    "The storage row must copy the meeting transcript path to the system pasteboard"
+)
+expectTrue(
+    source.contains("topbar.copyPath") && source.contains("topbar.pathCopied"),
+    "The storage copy affordance and its confirmation must stay localizable"
+)
+expectTrue(
+    source.contains("copyValue: summary.path"),
+    "The copied value must be the real transcript path, not the display label"
+)
+
 if failures.isEmpty {
     print("Arco TopBar contract tests passed (\(assertionCount) assertions)")
 } else {
