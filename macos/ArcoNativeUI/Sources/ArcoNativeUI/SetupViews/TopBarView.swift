@@ -358,7 +358,12 @@ public struct TopBarView: View {
                 value: "\(translate(utterances == 1 ? "topbar.utteranceCountOne" : "topbar.utteranceCount", ["count": "\(utterances)"])) · \(translate(speakers.count == 1 ? "topbar.speakerCountOne" : "topbar.speakerCount", ["count": "\(speakers.count)"]))",
                 accessibilityLabel: nil
             ),
-            TopBarDetailRow(key: "topbar.storage", value: translate("common.onThisMac", [:]), accessibilityLabel: nil, copyValue: summary.path)
+            TopBarDetailRow(
+                key: "topbar.storage",
+                value: (summary.path as NSString).abbreviatingWithTildeInPath,
+                accessibilityLabel: summary.path,
+                copyValue: summary.path
+            )
         ]
         if let provider = transcriptionProvider {
             rows.append(TopBarDetailRow(key: "topbar.transcription", value: provider, accessibilityLabel: nil))
