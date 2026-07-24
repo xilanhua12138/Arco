@@ -31,7 +31,12 @@ const AUDIO_CHUNKS_PER_SECOND: usize = SAMPLE_RATE * STEREO_FRAME_BYTES / READ_C
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
-const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
+// The optimized endpoint only sends packets when results change, and a
+// reconnect replaying a two-pass backlog can go tens of seconds without a
+// new result. 12s mistook "provider is busy" for "connection is dead" and
+// fed a reconnect storm; 60s covers catch-up while genuine half-open
+// sockets are still caught by the WebSocket heartbeat below.
+const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const SPEECH_RMS_THRESHOLD: f64 = 0.01;
@@ -403,22 +408,24 @@ struct Segment {
     end: f64,
 }
 
+// Doubao restarts speaker numbering from 1 on every WebSocket session, so a
+// reconnect makes the same voice look like a new speaker. Keying labels by
+// the provider slot alone keeps one stable label per voice across reconnects;
+// each Arco channel carries one dominant voice, so slot collisions between
+// connections are far rarer than the label explosion they replace.
 #[derive(Default)]
 struct SpeakerRegistry {
-    ids: HashMap<(u64, i64), i64>,
+    ids: HashMap<i64, i64>,
     next: i64,
 }
 
 impl SpeakerRegistry {
-    fn relabel(&mut self, mut segment: Segment, connection_id: u64) -> Segment {
-        let speaker = *self
-            .ids
-            .entry((connection_id, segment.speaker))
-            .or_insert_with(|| {
-                let speaker = self.next;
-                self.next = self.next.saturating_add(1);
-                speaker
-            });
+    fn relabel(&mut self, mut segment: Segment) -> Segment {
+        let speaker = *self.ids.entry(segment.speaker).or_insert_with(|| {
+            let speaker = self.next;
+            self.next = self.next.saturating_add(1);
+            speaker
+        });
         segment.speaker = speaker;
         segment.label = format!(
             "{} {}",
@@ -983,7 +990,9 @@ fn audio_buffer_capacity(seconds: Option<usize>) -> usize {
 }
 
 fn next_retry_delay(current: u64) -> u64 {
-    current.saturating_mul(2).min(15)
+    // Backoff time is pure backlog growth: audio keeps arriving while the
+    // socket is down, so a 15s cap dug the replay hole deeper on every outage.
+    current.saturating_mul(2).min(5)
 }
 
 fn retry_delay_after_attempt(current: u64, made_final_progress: bool) -> u64 {
@@ -1553,7 +1562,7 @@ async fn stream_connected_channel(
                                 let segment = if role == "asr" {
                                     segment
                                 } else {
-                                    state.speakers.relabel(segment, state.connection_id)
+                                    state.speakers.relabel(segment)
                                 };
                                 if let Some(store) = timeline_store {
                                     store.lock().await.update(
@@ -3118,20 +3127,40 @@ mod tests {
     }
 
     #[test]
-    fn reconnects_assign_new_session_speaker_ids_instead_of_merging_provider_slots() {
-        let payload = json!({ "result": { "utterances": [
+    fn reconnects_reuse_provider_speaker_slots_across_connections() {
+        // Doubao restarts speaker numbering from 1 on every WebSocket session.
+        // A reconnect must keep the same Arco label for the same provider slot,
+        // or a single voice inflates into a new "speaker" on every reconnect.
+        let first_voice = json!({ "result": { "utterances": [
             { "text": "voice", "start_time": 0.0, "end_time": 500.0, "definite": true, "additions": { "speaker": "1" } }
         ]}});
-        let base = segments_from_payload(&payload, 0, false).remove(0);
+        let second_voice = json!({ "result": { "utterances": [
+            { "text": "voice", "start_time": 500.0, "end_time": 1000.0, "definite": true, "additions": { "speaker": "2" } }
+        ]}});
+        let base = segments_from_payload(&first_voice, 0, false).remove(0);
+        let other = segments_from_payload(&second_voice, 0, false).remove(0);
         let mut registry = SpeakerRegistry::default();
-        let first = registry.relabel(base.clone(), 1);
-        let same_connection = registry.relabel(base.clone(), 1);
-        let reconnected = registry.relabel(base, 2);
+
+        let first = registry.relabel(base.clone());
+        let same_connection = registry.relabel(base.clone());
+        let after_reconnect = registry.relabel(base);
+        let new_voice_after_reconnect = registry.relabel(other);
 
         assert_eq!((first.speaker, same_connection.speaker), (0, 0));
         assert_eq!(first.label, "Remote 1");
-        assert_eq!(reconnected.speaker, 1);
-        assert_eq!(reconnected.label, "Remote 2");
+        assert_eq!(
+            (after_reconnect.speaker, after_reconnect.label.as_str()),
+            (0, "Remote 1"),
+            "the same provider slot after a reconnect must keep its label"
+        );
+        assert_eq!(
+            (
+                new_voice_after_reconnect.speaker,
+                new_voice_after_reconnect.label.as_str()
+            ),
+            (1, "Remote 2"),
+            "a genuinely new provider slot still gets the next free label"
+        );
     }
 
     #[test]
@@ -4056,7 +4085,7 @@ mod tests {
             observed.push(delay);
             delay = next_retry_delay(delay);
         }
-        assert_eq!(observed, [1, 2, 4, 8, 15, 15, 15, 15]);
+        assert_eq!(observed, [1, 2, 4, 5, 5, 5, 5, 5]);
     }
 
     #[test]
