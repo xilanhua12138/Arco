@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "arco-audio-rt"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "rtrb",
  "rubato",
