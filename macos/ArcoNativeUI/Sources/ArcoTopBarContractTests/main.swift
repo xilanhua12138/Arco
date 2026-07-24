@@ -91,6 +91,31 @@ expectTrue(
     "Enter, FocusState, and outside clicks must share one synchronous gate so rename is sent exactly once"
 )
 
+let shellURL = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .appendingPathComponent("ArcoNativeUI/AppViews/ArcoMainShellView.swift")
+let shellSource = (try? String(contentsOf: shellURL, encoding: .utf8)) ?? ""
+
+func topBarCallSites(in text: String) -> [String] {
+    var sites: [String] = []
+    var searchRange = text.startIndex..<text.endIndex
+    while let range = text.range(of: "TopBarView(", range: searchRange) {
+        let end = text.index(range.upperBound, offsetBy: 600, limitedBy: text.endIndex) ?? text.endIndex
+        sites.append(String(text[range.lowerBound..<end]))
+        searchRange = range.upperBound..<text.endIndex
+    }
+    return sites
+}
+
+let callSites = topBarCallSites(in: shellSource)
+expectTrue(!shellSource.isEmpty, "Main shell source contract must resolve the migrated source")
+expectTrue(callSites.count >= 2, "Current and review pages must both embed the meeting TopBar")
+expectTrue(
+    callSites.allSatisfy { $0.contains(".zIndex(1)") },
+    "Every TopBar call site must raise zIndex above the workspace so the meeting-details card is not covered by the transcript and agent docks"
+)
+
 if failures.isEmpty {
     print("Arco TopBar contract tests passed (\(assertionCount) assertions)")
 } else {

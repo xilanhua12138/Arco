@@ -323,6 +323,9 @@ public struct ArcoMainShellView: View {
                     viewModel: controller.topBarViewModel,
                     translate: translate
                 )
+                // The details card renders inside the TopBar's overlay; without
+                // raising the whole bar the later workspace paints over it.
+                .zIndex(1)
             }
             if controller.store.capture.phase == .recording {
                 workspace(controller.currentMeeting, viewportWidth: viewportWidth)
@@ -397,6 +400,9 @@ public struct ArcoMainShellView: View {
                 translate: translate,
                 onBackToHistory: { controller.requestPage(.history) }
             )
+            // The details card renders inside the TopBar's overlay; without
+            // raising the whole bar the later workspace paints over it.
+            .zIndex(1)
             if controller.reviewingWhileRecording { liveReviewBanner }
             workspace(controller.store.meeting, viewportWidth: viewportWidth)
         }
