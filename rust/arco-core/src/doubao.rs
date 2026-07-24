@@ -31,18 +31,10 @@ const AUDIO_CHUNKS_PER_SECOND: usize = SAMPLE_RATE * STEREO_FRAME_BYTES / READ_C
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
-// The optimized endpoint only sends packets when results change, and a
-// reconnect replaying a two-pass backlog can go tens of seconds without a
-// new result. 12s mistook "provider is busy" for "connection is dead" and
-// fed a reconnect storm; 60s covers catch-up while genuine half-open
-// sockets are still caught by the WebSocket heartbeat below.
-const LIVE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
-const SPEECH_RMS_THRESHOLD: f64 = 0.01;
 const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-const MAX_STREAM_RETRIES: usize = 3;
 const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
 const MAX_PENDING_TRANSCRIPT_SEGMENTS: usize = 10_000;
 const FATAL_ERROR_PREFIX: &str = "ARCO_DOUBAO_FATAL:";
@@ -63,17 +55,6 @@ impl AudioChunk {
 
     fn is_digital_silence(&self) -> bool {
         !self.data.is_empty() && self.data.iter().all(|byte| *byte == 0)
-    }
-
-    fn has_speech_energy(&self) -> bool {
-        let mut sample_count = 0usize;
-        let mut squared_sum = 0.0f64;
-        for bytes in self.data.chunks_exact(MONO_FRAME_BYTES) {
-            let sample = i16::from_le_bytes([bytes[0], bytes[1]]) as f64 / i16::MAX as f64;
-            squared_sum += sample * sample;
-            sample_count += 1;
-        }
-        sample_count > 0 && (squared_sum / sample_count as f64).sqrt() >= SPEECH_RMS_THRESHOLD
     }
 }
 
@@ -1003,38 +984,24 @@ fn retry_delay_after_attempt(current: u64, made_final_progress: bool) -> u64 {
     }
 }
 
-#[derive(Default)]
-struct StreamRetryBudget {
-    consecutive_failures: usize,
-}
-
-impl StreamRetryBudget {
-    fn record_final_progress(&mut self) {
-        self.consecutive_failures = 0;
-    }
-
-    fn record_failure(&mut self, made_final_progress: bool) -> bool {
-        if made_final_progress {
-            self.record_final_progress();
-        }
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        self.consecutive_failures <= MAX_STREAM_RETRIES
-    }
-
-    #[cfg(test)]
-    fn consecutive_failures(&self) -> usize {
-        self.consecutive_failures
-    }
-}
-
 fn is_fatal_channel_error(error: &str) -> bool {
     let lowercase = error.to_ascii_lowercase();
     error.starts_with(FATAL_ERROR_PREFIX)
-        || error.contains("Doubao transcription failed (")
+        || is_provider_auth_rejection(&lowercase)
         || error.contains("unsupported Doubao recognition language")
         || error.contains("invalid Doubao request")
         || error.contains("Doubao readiness coordinator stopped")
         || (lowercase.contains("http") && (lowercase.contains("401") || lowercase.contains("403")))
+}
+
+// Only credential problems are unrecoverable. Session-level provider errors
+// like 45000081 (packet-wait timeout) or 55000031 (server busy) are exactly
+// what the reconnect path exists for.
+fn is_provider_auth_rejection(lowercase_error: &str) -> bool {
+    lowercase_error.contains("doubao transcription failed (")
+        && (lowercase_error.contains("access token")
+            || lowercase_error.contains("(401")
+            || lowercase_error.contains("(403"))
 }
 
 fn apply_server_confirmation(
@@ -1264,17 +1231,14 @@ async fn stream_connected_channel(
     let dormant_deadline = Duration::from_secs(365 * 24 * 60 * 60);
     let final_response_deadline = tokio::time::sleep(dormant_deadline);
     let eof_deadline = tokio::time::sleep(dormant_deadline);
-    let live_response_deadline = tokio::time::sleep(dormant_deadline);
     let heartbeat_deadline = tokio::time::sleep(dormant_deadline);
     let first_heartbeat = tokio::time::Instant::now() + state.heartbeat_interval;
     let mut heartbeat = tokio::time::interval_at(first_heartbeat, state.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut live_response_pending = false;
     let mut heartbeat_pending = false;
     tokio::pin!(
         final_response_deadline,
         eof_deadline,
-        live_response_deadline,
         heartbeat_deadline
     );
 
@@ -1302,12 +1266,6 @@ async fn stream_connected_channel(
                     Some(chunk) => {
                         let audio = state.pending.load(&chunk)
                             .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
-                        if audio.has_speech_energy() && !live_response_pending {
-                            live_response_pending = true;
-                            live_response_deadline
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + state.live_response_timeout);
-                        }
                         if !stream_started && audio.is_digital_silence() {
                             writer
                                 .lock()
@@ -1435,7 +1393,6 @@ async fn stream_connected_channel(
                     }
                 };
                 let Some(message) = message else { continue; };
-                live_response_pending = false;
                 if trace_protocol {
                     match &message {
                         ServerMessage::Result {
@@ -1668,12 +1625,6 @@ async fn stream_connected_channel(
                     .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                 return Err("Doubao heartbeat timed out; reconnecting with queued audio.".into());
             }
-            _ = &mut live_response_deadline, if live_response_pending && !closing => {
-                close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
-                    .await
-                    .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
-                return Err("Doubao provider response timed out after incoming speech; reconnecting with queued audio.".into());
-            }
             _ = &mut final_response_deadline, if closing && !in_flight.is_empty() => {
                 close_disconnected_segment(writer, state.channel, &mut state.pending, &mut lookahead, &mut in_flight)
                     .await
@@ -1703,7 +1654,6 @@ struct ChannelState {
     connection_id: u64,
     made_final_progress: bool,
     eof_deadline: Option<tokio::time::Instant>,
-    live_response_timeout: Duration,
     heartbeat_interval: Duration,
     heartbeat_timeout: Duration,
 }
@@ -1719,7 +1669,6 @@ impl ChannelState {
             connection_id: 0,
             made_final_progress: false,
             eof_deadline: None,
-            live_response_timeout: LIVE_RESPONSE_TIMEOUT,
             heartbeat_interval: HEARTBEAT_INTERVAL,
             heartbeat_timeout: HEARTBEAT_TIMEOUT,
         }
@@ -2038,7 +1987,6 @@ async fn run_channel(
     let mut state = ChannelState::new(channel);
     state.enable_disk_recovery()?;
     let mut retry = 1u64;
-    let mut retry_budget = StreamRetryBudget::default();
     loop {
         if !prime_channel_before_connect(&mut receiver, &writer, &ready, &mut state)
             .await
@@ -2091,11 +2039,10 @@ async fn run_channel(
                 return Err(error.trim_start_matches(FATAL_ERROR_PREFIX).to_string());
             }
             Err(error) => {
-                if !retry_budget.record_failure(state.made_final_progress) {
-                    return Err(format!(
-                        "Doubao channel {channel} failed after {MAX_STREAM_RETRIES} recovery attempts: {error}"
-                    ));
-                }
+                // No retry budget: network and provider-session failures are
+                // recoverable, and buffered audio survives on disk until the
+                // connection comes back. Giving up mid-meeting is how a
+                // transient outage silently ends the whole capture.
                 eprintln!(
                     "[doubao channel {channel}] {error}; retrying in {retry_delay}s; queued_audio={:.3}s pending_bytes={} pending_ram_bytes={}",
                     buffered_audio_seconds(&state.pending, &receiver),
@@ -2557,23 +2504,6 @@ mod tests {
             start_frame: 0,
         }
         .is_digital_silence());
-    }
-
-    #[test]
-    fn speech_watchdog_ignores_room_noise_but_arms_for_voice_energy() {
-        let pcm = |sample: i16| AudioChunk {
-            data: sample
-                .to_le_bytes()
-                .into_iter()
-                .cycle()
-                .take(SAMPLE_RATE * MONO_FRAME_BYTES / 10)
-                .collect(),
-            start_frame: 0,
-        };
-
-        assert!(!pcm(0).has_speech_energy());
-        assert!(!pcm(200).has_speech_energy());
-        assert!(pcm(800).has_speech_energy());
     }
 
     #[test]
@@ -3668,7 +3598,7 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_provider_stalls_do_not_multiply_the_reconnect_backlog() {
-        let (socket, mut server) = local_websocket_pair().await;
+        let (socket, server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
         fs::write(&transcript, "# Meeting\n\n").unwrap();
@@ -3686,9 +3616,11 @@ mod tests {
         let (ready, _ready_receiver) = mpsc::channel(1);
         let mut state = ChannelState::new(0);
         state.connection_id = 1;
-        state.live_response_timeout = Duration::from_millis(150);
-        let server_task =
-            tokio::spawn(async move { while matches!(server.next().await, Some(Ok(_))) {} });
+        state.heartbeat_interval = Duration::from_millis(50);
+        state.heartbeat_timeout = Duration::from_millis(100);
+        // Never poll the server socket: tungstenite would auto-answer the ping
+        // and the heartbeat would never trip.
+        let _server = server;
 
         let result = tokio::time::timeout(
             Duration::from_secs(1),
@@ -3704,10 +3636,10 @@ mod tests {
             ),
         )
         .await
-        .expect("speech on a silent half-open provider must trigger the reconnect watchdog")
+        .expect("a peer that never answers WebSocket heartbeats must be detected")
         .expect_err("a provider that stops making progress must be reconnected");
 
-        assert!(result.contains("provider response"));
+        assert!(result.contains("heartbeat"));
         assert!(result.contains("reconnecting"));
         assert_eq!(
             state.pending.bytes(),
@@ -3722,9 +3654,8 @@ mod tests {
             !sender.is_closed(),
             "the live audio producer must remain attached"
         );
-        server_task.abort();
 
-        let (next_socket, mut next_server) = local_websocket_pair().await;
+        let (next_socket, next_server) = local_websocket_pair().await;
         for index in 10..15 {
             sender
                 .send(tenth_second_chunk(index * SAMPLE_RATE / 10, 4))
@@ -3732,8 +3663,7 @@ mod tests {
                 .unwrap();
         }
         state.connection_id = 2;
-        let next_server_task =
-            tokio::spawn(async move { while matches!(next_server.next().await, Some(Ok(_))) {} });
+        let _next_server = next_server;
         let next_result = tokio::time::timeout(
             Duration::from_secs(1),
             stream_connected_channel(
@@ -3748,10 +3678,10 @@ mod tests {
             ),
         )
         .await
-        .expect("a second silent provider connection must also hit the watchdog")
+        .expect("a second silent provider connection must also trip the heartbeat")
         .expect_err("the second stalled connection must be replaced");
 
-        assert!(next_result.contains("provider response"));
+        assert!(next_result.contains("heartbeat"));
         assert_eq!(
             state.pending.bytes(),
             chunk_bytes,
@@ -3761,7 +3691,6 @@ mod tests {
             (writer.lock().await.processed_until[0] - 1.4).abs() < 0.000_001,
             "the stream watermark must continue moving across repeated outages"
         );
-        next_server_task.abort();
     }
 
     #[tokio::test]
@@ -3782,7 +3711,6 @@ mod tests {
         let (ready, _ready_receiver) = mpsc::channel(1);
         let mut state = ChannelState::new(0);
         state.connection_id = 1;
-        state.live_response_timeout = Duration::from_secs(60);
         state.heartbeat_interval = Duration::from_millis(50);
         state.heartbeat_timeout = Duration::from_millis(100);
 
@@ -4089,29 +4017,6 @@ mod tests {
     }
 
     #[test]
-    fn livekit_style_retry_budget_is_bounded_and_only_final_progress_resets_it() {
-        let mut budget = StreamRetryBudget::default();
-        assert!(budget.record_failure(false));
-        assert!(budget.record_failure(false));
-        assert!(budget.record_failure(false));
-        assert!(
-            !budget.record_failure(false),
-            "the fourth consecutive failed stream must fail capture instead of reconnecting forever"
-        );
-
-        budget.record_final_progress();
-        assert!(
-            budget.record_failure(false),
-            "a committed final transcript starts a fresh recovery budget"
-        );
-        assert!(
-            budget.record_failure(true),
-            "final progress during an attempt resets the budget before that connection later fails"
-        );
-        assert_eq!(budget.consecutive_failures(), 1);
-    }
-
-    #[test]
     fn finalized_progress_resets_reconnect_backoff_before_the_next_outage() {
         assert_eq!(retry_delay_after_attempt(15, true), 1);
         assert_eq!(retry_delay_after_attempt(8, false), 8);
@@ -4209,6 +4114,18 @@ mod tests {
         assert!(is_fatal_channel_error(
             "Doubao connection failed: HTTP error: 401 Unauthorized"
         ));
+        assert!(
+            !is_fatal_channel_error(
+                "Doubao transcription failed (45000081): waiting next packet timeout: 8.000000 seconds, session has ended"
+            ),
+            "the provider's 8s packet-wait timeout must reconnect, not kill the channel"
+        );
+        assert!(
+            !is_fatal_channel_error(
+                "Doubao transcription failed (55000031): server busy"
+            ),
+            "a busy provider must be retried, not treated as a fatal rejection"
+        );
     }
 
     #[test]
