@@ -128,6 +128,10 @@ expectTrue(
     source.contains("copyValue: summary.path"),
     "The copied value must be the real transcript path, not the display label"
 )
+expectTrue(
+    source.contains("abbreviatingWithTildeInPath"),
+    "The storage row must display the tilde-abbreviated transcript path, not just a generic location label"
+)
 
 if failures.isEmpty {
     print("Arco TopBar contract tests passed (\(assertionCount) assertions)")
