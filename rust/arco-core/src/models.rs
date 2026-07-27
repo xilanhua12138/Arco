@@ -70,11 +70,25 @@ pub struct LiveTranscriptLine {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MeetingAttachment {
+    pub id: String,
+    pub meeting_id: String,
+    pub name: String,
+    pub text: String,
+    pub added_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MeetingDetail {
     pub summary: MeetingSummary,
     pub lines: Vec<TranscriptLine>,
     /// Kept for the local-agent adapter. The UI can ignore this field.
     pub raw_markdown: String,
+    /// User-attached reference documents for the Agent. Populated by the
+    /// controller from the meeting state sidecar; never serialized to clients.
+    #[serde(default, skip_serializing)]
+    pub attachments: Vec<MeetingAttachment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 use crate::models::{
     AgentReply, AgentRunOutput, AgentSessionBinding, GeneratedMeetingArtifact, MeetingArtifacts,
-    MeetingSummary, PersistedAgentTurn, SavedNote,
+    MeetingAttachment, MeetingSummary, PersistedAgentTurn, SavedNote,
 };
 use crate::storage::is_storage_source;
 use chrono::Local;
@@ -21,6 +21,9 @@ const LEGACY_SCHEMA_VERSION: u32 = 1;
 const MAX_MEETING_ID_BYTES: usize = 120;
 const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANUAL_TITLE_CHARS: usize = 80;
+const MAX_ATTACHMENTS_PER_MEETING: usize = 8;
+const MAX_ATTACHMENT_NAME_CHARS: usize = 160;
+const MAX_ATTACHMENT_TEXT_CHARS: usize = 200_000;
 static NEXT_TURN_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,6 +37,8 @@ struct MeetingStateFile {
     artifacts: MeetingArtifacts,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     manual_title: Option<ManualMeetingTitle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attachments: Vec<MeetingAttachment>,
     turns: Vec<PersistedAgentTurn>,
 }
 
@@ -52,6 +57,7 @@ impl MeetingStateFile {
             sessions: Vec::new(),
             artifacts: MeetingArtifacts::default(),
             manual_title: None,
+            attachments: Vec::new(),
             turns: Vec::new(),
         }
     }
@@ -131,6 +137,71 @@ impl MeetingStateStore {
         let path = self.sidecar_path(meeting_id)?;
         let _guard = self.acquire_lock()?;
         Ok(self.read_state(meeting_id, &path)?.artifacts)
+    }
+
+    pub fn list_attachments(&self, meeting_id: &str) -> Result<Vec<MeetingAttachment>, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let _guard = self.acquire_lock()?;
+        Ok(self.read_state(meeting_id, &path)?.attachments)
+    }
+
+    pub fn add_attachment(
+        &self,
+        meeting_id: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<Vec<MeetingAttachment>, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let name = normalize_attachment_name(name)?;
+        let text = validate_attachment_text(text)?;
+
+        let _guard = self.acquire_lock()?;
+        let mut state = self.read_state(meeting_id, &path)?;
+        if state.attachments.len() >= MAX_ATTACHMENTS_PER_MEETING {
+            return Err(format!(
+                "a meeting can have at most {MAX_ATTACHMENTS_PER_MEETING} attachments"
+            ));
+        }
+        if state.attachments.iter().any(|attachment| attachment.name == name) {
+            return Err(format!("an attachment named {name} already exists"));
+        }
+        state.attachments.push(MeetingAttachment {
+            id: new_attachment_id(),
+            meeting_id: meeting_id.to_string(),
+            name,
+            text: text.to_string(),
+            added_at: Local::now().to_rfc3339(),
+        });
+        self.write_state(&path, &state)?;
+        Ok(state.attachments)
+    }
+
+    pub fn remove_attachment(
+        &self,
+        meeting_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<MeetingAttachment>, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        if attachment_id.is_empty()
+            || attachment_id.len() > 160
+            || attachment_id.chars().any(char::is_control)
+        {
+            return Err("invalid meeting attachment id".into());
+        }
+
+        let _guard = self.acquire_lock()?;
+        let mut state = self.read_state(meeting_id, &path)?;
+        let before = state.attachments.len();
+        state
+            .attachments
+            .retain(|attachment| attachment.id != attachment_id);
+        if state.attachments.len() == before {
+            return Err(format!(
+                "meeting attachment not found for meeting {meeting_id}: {attachment_id}"
+            ));
+        }
+        self.write_state(&path, &state)?;
+        Ok(state.attachments)
     }
 
     pub fn has_manual_title(&self, meeting_id: &str) -> Result<bool, String> {
@@ -970,6 +1041,23 @@ fn validate_state(meeting_id: &str, path: &Path, state: &MeetingStateFile) -> Re
             }
         }
     }
+    let mut attachment_ids = HashSet::new();
+    if state.attachments.iter().any(|attachment| {
+        attachment.meeting_id != meeting_id
+            || attachment.id.is_empty()
+            || !attachment_ids.insert(attachment.id.as_str())
+            || normalize_attachment_name(&attachment.name)
+                .map(|normalized| normalized != attachment.name)
+                .unwrap_or(true)
+            || validate_attachment_text(&attachment.text).is_err()
+            || attachment.added_at.trim().is_empty()
+    }) {
+        return Err(damaged_state_error(
+            meeting_id,
+            path,
+            "it contains an invalid or duplicate meeting attachment",
+        ));
+    }
     if state.turns.iter().any(|turn| {
         turn.provider_session_id
             .as_deref()
@@ -1094,6 +1182,47 @@ fn new_turn_id() -> String {
         "turn-{nanos:032x}-{:08x}-{sequence:016x}",
         std::process::id()
     )
+}
+
+fn new_attachment_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = NEXT_TURN_ID.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "attach-{nanos:032x}-{:08x}-{sequence:016x}",
+        std::process::id()
+    )
+}
+
+fn normalize_attachment_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("meeting attachment name cannot be empty".into());
+    }
+    if name.chars().count() > MAX_ATTACHMENT_NAME_CHARS {
+        return Err(format!(
+            "meeting attachment name is too long (maximum {MAX_ATTACHMENT_NAME_CHARS} characters)"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("meeting attachment name must be a single line".into());
+    }
+    Ok(name.to_string())
+}
+
+fn validate_attachment_text(text: &str) -> Result<&str, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("meeting attachment text cannot be empty".into());
+    }
+    if text.chars().count() > MAX_ATTACHMENT_TEXT_CHARS {
+        return Err(format!(
+            "meeting attachment text is too long (maximum {MAX_ATTACHMENT_TEXT_CHARS} characters)"
+        ));
+    }
+    Ok(text)
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

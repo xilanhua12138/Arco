@@ -1,11 +1,14 @@
 import AppKit
 import Foundation
+import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 public struct ArcoAppEnvironment {
     public var chooseDirectory: (_ title: String) async -> String?
     public var chooseWorkspace: (_ title: String) async -> String?
+    public var chooseAttachment: (_ title: String) async -> (name: String, text: String)?
     public var copyText: (_ text: String) async throws -> Void
     public var openURL: (_ url: URL) async throws -> Void
     public var changeListeningShortcut: (_ shortcut: ListeningShortcut?) async -> Bool
@@ -17,6 +20,7 @@ public struct ArcoAppEnvironment {
     public init(
         chooseDirectory: @escaping (_ title: String) async -> String? = ArcoAppEnvironment.nativeDirectoryPicker,
         chooseWorkspace: @escaping (_ title: String) async -> String? = ArcoAppEnvironment.nativeDirectoryPicker,
+        chooseAttachment: @escaping (_ title: String) async -> (name: String, text: String)? = ArcoAppEnvironment.nativeAttachmentPicker,
         copyText: @escaping (_ text: String) async throws -> Void = ArcoAppEnvironment.nativeCopy,
         openURL: @escaping (_ url: URL) async throws -> Void = ArcoAppEnvironment.nativeOpenURL,
         changeListeningShortcut: @escaping (_ shortcut: ListeningShortcut?) async -> Bool = { _ in true },
@@ -27,6 +31,7 @@ public struct ArcoAppEnvironment {
     ) {
         self.chooseDirectory = chooseDirectory
         self.chooseWorkspace = chooseWorkspace
+        self.chooseAttachment = chooseAttachment
         self.copyText = copyText
         self.openURL = openURL
         self.changeListeningShortcut = changeListeningShortcut
@@ -43,6 +48,32 @@ public struct ArcoAppEnvironment {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+
+    /// Picks a single reference document and returns its extracted plain text.
+    /// The Agent never receives file-system access; only the extracted text is
+    /// stored and inlined into the prompt.
+    public static func nativeAttachmentPicker(_ title: String) async -> (name: String, text: String)? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        var types: [UTType] = [.pdf, .plainText, .text]
+        if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
+        panel.allowedContentTypes = types
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        let name = url.lastPathComponent
+        let text: String?
+        if url.pathExtension.lowercased() == "pdf" {
+            text = PDFDocument(url: url)?.string
+        } else {
+            text = try? String(contentsOf: url, encoding: .utf8)
+        }
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return (name, text)
     }
 
     public static func nativeCopy(_ text: String) async throws {
@@ -400,6 +431,19 @@ public final class ArcoAppShellController: ObservableObject {
         preferences.saveAgentWorkspace(path)
         agentWorkspace = path
         return path
+    }
+
+    public func attachDocument(to meetingID: String) async -> Bool {
+        guard let picked = await environment.chooseAttachment(
+            translate("agent.attachDocumentDialogTitle", [:])
+        ) else {
+            return false
+        }
+        return await store.addAttachment(meetingId: meetingID, name: picked.name, text: picked.text)
+    }
+
+    public func removeAttachment(_ attachmentID: String, from meetingID: String) async {
+        _ = await store.removeAttachment(meetingId: meetingID, attachmentId: attachmentID)
     }
 
     public func handleGlobalListeningShortcut() async {

@@ -126,6 +126,29 @@ impl Controller {
                 optional::<String>(&params, "title")?,
             )?),
             "list_agent_turns" => value(self.list_agent_turns(required(&params, "meetingId")?)?),
+            "list_attachments" => value(
+                self.meeting_state
+                    .list_attachments(&required::<String>(&params, "meetingId")?)?,
+            ),
+            "add_attachment" => {
+                let meeting_id = required::<String>(&params, "meetingId")?;
+                let attachments = self.meeting_state.add_attachment(
+                    &meeting_id,
+                    &required::<String>(&params, "name")?,
+                    &required::<String>(&params, "text")?,
+                )?;
+                self.emit("arco:agent-attachments-changed", &meeting_id);
+                value(attachments)
+            }
+            "remove_attachment" => {
+                let meeting_id = required::<String>(&params, "meetingId")?;
+                let attachments = self.meeting_state.remove_attachment(
+                    &meeting_id,
+                    &required::<String>(&params, "attachmentId")?,
+                )?;
+                self.emit("arco:agent-attachments-changed", &meeting_id);
+                value(attachments)
+            }
             "list_saved_notes" => {
                 value(self.list_saved_notes(optional::<String>(&params, "query")?)?)
             }
@@ -594,7 +617,8 @@ impl Controller {
             .lock()
             .map_err(|_| "agent session coordinator is unavailable".to_string())?;
         let active = self.capture.active_transcript_path();
-        let meeting = self.meetings.read(&meeting_id, active.as_deref())?;
+        let mut meeting = self.meetings.read(&meeting_id, active.as_deref())?;
+        meeting.attachments = self.meeting_state.list_attachments(&meeting_id)?;
         let workspace = workspace
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())

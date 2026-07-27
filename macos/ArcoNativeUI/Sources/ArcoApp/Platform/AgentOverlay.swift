@@ -14,6 +14,7 @@ struct AgentOverlaySnapshot: Equatable, Sendable {
     var streamingTurn: AgentStreamingTurn?
     var loading: Bool
     var workspace: String?
+    var attachments: [MeetingAttachment]
 
     static let empty = AgentOverlaySnapshot(
         meeting: nil,
@@ -24,7 +25,8 @@ struct AgentOverlaySnapshot: Equatable, Sendable {
         running: false,
         streamingTurn: nil,
         loading: true,
-        workspace: nil
+        workspace: nil,
+        attachments: []
     )
 }
 
@@ -42,6 +44,8 @@ final class AgentOverlayModel {
     private let runAsk: (InsightAskRequest) async throws -> Bool
     private let toggleSaved: (String, String, Bool) async -> Bool
     private let chooseWorkspaceAction: () async -> String?
+    private let attachDocumentAction: (String) async -> Bool
+    private let removeAttachmentAction: (String, String) async -> Void
     private var refreshGeneration = 0
 
     init(
@@ -49,13 +53,17 @@ final class AgentOverlayModel {
         loadActiveSnapshot: @escaping () async throws -> AgentOverlaySnapshot,
         runAsk: @escaping (InsightAskRequest) async throws -> Bool,
         toggleSaved: @escaping (String, String, Bool) async -> Bool,
-        chooseWorkspace: @escaping () async -> String?
+        chooseWorkspace: @escaping () async -> String?,
+        attachDocument: @escaping (String) async -> Bool = { _ in false },
+        removeAttachment: @escaping (String, String) async -> Void = { _, _ in }
     ) {
         self.snapshot = snapshot
         self.loadActiveSnapshot = loadActiveSnapshot
         self.runAsk = runAsk
         self.toggleSaved = toggleSaved
         self.chooseWorkspaceAction = chooseWorkspace
+        self.attachDocumentAction = attachDocument
+        self.removeAttachmentAction = removeAttachment
     }
 
     func refresh() async {
@@ -111,6 +119,17 @@ final class AgentOverlayModel {
         guard let workspace = await chooseWorkspaceAction() else { return nil }
         snapshot.workspace = workspace
         return workspace
+    }
+
+    func attachDocument(to meetingID: String) async -> Bool {
+        let succeeded = await attachDocumentAction(meetingID)
+        if succeeded { await refresh() }
+        return succeeded
+    }
+
+    func removeAttachment(_ attachmentID: String, from meetingID: String) async {
+        await removeAttachmentAction(meetingID, attachmentID)
+        snapshot.attachments = snapshot.attachments.filter { $0.id != attachmentID }
     }
 }
 
@@ -313,6 +332,7 @@ struct AgentOverlaySurfaceView: View {
                 isFailover: route.isFailover,
                 running: model.snapshot.running,
                 workspace: model.snapshot.workspace,
+                attachments: model.snapshot.attachments,
                 live: live,
                 showHeader: false,
                 layout: .agentOverlay,
@@ -330,6 +350,12 @@ struct AgentOverlaySurfaceView: View {
                 },
                 onChooseWorkspace: {
                     await model.chooseWorkspace()
+                },
+                onAttachDocument: { meetingID in
+                    await model.attachDocument(to: meetingID)
+                },
+                onRemoveAttachment: { meetingID, attachmentID in
+                    await model.removeAttachment(attachmentID, from: meetingID)
                 },
                 onCopy: { text in
                     let pasteboard = NSPasteboard.general

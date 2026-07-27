@@ -99,6 +99,7 @@ The selected mode is remembered locally and cannot change during active capture.
 Reusing CLI authentication does not mean choosing an unrelated Codex or Claude conversation. Arco constructs context explicitly:
 
 - current transcript (always);
+- meeting attachments: reference documents the user picked through the native file picker (PDF/Markdown/plain text). Arco extracts the text itself and inlines it into the prompt inside guard-tagged `<meeting_attachment>` blocks; the Agent never receives file-system access to the original file. Each attachment also appears in the answer's source receipts;
 - selected historical meetings (future);
 - selected workspace path as an explicit read scope;
 - one explicitly selected workspace, attached visibly in the Agent composer; broad Home-folder access is not exposed by the product UI.
@@ -115,7 +116,7 @@ For Codex, `transcript` and `workspace` scopes add a macOS Seatbelt profile arou
 
 - New data: `~/Library/Application Support/Arco/transcripts/`.
 - On-device ASR and diarization models: `~/Library/Application Support/Arco/models/`, installed and removed through the local runtime rather than the capture process.
-- Native Agent session bindings, cached answer cards, and saved-note flags: `~/Library/Application Support/Arco/meeting-state/`, one JSON sidecar per meeting ID.
+- Native Agent session bindings, cached answer cards, saved-note flags, and extracted meeting attachment text: `~/Library/Application Support/Arco/meeting-state/`, one JSON sidecar per meeting ID.
 - Isolated Codex native state for transcript/workspace bindings: under Arco Application Support, one provider-managed home per binding. The native Codex thread ID remains authoritative.
 - Legacy import: `~/.claude/meeting-transcripts/{meeting,transcript}-*.md`.
 - Legacy files are never renamed, rewritten, or deleted.

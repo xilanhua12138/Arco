@@ -278,6 +278,7 @@ pub fn parse_meeting(
         summary,
         lines,
         raw_markdown,
+        attachments: Vec::new(),
     })
 }
 

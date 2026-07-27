@@ -463,6 +463,14 @@ public struct AgentSource: Codable, Equatable, Identifiable, Sendable {
     public var id: String { "\(kind):\(reference)" }
 }
 
+public struct MeetingAttachment: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var meetingId: String
+    public var name: String
+    public var text: String
+    public var addedAt: String
+}
+
 public struct AgentToolActivity: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var kind: String

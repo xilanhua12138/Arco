@@ -69,7 +69,8 @@ pub fn generate_meeting_output(
     if regenerate && meeting_state.has_manual_title(meeting_id)? {
         return Err("generated meeting title cannot replace a manual title".into());
     }
-    let meeting = meetings.read(meeting_id, active_path)?;
+    let mut meeting = meetings.read(meeting_id, active_path)?;
+    meeting.attachments = meeting_state.list_attachments(meeting_id)?;
     let artifacts = meeting_state.meeting_artifacts(meeting_id)?;
     if !regenerate {
         if let Some(existing) = match kind {

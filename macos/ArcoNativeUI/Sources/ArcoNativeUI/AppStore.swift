@@ -42,6 +42,7 @@ public final class ArcoStore {
     public private(set) var capture: CaptureState = .idle
     public private(set) var completedMeetingId: String?
     public private(set) var agentTurnsByMeeting: [String: [AgentTurn]] = [:]
+    public private(set) var attachmentsByMeeting: [String: [MeetingAttachment]] = [:]
     public private(set) var savedNotes: [NoteDocument] = []
     public private(set) var notesLoading = false
     public private(set) var lastSuccessfulNotesQuery: String?
@@ -66,6 +67,10 @@ public final class ArcoStore {
 
     public var agentReplies: [AgentTurn] {
         selectedMeetingId.flatMap { agentTurnsByMeeting[$0] } ?? []
+    }
+
+    public func attachments(for meetingId: String) -> [MeetingAttachment] {
+        attachmentsByMeeting[meetingId] ?? []
     }
 
     public let isDesktop = true
@@ -184,6 +189,15 @@ public final class ArcoStore {
             } catch {
                 threadError = errorMessage(error, fallbackKey: "error.loadAgentThread")
             }
+            var attachments: [MeetingAttachment] = []
+            do {
+                attachments = try await backend.call(
+                    "list_attachments",
+                    arguments: ["meetingId": .string(id)]
+                )
+            } catch {
+                attachments = []
+            }
             guard selectionRequest == request else { return false }
             selectedReference = id
             meetingReference = next
@@ -193,6 +207,7 @@ public final class ArcoStore {
             selectedMeetingId = id
             meeting = next
             agentTurnsByMeeting[id] = turns
+            attachmentsByMeeting[id] = attachments
             if let threadError { self.error = threadError }
             triggerLiveTitleGenerationIfNeeded()
             return true
@@ -220,6 +235,60 @@ public final class ArcoStore {
         } catch {
             self.error = errorMessage(error, fallbackKey: "error.refreshAgentThread")
             return []
+        }
+    }
+
+    @discardableResult
+    public func refreshAttachments(_ meetingId: String) async -> [MeetingAttachment] {
+        do {
+            let attachments: [MeetingAttachment] = try await backend.call(
+                "list_attachments",
+                arguments: ["meetingId": .string(meetingId)]
+            )
+            attachmentsByMeeting[meetingId] = attachments
+            return attachments
+        } catch {
+            self.error = errorMessage(error, fallbackKey: "error.refreshAttachments")
+            return []
+        }
+    }
+
+    @discardableResult
+    public func addAttachment(meetingId: String, name: String, text: String) async -> Bool {
+        error = nil
+        do {
+            let attachments: [MeetingAttachment] = try await backend.call(
+                "add_attachment",
+                arguments: [
+                    "meetingId": .string(meetingId),
+                    "name": .string(name),
+                    "text": .string(text),
+                ]
+            )
+            attachmentsByMeeting[meetingId] = attachments
+            return true
+        } catch {
+            self.error = errorMessage(error, fallbackKey: "error.addAttachment")
+            return false
+        }
+    }
+
+    @discardableResult
+    public func removeAttachment(meetingId: String, attachmentId: String) async -> Bool {
+        error = nil
+        do {
+            let attachments: [MeetingAttachment] = try await backend.call(
+                "remove_attachment",
+                arguments: [
+                    "meetingId": .string(meetingId),
+                    "attachmentId": .string(attachmentId),
+                ]
+            )
+            attachmentsByMeeting[meetingId] = attachments
+            return true
+        } catch {
+            self.error = errorMessage(error, fallbackKey: "error.removeAttachment")
+            return false
         }
     }
 
@@ -989,6 +1058,8 @@ public final class ArcoStore {
                 _ = await refreshAgentTurns(id)
                 _ = await refreshSavedNotes(noteQuery)
             }
+        case "arco:agent-attachments-changed":
+            if let id = try? event.decode(String.self) { _ = await refreshAttachments(id) }
         case "arco:agent-target-changed":
             if let id = try? event.decode(String.self) { _ = await selectMeeting(id) }
         case "arco:meeting-output-changed":

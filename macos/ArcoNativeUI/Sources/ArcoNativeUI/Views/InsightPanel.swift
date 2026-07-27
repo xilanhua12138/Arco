@@ -75,6 +75,7 @@ public struct InsightPanelView: View {
     public var isFailover: Bool
     public var running: Bool
     public var workspace: String?
+    public var attachments: [MeetingAttachment]
     public var live: Bool
     public var showHeader: Bool
     public var layout: InsightPanelLayout
@@ -84,6 +85,8 @@ public struct InsightPanelView: View {
     public var onAsk: (InsightAskRequest) async throws -> Bool
     public var onToggleSaved: (String, String, Bool) async -> Bool
     public var onChooseWorkspace: () async -> String?
+    public var onAttachDocument: (String) async -> Bool
+    public var onRemoveAttachment: (String, String) async -> Void
     public var onCopy: (String) async throws -> Void
     public var onClose: (() -> Void)?
     public var onConnectAgent: (() -> Void)?
@@ -112,6 +115,7 @@ public struct InsightPanelView: View {
         running: Bool,
         question: Binding<String>? = nil,
         workspace: String? = nil,
+        attachments: [MeetingAttachment] = [],
         live: Bool = false,
         showHeader: Bool = false,
         layout: InsightPanelLayout = .main,
@@ -120,6 +124,8 @@ public struct InsightPanelView: View {
         onAsk: @escaping (InsightAskRequest) async throws -> Bool,
         onToggleSaved: @escaping (String, String, Bool) async -> Bool,
         onChooseWorkspace: @escaping () async -> String? = { nil },
+        onAttachDocument: @escaping (String) async -> Bool = { _ in false },
+        onRemoveAttachment: @escaping (String, String) async -> Void = { _, _ in },
         onCopy: @escaping (String) async throws -> Void,
         onClose: (() -> Void)? = nil,
         onConnectAgent: (() -> Void)? = nil
@@ -134,6 +140,7 @@ public struct InsightPanelView: View {
         self.externalQuestion = question
         self._localQuestion = State(initialValue: question?.wrappedValue ?? "")
         self.workspace = workspace
+        self.attachments = attachments
         self.live = live
         self.showHeader = showHeader
         self.layout = layout
@@ -142,6 +149,8 @@ public struct InsightPanelView: View {
         self.onAsk = onAsk
         self.onToggleSaved = onToggleSaved
         self.onChooseWorkspace = onChooseWorkspace
+        self.onAttachDocument = onAttachDocument
+        self.onRemoveAttachment = onRemoveAttachment
         self.onCopy = onCopy
         self.onClose = onClose
         self.onConnectAgent = onConnectAgent
@@ -605,6 +614,7 @@ public struct InsightPanelView: View {
         switch kind {
         case "transcript": .bookOpenText
         case "workspace": .fileSearch
+        case "attachment": .fileText
         default: .link2
         }
     }
@@ -658,6 +668,9 @@ public struct InsightPanelView: View {
                     )
                     .accessibilityLabel(translate("agent.changeWorkspace", [:]))
                     .help(workspace)
+                }
+                ForEach(attachments) { attachment in
+                    attachmentChip(attachment)
                 }
             }
             .padding(.bottom, 9)
@@ -765,6 +778,35 @@ public struct InsightPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
+    private func attachmentChip(_ attachment: MeetingAttachment) -> some View {
+        HStack(spacing: 5) {
+            ArcoLucideIcon(.fileText, size: 11)
+            Text(attachment.name)
+                .font(ArcoTypography.tiny)
+                .lineLimit(1)
+            Button {
+                guard let meeting else { return }
+                Task { @MainActor in
+                    await onRemoveAttachment(meeting.summary.id, attachment.id)
+                }
+            } label: {
+                ArcoLucideIcon(.x, size: 9)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(ArcoPressFeedbackButtonStyle())
+            .accessibilityLabel(translate("agent.removeAttachment", ["name": attachment.name]))
+        }
+        .foregroundStyle(ArcoNativeColors.ink)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .frame(maxWidth: 170)
+        .background(ArcoNativeColors.surfaceSubtle)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .help(attachment.name)
+    }
+
     private var contextMenu: some View {
         ZStack(alignment: .bottomLeading) {
             Button {
@@ -816,6 +858,16 @@ public struct InsightPanelView: View {
                 ) {
                     scope = .transcript
                     contextMenuOpen = false
+                }
+            }
+            InsightContextMenuItem(
+                icon: .fileText,
+                label: translate("agent.attachDocument", [:])
+            ) {
+                contextMenuOpen = false
+                guard let meeting else { return }
+                Task { @MainActor in
+                    _ = await onAttachDocument(meeting.summary.id)
                 }
             }
             InsightContextMenuItem(

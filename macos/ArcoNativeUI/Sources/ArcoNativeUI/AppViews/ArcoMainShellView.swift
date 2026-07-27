@@ -507,6 +507,7 @@ public struct ArcoMainShellView: View {
             isFailover: route.isFailover,
             running: controller.store.agentRunning,
             workspace: controller.agentWorkspace,
+            attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
             showHeader: true,
             streamingTurn: controller.store.agentStreamingTurn,
@@ -526,6 +527,12 @@ public struct ArcoMainShellView: View {
                 await controller.store.setAgentTurnSaved(meetingId: meetingID, turnId: turnID, saved: saved)
             },
             onChooseWorkspace: { await controller.chooseWorkspace() },
+            onAttachDocument: { meetingID in
+                await controller.attachDocument(to: meetingID)
+            },
+            onRemoveAttachment: { meetingID, attachmentID in
+                await controller.removeAttachment(attachmentID, from: meetingID)
+            },
             onCopy: controller.environment.copyText,
             onConnectAgent: controller.openProviderSetup
         )

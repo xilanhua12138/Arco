@@ -216,6 +216,7 @@ private final class NativeApplicationRuntime {
                 let runtimes: [RuntimeStatus] = try await backend.call("runtime_status")
                 var meeting: MeetingDetail?
                 var replies: [AgentTurn] = []
+                var attachments: [MeetingAttachment] = []
                 if let meetingID = capture.activeMeetingId {
                     meeting = try await backend.call(
                         "read_meeting",
@@ -225,6 +226,10 @@ private final class NativeApplicationRuntime {
                         "list_agent_turns",
                         arguments: ["meetingId": .string(meetingID)]
                     )
+                    attachments = (try? await backend.call(
+                        "list_attachments",
+                        arguments: ["meetingId": .string(meetingID)]
+                    )) ?? []
                 }
                 return AgentOverlaySnapshot(
                     meeting: meeting,
@@ -235,7 +240,8 @@ private final class NativeApplicationRuntime {
                     running: store.agentRunning,
                     streamingTurn: store.agentStreamingTurn,
                     loading: false,
-                    workspace: shellController.agentWorkspace
+                    workspace: shellController.agentWorkspace,
+                    attachments: attachments
                 )
             },
             runAsk: { request in
@@ -256,7 +262,13 @@ private final class NativeApplicationRuntime {
                     saved: saved
                 )
             },
-            chooseWorkspace: { await shellController.chooseWorkspace() }
+            chooseWorkspace: { await shellController.chooseWorkspace() },
+            attachDocument: { meetingID in
+                await shellController.attachDocument(to: meetingID)
+            },
+            removeAttachment: { meetingID, attachmentID in
+                await shellController.removeAttachment(attachmentID, from: meetingID)
+            }
         )
 
         self.preferences = preferences
