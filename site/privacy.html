@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arco privacy — what stays on your Mac</title>
+  <meta name="description" content="Arco privacy boundaries: local Markdown transcripts, no saved raw audio, optional on-device speech recognition, cloud choices, and explicit Agent context.">
+  <link rel="canonical" href="https://xilanhua12138.github.io/Arco/privacy.html">
+  <link rel="icon" href="assets/arco-app-icon.webp">
+  <link rel="stylesheet" href="assets/styles.css">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Arco for macOS">
+  <meta property="og:title" content="Arco privacy — local-first, explained precisely">
+  <meta property="og:description" content="What stays on the Mac, what can be sent to a chosen provider, and what Arco never saves.">
+  <meta property="og:url" content="https://xilanhua12138.github.io/Arco/privacy.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Arco privacy and data boundaries",
+    "description": "A precise explanation of local storage, audio handling, transcription providers, and Agent context in Arco for macOS.",
+    "url": "https://xilanhua12138.github.io/Arco/privacy.html",
+    "isPartOf": {"@id": "https://xilanhua12138.github.io/Arco/#website"},
+    "about": {"@id": "https://xilanhua12138.github.io/Arco/#software"},
+    "inLanguage": "en"
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./" aria-label="Arco home">
+        <img src="assets/arco-app-icon.webp" alt="" width="34" height="34">
+        <span>Arco</span>
+      </a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="privacy.html" aria-current="page">Privacy</a>
+        <a href="architecture.html">How it works</a>
+        <a href="https://github.com/xilanhua12138/Arco">GitHub</a>
+        <a class="nav-download" href="https://github.com/xilanhua12138/Arco/releases/latest">Download</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main" class="page-shell">
+    <header class="content-hero">
+      <p class="entity-label">Privacy and data boundaries</p>
+      <h1>Local-first, stated precisely.</h1>
+      <p>Arco keeps the meeting record on your Mac and gives you explicit choices for speech processing and Agent context. “Local-first” does not mean every optional provider is local.</p>
+    </header>
+
+    <article class="prose">
+      <h2>The short answer</h2>
+      <p>Transcripts, notes, meeting state, and Agent bindings are stored locally. Arco does not save raw meeting audio. Speech can be processed on-device or sent to the cloud transcription provider you select. Agent questions are sent through the Codex or Claude CLI you select, with the current transcript and only the project workspace you explicitly attach.</p>
+
+      <div class="note"><strong>Arco has no hidden “fully local” claim.</strong> On-device transcription can keep speech processing on the Mac. Codex and Claude remain their own services, and cloud transcription providers receive meeting audio when selected.</div>
+
+      <h2>What is stored on the Mac</h2>
+      <p>By default, Arco stores its meeting data under:</p>
+      <p><code>~/Library/Application Support/Arco/</code></p>
+      <ul>
+        <li>Finalized transcripts are readable Markdown.</li>
+        <li>Meeting state, generated output, Agent session bindings, and saved-note state use local atomic sidecars.</li>
+        <li>Hand-written and Agent-saved notes remain independent Markdown files.</li>
+        <li>You can choose different local folders for transcripts and notes.</li>
+        <li>Previously used transcript locations remain readable in History.</li>
+      </ul>
+
+      <h2>What happens to meeting audio</h2>
+      <p>Arco captures system audio and the selected room microphone while a meeting is active. It does not save raw PCM audio as a recording. Instead, audio is streamed into the speech-recognition path configured for that meeting.</p>
+
+      <h3>On-device path</h3>
+      <p>When you select on-device speech recognition and speaker separation, meeting speech is processed by workers on the Mac. Model downloads are explicit and occur before capture; Arco does not silently download a model after a meeting has started.</p>
+
+      <h3>Cloud transcription path</h3>
+      <ul>
+        <li>Selecting Deepgram for speech recognition or speaker separation sends the active meeting audio to Deepgram.</li>
+        <li>Selecting Doubao Speech for either role sends the active meeting audio to Doubao Speech.</li>
+        <li>Selecting ElevenLabs for speech recognition sends the active meeting audio to ElevenLabs. Speaker labels can come from a separately selected diarization provider.</li>
+        <li>Cloud credentials are verified by the Rust backend and stored in macOS Keychain, not in transcripts or logs.</li>
+      </ul>
+
+      <h2>What Codex or Claude receives</h2>
+      <p>Arco's Agent is the Codex CLI or Claude Code already installed and authenticated on the Mac. The composer makes the context boundary visible:</p>
+      <ul>
+        <li>The current meeting transcript is always included.</li>
+        <li>A project workspace is included only after you select it with the native folder picker.</li>
+        <li>Changing the workspace creates a different context boundary and provider session.</li>
+        <li>Arco never uses a recency shortcut such as <code>--last</code> or <code>--continue</code> to select an unrelated conversation.</li>
+        <li>Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.</li>
+      </ul>
+      <p>The selected CLI and its provider still have their own privacy, retention, and network behavior. Arco does not relabel that cloud-backed inference as local inference.</p>
+
+      <h2>What Arco does not do</h2>
+      <ul>
+        <li>It does not send a bot participant into the meeting.</li>
+        <li>It does not save raw PCM meeting audio.</li>
+        <li>It does not silently add an unrelated folder or CLI conversation to context.</li>
+        <li>It does not turn Agent output into a confirmed fact, decision, or task without a user action.</li>
+        <li>It does not run a hidden stop-time batch pass that replaces the live transcript.</li>
+      </ul>
+
+      <h2>Verify the implementation</h2>
+      <p>Arco is MIT-licensed open-source software. The detailed storage, capture, provider, credential, and process boundaries are documented in the repository:</p>
+      <ul>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/docs/ARCHITECTURE.md">Architecture contract</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/docs/TRANSCRIPTION.md">Transcription and speaker-separation contract</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/PRODUCT.md">Product invariants and explicit non-goals</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco">Complete source code</a></li>
+      </ul>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="page-shell footer-inner">
+      <span>Arco is an open-source project for macOS.</span>
+      <div class="footer-links">
+        <a href="./">Home</a>
+        <a href="faq.html">FAQ</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/xilanhua12138/Arco">Source</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

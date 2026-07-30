@@ -69,6 +69,18 @@ public final class ArcoStore {
         selectedMeetingId.flatMap { agentTurnsByMeeting[$0] } ?? []
     }
 
+    public var activeMeetingDetail: MeetingDetail? {
+        guard capture.phase == .recording,
+              let activeId = capture.activeMeetingId else { return nil }
+        if liveMeetingReference?.summary.id == activeId {
+            return liveMeetingReference
+        }
+        if meetingReference?.summary.id == activeId {
+            return meetingReference
+        }
+        return nil
+    }
+
     public func attachments(for meetingId: String) -> [MeetingAttachment] {
         attachmentsByMeeting[meetingId] ?? []
     }
@@ -994,7 +1006,7 @@ public final class ArcoStore {
         pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .milliseconds(450))
+                    try await Task.sleep(for: .milliseconds(250))
                 } catch {
                     return
                 }

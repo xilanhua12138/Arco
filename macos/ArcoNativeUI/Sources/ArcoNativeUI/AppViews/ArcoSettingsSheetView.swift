@@ -184,9 +184,104 @@ public struct ArcoSettingsSheetView: View {
                     .foregroundStyle(ArcoNativeColors.record)
                     .padding(.top, 16)
             }
+
+            updateRow
         }
         .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
         .accessibilityLabel(translate("settings.generalPreferences", [:]))
+    }
+
+    private var updateRow: some View {
+        HStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(translate("settings.softwareUpdate", [:]), systemImage: "arrow.triangle.2.circlepath")
+                    .font(ArcoTypography.sans(13, weight: .medium))
+                    .foregroundStyle(ArcoNativeColors.inkStrong)
+                Text(translate("settings.currentVersion", ["version": viewModel.snapshot.currentVersion]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+            }
+            Spacer(minLength: 0)
+            updateControl
+        }
+        .frame(minHeight: 70)
+    }
+
+    @ViewBuilder private var updateControl: some View {
+        switch viewModel.snapshot.update {
+        case .idle, .upToDate:
+            HStack(spacing: 10) {
+                if case .upToDate = viewModel.snapshot.update {
+                    Text(translate("settings.updateUpToDate", [:]))
+                        .font(ArcoTypography.small)
+                        .foregroundStyle(ArcoNativeColors.inkMuted)
+                }
+                updateActionButton(
+                    title: translate("settings.checkForUpdates", [:]),
+                    prominent: false,
+                    action: viewModel.actions.onCheckForUpdates
+                )
+            }
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(translate("settings.updateChecking", [:]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+            }
+        case let .available(release):
+            updateActionButton(
+                title: translate("settings.updateAvailable", ["version": release.version]),
+                prominent: true,
+                action: viewModel.actions.onInstallUpdate
+            )
+        case let .downloading(_, progress):
+            HStack(spacing: 8) {
+                ProgressView(value: progress)
+                    .frame(width: 110)
+                Text(translate("settings.updateDownloading", ["percent": "\(Int((progress * 100).rounded()))"]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+            }
+        case .installing:
+            Text(translate("settings.updateInstalling", [:]))
+                .font(ArcoTypography.small)
+                .foregroundStyle(ArcoNativeColors.inkMuted)
+        case let .failed(message):
+            HStack(spacing: 10) {
+                Text(message)
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.record)
+                    .lineLimit(2)
+                    .frame(maxWidth: 220, alignment: .trailing)
+                updateActionButton(
+                    title: translate("settings.checkForUpdates", [:]),
+                    prominent: false,
+                    action: viewModel.actions.onCheckForUpdates
+                )
+            }
+        }
+    }
+
+    private func updateActionButton(
+        title: String,
+        prominent: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(ArcoTypography.sans(11, weight: .medium))
+                .foregroundStyle(prominent ? ArcoNativeColors.surfaceRaised : ArcoNativeColors.ink)
+                .padding(.horizontal, 9).padding(.vertical, 5).frame(minHeight: 30)
+        }
+        .buttonStyle(
+            SettingsSurfaceButtonStyle(
+                fill: prominent ? ArcoNativeColors.inkStrong : ArcoNativeColors.surfaceSelected,
+                hoverFill: prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover,
+                cornerRadius: 7
+            )
+        )
     }
 
     private var audioPage: some View {

@@ -1348,6 +1348,48 @@ private func testLivePollingSkipsUnchangedTranscriptPayloads() async {
 }
 
 @MainActor
+private func testActiveTranscriptSnapshotSurvivesMainWindowHistoryNavigation() async {
+    let backend = ScriptedBackend()
+    let liveMeeting = detail(id: "live", lineCount: 2, live: true)
+    let historicalMeeting = detail(id: "history", lineCount: 4)
+    let liveCapture = capture(phase: .recording, meetingId: "live", mode: .both)
+    backend.respond(
+        "list_meetings",
+        with: [liveMeeting.summary, historicalMeeting.summary]
+    )
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: liveCapture)
+    backend.on("read_meeting") { arguments in
+        let id = argumentString(arguments, "id") ?? ""
+        return try JSONEncoder().encode(id == "history" ? historicalMeeting : liveMeeting)
+    }
+    backend.respond("list_agent_turns", with: [AgentTurn]())
+    backend.respond(
+        "poll_live_meeting",
+        with: LiveMeetingPoll(capture: liveCapture, revision: "stable", meeting: nil)
+    )
+    installStorageHandlers(on: backend)
+
+    let store = ArcoStore(backend: backend)
+    await store.initialize()
+    expect(
+        store.activeMeetingDetail,
+        liveMeeting,
+        "The shared active transcript starts from the recording meeting"
+    )
+
+    let openedHistory = await store.selectMeeting("history")
+    expectTrue(openedHistory, "Main window can review a past meeting")
+    expect(store.meeting, historicalMeeting, "Main window selection moves to history")
+    expect(
+        store.activeMeetingDetail,
+        liveMeeting,
+        "Floating transcript keeps the exact store-owned live snapshot while main reviews history"
+    )
+    store.dispose()
+}
+
+@MainActor
 private func testAgentStreamingIsRequestScoped() async {
     let backend = ScriptedBackend()
     backend.on("run_agent") { arguments in
@@ -2001,6 +2043,7 @@ await testHUDMonitoringLifecycleIsExplicitAndRestartable()
 await testHUDMonitoringRejectsLatePreviousGeneration()
 await testHUDMonitoringSkipsEqualCaptureSnapshots()
 await testLivePollingSkipsUnchangedTranscriptPayloads()
+await testActiveTranscriptSnapshotSurvivesMainWindowHistoryNavigation()
 await testAgentStreamingIsRequestScoped()
 testLegacyAgentTurnDecodesWithoutToolActivity()
 await testConcurrentAgentRequestIsRejectedBeforeBackendDispatch()
@@ -2018,10 +2061,134 @@ await testOnboardingReceivesLiveModelProgress()
 await testElevenLabsConsolePreservesReactDestination()
 testBrokenCapturePipeReturnsEPIPEInsteadOfTerminatingArco()
 testLiveTranscriptEdgeTracksTentativeTextRefinements()
+testVersionComparisonContract()
+await testUpdateManagerContract()
 
 if failures.isEmpty {
     print("ArcoNativeUI contract tests passed (\(assertionCount) assertions)")
 } else {
     failures.forEach { fputs("FAIL: \($0)\n", stderr) }
     exit(1)
+}
+
+@MainActor
+private func testVersionComparisonContract() {
+    expectTrue(ArcoVersionComparison.isNewer("0.3.12", than: "0.3.11"), "patch bump is newer")
+    expectTrue(ArcoVersionComparison.isNewer("v0.4.0", than: "0.3.11"), "v-prefixed minor bump is newer")
+    expectTrue(ArcoVersionComparison.isNewer("1.0.0", than: "0.9.9"), "major bump is newer")
+    expectTrue(!ArcoVersionComparison.isNewer("0.3.11", than: "0.3.11"), "equal versions are not newer")
+    expectTrue(!ArcoVersionComparison.isNewer("0.3.10", than: "0.3.11"), "older patch is not newer")
+    expectTrue(!ArcoVersionComparison.isNewer("0.3", than: "0.3.1"), "missing components compare as zero")
+    expectTrue(ArcoVersionComparison.isNewer("0.3.1", than: "0.3"), "nonzero trailing component wins")
+    expectTrue(!ArcoVersionComparison.isNewer("beta", than: "0.3.11"), "malformed candidate is never newer")
+    expectTrue(!ArcoVersionComparison.isNewer("0.4.0", than: ""), "malformed current version blocks updates")
+}
+
+@MainActor
+private func testUpdateManagerContract() async {
+    let release = ArcoReleaseInfo(
+        version: "0.3.12",
+        dmgURL: URL(fileURLWithPath: "/tmp/arco-test.dmg"),
+        checksumURL: URL(fileURLWithPath: "/tmp/arco-test.dmg.sha256"),
+        notes: "notes"
+    )
+
+    // A newer release becomes an explicit available state.
+    let availableManager = UpdateManager(
+        currentVersion: "0.3.11",
+        dependencies: UpdateManager.Dependencies(
+            fetchLatestRelease: { release },
+            downloadUpdate: { _, _ in URL(fileURLWithPath: "/tmp/arco-test.dmg") },
+            installUpdate: { _ in }
+        )
+    )
+    await availableManager.checkForUpdates()
+    expect(
+        availableManager.state.availableRelease?.version,
+        "0.3.12",
+        "a newer release becomes available"
+    )
+
+    // An equal or older release reports up to date, not available.
+    let currentManager = UpdateManager(
+        currentVersion: "0.3.11",
+        dependencies: UpdateManager.Dependencies(
+            fetchLatestRelease: {
+                ArcoReleaseInfo(
+                    version: "0.3.11",
+                    dmgURL: URL(fileURLWithPath: "/tmp/arco-test.dmg"),
+                    checksumURL: URL(fileURLWithPath: "/tmp/arco-test.dmg.sha256")
+                )
+            },
+            downloadUpdate: { _, _ in URL(fileURLWithPath: "/tmp/arco-test.dmg") },
+            installUpdate: { _ in }
+        )
+    )
+    await currentManager.checkForUpdates()
+    expect(currentManager.state, .upToDate, "an equal release is up to date")
+
+    // A failed check surfaces a failed state and never reports available.
+    let failingManager = UpdateManager(
+        currentVersion: "0.3.11",
+        dependencies: UpdateManager.Dependencies(
+            fetchLatestRelease: { throw UpdateError.releaseCheckFailed },
+            downloadUpdate: { _, _ in URL(fileURLWithPath: "/tmp/arco-test.dmg") },
+            installUpdate: { _ in }
+        )
+    )
+    await failingManager.checkForUpdates()
+    if case .failed = failingManager.state {
+        assertionCount += 1
+    } else {
+        failures.append("a failed release check must surface a failed state, got \(failingManager.state)")
+    }
+    expectTrue(failingManager.state.availableRelease == nil, "a failed check has no available release")
+
+    // Install is a no-op until a release is available.
+    await currentManager.installUpdate()
+    expect(currentManager.state, .upToDate, "install without an available release is a no-op")
+
+    // Happy path: progress, download, and install all run in order.
+    var installedDMG: URL?
+    let installManager = UpdateManager(
+        currentVersion: "0.3.11",
+        dependencies: UpdateManager.Dependencies(
+            fetchLatestRelease: { release },
+            downloadUpdate: { _, progress in
+                progress(0.5)
+                progress(1)
+                return URL(fileURLWithPath: "/tmp/arco-test.dmg")
+            },
+            installUpdate: { dmg in installedDMG = dmg }
+        )
+    )
+    await installManager.checkForUpdates()
+    await installManager.installUpdate()
+    expect(installedDMG, URL(fileURLWithPath: "/tmp/arco-test.dmg"), "install receives the verified DMG")
+    expect(
+        installManager.state,
+        .installing(version: "0.3.12"),
+        "a completed download enters the installing state"
+    )
+
+    // A download failure keeps the app running and reports the failure.
+    let brokenDownload = UpdateManager(
+        currentVersion: "0.3.11",
+        dependencies: UpdateManager.Dependencies(
+            fetchLatestRelease: { release },
+            downloadUpdate: { _, _ in throw UpdateError.checksumMismatch },
+            installUpdate: { _ in }
+        )
+    )
+    await brokenDownload.checkForUpdates()
+    await brokenDownload.installUpdate()
+    if case let .failed(message) = brokenDownload.state {
+        assertionCount += 1
+        expectTrue(
+            message == UpdateError.checksumMismatch.localizedDescription,
+            "a checksum failure surfaces its error"
+        )
+    } else {
+        failures.append("a failed download must surface a failed state, got \(brokenDownload.state)")
+    }
 }

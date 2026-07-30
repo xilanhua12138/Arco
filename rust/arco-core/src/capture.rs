@@ -313,6 +313,34 @@ struct CaptureChildren {
     transcribers: Vec<TranscriberChild>,
     _audio_pump: JoinHandle<()>,
     timeline: Option<PathBuf>,
+    session_logs: CaptureSessionLogs,
+}
+
+struct CaptureSessionLogs {
+    recorder: File,
+    transcriber: File,
+    context: CaptureSessionLogContext,
+    finished: bool,
+}
+
+struct CaptureSessionLogContext {
+    session_id: String,
+    meeting_id: String,
+    transcript: PathBuf,
+    mode: String,
+    pipeline: Vec<String>,
+}
+
+impl CaptureSessionLogs {
+    fn finish(&mut self, outcome: &str) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        for log in [&mut self.recorder, &mut self.transcriber] {
+            let _ = write_session_log_event(log, "end", &self.context, Some(outcome));
+        }
+    }
 }
 
 struct PipelineReadySignals {
@@ -519,7 +547,7 @@ impl CaptureManager {
 
         // Only these owned Child handles are touched. Arco never scans the global
         // process table and never sends signals to another recorder/listener.
-        terminate_recorder_then_transcriber(&mut children);
+        terminate_recorder_then_transcriber(&mut children, "stopped");
         let transcript = inner.transcript.take();
         if let Some(path) = transcript.as_deref() {
             finalize_transcript(path, "stopped")?;
@@ -608,8 +636,18 @@ impl CaptureManager {
             (transcript, id, session_started_at)
         };
 
-        let recorder_log = open_log(&self.config.log_dir.join("recorder.log"))?;
-        let transcriber_log = open_log(&self.config.log_dir.join("transcriber.log"))?;
+        let mut recorder_log = open_log(&self.config.log_dir.join("recorder.log"))?;
+        let mut transcriber_log = open_log(&self.config.log_dir.join("transcriber.log"))?;
+        let session_log_context = CaptureSessionLogContext {
+            session_id: suffix.clone(),
+            meeting_id: active_meeting_id.clone(),
+            transcript: transcript.clone(),
+            mode: mode.to_string(),
+            pipeline: layout.iter().map(ToString::to_string).collect(),
+        };
+        for log in [&mut recorder_log, &mut transcriber_log] {
+            write_session_log_event(log, "start", &session_log_context, None)?;
+        }
         let ready_signals =
             PipelineReadySignals::new(&self.config.log_dir, &suffix, resolved.len());
         let mut recorder_command = Command::new(&recorder_binary);
@@ -622,6 +660,9 @@ impl CaptureManager {
             })?))
             .envs(&self.config.environment)
             .env("ARCO_PARENT_PID", std::process::id().to_string())
+            .env("ARCO_SESSION_ID", &suffix)
+            .env("ARCO_MEETING_ID", &active_meeting_id)
+            .env("ARCO_TRANSCRIPT_PATH", &transcript)
             .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;
@@ -662,6 +703,8 @@ impl CaptureManager {
                 .envs(&self.config.environment)
                 .envs(&transcriber.environment)
                 .env("ARCO_PARENT_PID", std::process::id().to_string())
+                .env("ARCO_SESSION_ID", &suffix)
+                .env("ARCO_MEETING_ID", &active_meeting_id)
                 .env("ARCO_READY_FILE", &ready_signals.transcribers[index])
                 .env("ARCO_AUDIO_MODE", mode)
                 .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix);
@@ -712,6 +755,12 @@ impl CaptureManager {
             transcribers,
             _audio_pump: audio_pump,
             timeline,
+            session_logs: CaptureSessionLogs {
+                recorder: recorder_log,
+                transcriber: transcriber_log,
+                context: session_log_context,
+                finished: false,
+            },
         };
         if self.config.requires_ready_signal {
             if let Err(error) = wait_for_pipeline_ready(
@@ -720,7 +769,7 @@ impl CaptureManager {
                 &ready_signals.transcribers,
                 &ready_timeouts,
             ) {
-                terminate_recorder_then_transcriber(&mut children);
+                terminate_recorder_then_transcriber(&mut children, "startup_error");
                 let _ = finalize_transcript(&transcript, "error");
                 return Err(error);
             }
@@ -996,7 +1045,7 @@ impl Drop for CaptureManager {
 
 fn interrupt_active_capture(inner: &mut CaptureInner) {
     if let Some(mut children) = inner.children.take() {
-        terminate_recorder_then_transcriber(&mut children);
+        terminate_recorder_then_transcriber(&mut children, "interrupted");
         if let Some(path) = inner.transcript.take() {
             let _ = finalize_transcript(&path, "interrupted");
         }
@@ -1123,7 +1172,7 @@ fn refresh_children(inner: &mut CaptureInner) {
     };
 
     if let Some(mut children) = inner.children.take() {
-        terminate_recorder_then_transcriber(&mut children);
+        terminate_recorder_then_transcriber(&mut children, "error");
     }
     if let Some(path) = inner.transcript.as_deref() {
         let _ = finalize_transcript(path, "error");
@@ -1134,7 +1183,7 @@ fn refresh_children(inner: &mut CaptureInner) {
     inner.state.error = Some(error);
 }
 
-fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
+fn terminate_recorder_then_transcriber(children: &mut CaptureChildren, outcome: &str) {
     let _ = terminate_process_tree(&mut children.recorder, RECORDER_TERMINATION_GRACE);
 
     for transcriber in &mut children.transcribers {
@@ -1157,6 +1206,7 @@ fn terminate_recorder_then_transcriber(children: &mut CaptureChildren) {
     if let Some(timeline) = children.timeline.take() {
         let _ = fs::remove_file(timeline);
     }
+    children.session_logs.finish(outcome);
 }
 
 fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
@@ -1423,6 +1473,30 @@ fn open_log(path: &Path) -> Result<File, String> {
         .append(true)
         .open(path)
         .map_err(|error| format!("could not open {}: {error}", path.display()))
+}
+
+fn write_session_log_event(
+    log: &mut File,
+    event: &str,
+    context: &CaptureSessionLogContext,
+    outcome: Option<&str>,
+) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "event": format!("capture_session_{event}"),
+        "timestamp": Local::now().to_rfc3339(),
+        "session_id": context.session_id,
+        "meeting_id": context.meeting_id,
+        "transcript_path": context.transcript.to_string_lossy(),
+        "mode": context.mode,
+        "pipeline": context.pipeline,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "outcome": outcome,
+    });
+    serde_json::to_writer(&mut *log, &payload)
+        .map_err(|error| format!("could not encode structured capture session log: {error}"))?;
+    writeln!(log)
+        .and_then(|_| log.flush())
+        .map_err(|error| format!("could not append structured capture session log: {error}"))
 }
 
 fn find_command(name: &str) -> Option<PathBuf> {
@@ -1848,6 +1922,47 @@ mod tests {
         assert!(!transcriber_signal.exists());
         assert!(regular_log.exists());
         assert!(unrelated_signal.exists());
+    }
+
+    #[test]
+    fn session_log_boundaries_are_structured_and_correlate_both_process_logs() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder_path = root.path().join("recorder.log");
+        let transcriber_path = root.path().join("transcriber.log");
+        let transcript = root.path().join("transcript.md");
+        let mut recorder = open_log(&recorder_path).unwrap();
+        let mut transcriber = open_log(&transcriber_path).unwrap();
+        let context = CaptureSessionLogContext {
+            session_id: "session-123".into(),
+            meeting_id: "meeting-456".into(),
+            transcript: transcript.clone(),
+            mode: "both".into(),
+            pipeline: vec!["doubao-combined".into()],
+        };
+        for log in [&mut recorder, &mut transcriber] {
+            write_session_log_event(log, "start", &context, None).unwrap();
+        }
+
+        for path in [recorder_path, transcriber_path] {
+            let raw = fs::read_to_string(path).unwrap();
+            let event: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+            assert_eq!(event["event"], "capture_session_start");
+            assert_eq!(event["session_id"], "session-123");
+            assert_eq!(event["meeting_id"], "meeting-456");
+            assert_eq!(event["mode"], "both");
+            assert_eq!(event["pipeline"], serde_json::json!(["doubao-combined"]));
+            assert_eq!(event["app_version"], env!("CARGO_PKG_VERSION"));
+            assert_eq!(
+                event["transcript_path"],
+                transcript.to_string_lossy().as_ref()
+            );
+            assert!(
+                event["timestamp"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "each append-only log boundary needs a wall-clock timestamp"
+            );
+        }
     }
 
     #[test]

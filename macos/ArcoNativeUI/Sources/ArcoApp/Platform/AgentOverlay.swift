@@ -136,6 +136,9 @@ final class AgentOverlayModel {
 struct AgentOverlaySurfaceView: View {
     @Bindable var model: AgentOverlayModel
     @Binding var transcriptVisible: Bool
+    let transcriptMeeting: MeetingDetail?
+    let transcriptCapture: CaptureState
+    let transcriptLoading: Bool
     let translate: ArcoTranslate
     let onHide: @MainActor () -> Void
     let onFocusMain: @MainActor () throws -> Void
@@ -144,6 +147,9 @@ struct AgentOverlaySurfaceView: View {
     init(
         model: AgentOverlayModel,
         transcriptVisible: Binding<Bool>,
+        transcriptMeeting: MeetingDetail?,
+        transcriptCapture: CaptureState,
+        transcriptLoading: Bool,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onHide: @escaping @MainActor () -> Void,
         onFocusMain: @escaping @MainActor () throws -> Void,
@@ -151,6 +157,9 @@ struct AgentOverlaySurfaceView: View {
     ) {
         self.model = model
         self._transcriptVisible = transcriptVisible
+        self.transcriptMeeting = transcriptMeeting
+        self.transcriptCapture = transcriptCapture
+        self.transcriptLoading = transcriptLoading
         self.translate = translate
         self.onHide = onHide
         self.onFocusMain = onFocusMain
@@ -165,9 +174,9 @@ struct AgentOverlaySurfaceView: View {
     }
 
     private var live: Bool {
-        model.snapshot.capture.phase == .recording
-            && model.snapshot.meeting?.summary.id
-                == model.snapshot.capture.activeMeetingId
+        transcriptCapture.phase == .recording
+            && transcriptMeeting?.summary.id
+                == transcriptCapture.activeMeetingId
     }
 
     var body: some View {
@@ -301,9 +310,9 @@ struct AgentOverlaySurfaceView: View {
                     )
                 if transcriptVisible {
                     TranscriptPaneView(
-                        meeting: model.snapshot.meeting,
-                        capture: model.snapshot.capture,
-                        loading: model.snapshot.loading,
+                        meeting: transcriptMeeting,
+                        capture: transcriptCapture,
+                        loading: transcriptLoading,
                         compact: true,
                         showHeader: false,
                         layout: .agentOverlay,

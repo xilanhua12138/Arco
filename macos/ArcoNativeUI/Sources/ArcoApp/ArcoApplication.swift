@@ -370,6 +370,9 @@ private struct AgentOverlayHostView: View {
         AgentOverlaySurfaceView(
             model: model,
             transcriptVisible: $transcriptVisible,
+            transcriptMeeting: store.activeMeetingDetail,
+            transcriptCapture: store.capture,
+            transcriptLoading: store.loading,
             translate: translate,
             onHide: actions.hide,
             onFocusMain: actions.focusMain,

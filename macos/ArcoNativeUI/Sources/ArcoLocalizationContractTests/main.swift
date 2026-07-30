@@ -27,8 +27,8 @@ private struct ArcoLocalizationContractTests {
 
         let englishKeys = Set(ArcoTranslations.englishMessages.keys)
         let chineseKeys = Set(ArcoTranslations.simplifiedChineseMessages.keys)
-        try expect(englishKeys.count == 587, "English must include the Agent attachment copy")
-        try expect(chineseKeys.count == 587, "zh-CN must include the Agent attachment copy")
+        try expect(englishKeys.count == 595, "English must include the software update copy")
+        try expect(chineseKeys.count == 595, "zh-CN must include the software update copy")
         try expect(englishKeys == chineseKeys, "en and zh-CN key sets must be identical")
 
         try expect(

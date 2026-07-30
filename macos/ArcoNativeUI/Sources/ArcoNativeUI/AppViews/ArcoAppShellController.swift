@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import PDFKit
 import SwiftUI
@@ -9,6 +10,9 @@ public struct ArcoAppEnvironment {
     public var chooseDirectory: (_ title: String) async -> String?
     public var chooseWorkspace: (_ title: String) async -> String?
     public var chooseAttachment: (_ title: String) async -> (name: String, text: String)?
+    public var fetchLatestRelease: () async throws -> ArcoReleaseInfo
+    public var downloadUpdate: (ArcoReleaseInfo, @Sendable (Double) -> Void) async throws -> URL
+    public var installUpdate: (URL) async throws -> Void
     public var copyText: (_ text: String) async throws -> Void
     public var openURL: (_ url: URL) async throws -> Void
     public var changeListeningShortcut: (_ shortcut: ListeningShortcut?) async -> Bool
@@ -21,6 +25,9 @@ public struct ArcoAppEnvironment {
         chooseDirectory: @escaping (_ title: String) async -> String? = ArcoAppEnvironment.nativeDirectoryPicker,
         chooseWorkspace: @escaping (_ title: String) async -> String? = ArcoAppEnvironment.nativeDirectoryPicker,
         chooseAttachment: @escaping (_ title: String) async -> (name: String, text: String)? = ArcoAppEnvironment.nativeAttachmentPicker,
+        fetchLatestRelease: @escaping () async throws -> ArcoReleaseInfo = ArcoAppEnvironment.nativeFetchLatestRelease,
+        downloadUpdate: @escaping (ArcoReleaseInfo, @Sendable (Double) -> Void) async throws -> URL = ArcoAppEnvironment.nativeDownloadUpdate,
+        installUpdate: @escaping (URL) async throws -> Void = ArcoAppEnvironment.nativeInstallUpdate,
         copyText: @escaping (_ text: String) async throws -> Void = ArcoAppEnvironment.nativeCopy,
         openURL: @escaping (_ url: URL) async throws -> Void = ArcoAppEnvironment.nativeOpenURL,
         changeListeningShortcut: @escaping (_ shortcut: ListeningShortcut?) async -> Bool = { _ in true },
@@ -32,6 +39,9 @@ public struct ArcoAppEnvironment {
         self.chooseDirectory = chooseDirectory
         self.chooseWorkspace = chooseWorkspace
         self.chooseAttachment = chooseAttachment
+        self.fetchLatestRelease = fetchLatestRelease
+        self.downloadUpdate = downloadUpdate
+        self.installUpdate = installUpdate
         self.copyText = copyText
         self.openURL = openURL
         self.changeListeningShortcut = changeListeningShortcut
@@ -112,6 +122,7 @@ public final class ArcoAppShellController: ObservableObject {
     public let store: ArcoStore
     public let preferences: ArcoPreferences
     public let environment: ArcoAppEnvironment
+    public let updateManager: UpdateManager
     public lazy var shortcutViewModel: ShortcutRecorderViewModel = ShortcutRecorderViewModel(
         value: listeningShortcut,
         onChange: { [weak self] shortcut in
@@ -141,6 +152,7 @@ public final class ArcoAppShellController: ObservableObject {
     private var providerViewModelStorage: ProviderSetupViewModel?
     private var onboardingViewModelStorage: OnboardingViewModel?
     private var settingsGeneration = 0
+    private var cancellables = Set<AnyCancellable>()
 
     public init(
         store: ArcoStore,
@@ -152,6 +164,14 @@ public final class ArcoAppShellController: ObservableObject {
         self.preferences = preferences
         self.translate = translate
         self.environment = environment
+        updateManager = UpdateManager(
+            currentVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
+            dependencies: UpdateManager.Dependencies(
+                fetchLatestRelease: environment.fetchLatestRelease,
+                downloadUpdate: environment.downloadUpdate,
+                installUpdate: environment.installUpdate
+            )
+        )
         audioMode = preferences.loadAudioMode()
         let initialProviderConfiguration = preferences.loadProviderConfiguration()
         providerConfiguration = initialProviderConfiguration
@@ -163,6 +183,12 @@ public final class ArcoAppShellController: ObservableObject {
         let onboarding = preferences.loadOnboardingState()
         providerSetupOpen = !initialProviderConfiguration.setupComplete && !onboarding.completed
 
+        updateManager.$state
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                self?.updateSettingsViewModel()
+            }
+            .store(in: &cancellables)
     }
 
     deinit {
@@ -206,6 +232,19 @@ public final class ArcoAppShellController: ObservableObject {
         await store.initialize()
         _ = await setupTask?.value
         updateDependentViewModels()
+        Task { [weak self] in await self?.checkForUpdates() }
+    }
+
+    public var updateAvailable: Bool {
+        updateManager.state.availableRelease != nil
+    }
+
+    public func checkForUpdates() async {
+        await updateManager.checkForUpdates()
+    }
+
+    public func installUpdate() async {
+        await updateManager.installUpdate()
     }
 
     public func setQuery(_ value: String) {
@@ -619,7 +658,9 @@ public final class ArcoAppShellController: ObservableObject {
             transcriptStorage: store.storageSettings,
             transcriptStorageChanging: store.storageChanging,
             notesStorage: store.notesStorageSettings,
-            notesStorageChanging: store.notesStorageChanging
+            notesStorageChanging: store.notesStorageChanging,
+            update: updateManager.state,
+            currentVersion: updateManager.currentVersion
         )
     }
 
@@ -645,7 +686,9 @@ public final class ArcoAppShellController: ObservableObject {
             onChooseTranscriptDirectory: { [weak self] in await self?.chooseTranscriptDirectory() ?? false },
             onResetTranscriptDirectory: { [weak self] in await self?.store.setTranscriptDirectory(nil, query: self?.query ?? "") ?? false },
             onChooseNotesDirectory: { [weak self] in await self?.chooseNotesDirectory() ?? false },
-            onResetNotesDirectory: { [weak self] in await self?.store.setNotesDirectory(nil, query: self?.notesQuery ?? "") ?? false }
+            onResetNotesDirectory: { [weak self] in await self?.store.setNotesDirectory(nil, query: self?.notesQuery ?? "") ?? false },
+            onCheckForUpdates: { [weak self] in Task { await self?.checkForUpdates() } },
+            onInstallUpdate: { [weak self] in Task { await self?.installUpdate() } }
         )
     }
 
