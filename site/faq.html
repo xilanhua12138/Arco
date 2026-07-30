@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arco FAQ — local-first macOS meeting assistant</title>
+  <meta name="description" content="Direct answers about Arco: macOS support, local transcription, Codex and Claude integration, privacy, meeting bots, storage, pricing, and open-source licensing.">
+  <link rel="canonical" href="https://xilanhua12138.github.io/Arco/faq.html">
+  <link rel="icon" href="assets/arco-app-icon.webp">
+  <link rel="stylesheet" href="assets/styles.css">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Arco for macOS">
+  <meta property="og:title" content="Frequently asked questions about Arco">
+  <meta property="og:description" content="What Arco is, how it uses Codex or Claude, what stays local, and which Macs it supports.">
+  <meta property="og:url" content="https://xilanhua12138.github.io/Arco/faq.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "@id": "https://xilanhua12138.github.io/Arco/faq.html#faq",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Arco?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Arco is an open-source, local-first AI meeting workspace for macOS. It keeps a live speaker-labeled transcript beside Codex or Claude so the user can ask questions while the meeting is still happening."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Arco send a bot into Zoom, Google Meet, or Microsoft Teams?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Arco runs as a native macOS application and captures system audio and the selected room microphone locally. No participant bot joins the call."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can Arco transcribe meetings entirely on-device?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Arco supports on-device speech recognition and on-device speaker separation. The selected models must be downloaded first. Cloud transcription providers are optional."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does Arco use Codex or Claude?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Arco sends each question through the Codex CLI or Claude Code already installed and authenticated on the Mac. Every question includes the current meeting transcript. A project workspace is included only when the user explicitly attaches it."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Where does Arco store transcripts and notes?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "By default, Arco stores meeting data under ~/Library/Application Support/Arco/. Transcripts and notes are readable Markdown files, and the user can choose other local folders."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Arco save raw meeting audio?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Arco does not save raw PCM meeting audio. Audio is streamed only to the on-device or cloud transcription path selected by the user."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Arco free and open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Arco is free to download and its source code is available under the MIT License. Optional cloud transcription services can have their own usage costs."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which Macs can run Arco?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Arco requires macOS 14 or later. The current prebuilt download targets Apple Silicon Macs. On-device speech and speaker models are designed for Apple Silicon."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./" aria-label="Arco home">
+        <img src="assets/arco-app-icon.webp" alt="" width="34" height="34">
+        <span>Arco</span>
+      </a>
+      <div class="nav-links">
+        <a href="faq.html" aria-current="page">FAQ</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="architecture.html">How it works</a>
+        <a href="https://github.com/xilanhua12138/Arco">GitHub</a>
+        <a class="nav-download" href="https://github.com/xilanhua12138/Arco/releases/latest">Download</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main" class="page-shell">
+    <header class="content-hero">
+      <p class="entity-label">Arco for macOS</p>
+      <h1>Frequently asked questions.</h1>
+      <p>Direct, current answers about what Arco does, where meeting data goes, how Codex and Claude are used, and what “local-first” means in practice.</p>
+    </header>
+
+    <section class="faq-list" aria-label="Frequently asked questions">
+      <details open>
+        <summary>What is Arco?</summary>
+        <div class="faq-answer"><p>Arco is an open-source, local-first AI meeting workspace for macOS. It keeps a live, speaker-labeled transcript beside Codex or Claude so you can ask questions, challenge an assumption, or recover a decision while the meeting is still happening.</p></div>
+      </details>
+      <details>
+        <summary>How is Arco different from a conventional AI meeting notetaker?</summary>
+        <div class="faq-answer"><p>Conventional meeting notetakers primarily produce transcripts and summaries for review after a call. Arco can do both, but its defining workflow is live reasoning: the transcript remains visible as evidence while the Agent helps during the conversation. Arco also uses the Codex or Claude CLI already on your Mac instead of requiring a separate hosted Arco chatbot.</p></div>
+      </details>
+      <details>
+        <summary>Does Arco send a bot into Zoom, Google Meet, or Microsoft Teams?</summary>
+        <div class="faq-answer"><p>No. Arco runs as a native macOS application and captures system audio plus the selected room microphone. It does not join the call as a participant, so it works independently of the meeting app.</p></div>
+      </details>
+      <details>
+        <summary>Can Arco transcribe meetings entirely on-device?</summary>
+        <div class="faq-answer"><p>Yes. Arco supports on-device ASR with Nemotron or Whisper and on-device speaker separation with Sortformer, Pyannote + WeSpeaker, or LS-EEND. The selected models must be downloaded before capture. You can also choose Deepgram, Doubao Speech, or ElevenLabs when a cloud service better fits the meeting.</p></div>
+      </details>
+      <details>
+        <summary>Does on-device transcription mean all of Arco is offline?</summary>
+        <div class="faq-answer"><p>No. On-device recognition and speaker separation can keep speech processing on the Mac after the required models are installed. Agent questions still follow the network and data policy of the Codex or Claude service you selected. A cloud transcription provider also requires a network connection.</p></div>
+      </details>
+      <details>
+        <summary>How does Arco use Codex or Claude?</summary>
+        <div class="faq-answer"><p>Arco sends each question through the Codex CLI or Claude Code already installed and authenticated on the Mac. Every question includes the current meeting transcript. A project workspace is included only when you attach it visibly with the native macOS folder picker. Follow-ups resume the exact provider session bound to that meeting and context.</p></div>
+      </details>
+      <details>
+        <summary>Do I need an OpenAI or Anthropic API key?</summary>
+        <div class="faq-answer"><p>Not for Agent features. When the local Codex or Claude CLI is signed in, Arco uses that CLI and the subscription allowance associated with it. Cloud transcription providers use their own credentials and may have separate usage costs.</p></div>
+      </details>
+      <details>
+        <summary>Where does Arco store transcripts and notes?</summary>
+        <div class="faq-answer"><p>By default, Arco stores meeting data under <code>~/Library/Application Support/Arco/</code>. Transcripts and notes are readable Markdown files, with local sidecars for meeting state and Agent bindings. You can choose other local folders for transcripts and notes.</p></div>
+      </details>
+      <details>
+        <summary>Does Arco save raw meeting audio?</summary>
+        <div class="faq-answer"><p>No. Arco does not save raw PCM meeting audio. During a meeting, audio is streamed only to the transcription path you selected: an on-device worker or the configured cloud provider.</p></div>
+      </details>
+      <details>
+        <summary>How does speaker labeling work?</summary>
+        <div class="faq-answer"><p>Arco keeps system audio and the room microphone as separate source lanes. Speaker separation runs inside each lane, producing labels such as <code>Remote 1</code> and <code>In room 1</code>. Those labels describe source and diarization slots; Arco does not assume the microphone speaker is “You” or claim a durable human identity.</p></div>
+      </details>
+      <details>
+        <summary>Is Arco free and open source?</summary>
+        <div class="faq-answer"><p>Yes. Arco is free to download and its source code is published under the MIT License. Optional transcription providers may charge for their own service usage. Codex or Claude Agent usage follows the account already signed into that CLI.</p></div>
+      </details>
+      <details>
+        <summary>Which Macs can run Arco?</summary>
+        <div class="faq-answer"><p>Arco requires macOS 14 or later. The current prebuilt download targets Apple Silicon. On-device speech and speaker models are designed for Apple Silicon; developers can inspect the build requirements in the repository.</p></div>
+      </details>
+      <details>
+        <summary>Is the current download notarized by Apple?</summary>
+        <div class="faq-answer"><p>Not yet. The current preview uses Arco's stable local development signature. On first launch, Control-click the app, choose <strong>Open</strong>, and confirm once. A future generally available release is expected to add Developer ID signing and notarization.</p></div>
+      </details>
+      <details>
+        <summary>Can I inspect the privacy and architecture claims?</summary>
+        <div class="faq-answer"><p>Yes. Arco is open source. Start with the <a href="privacy.html">privacy boundary</a>, the <a href="architecture.html">architecture overview</a>, and the <a href="https://github.com/xilanhua12138/Arco">complete repository</a>.</p></div>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="page-shell footer-inner">
+      <span>Arco is an open-source project for macOS.</span>
+      <div class="footer-links">
+        <a href="./">Home</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/xilanhua12138/Arco">Source</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

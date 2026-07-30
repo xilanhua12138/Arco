@@ -154,8 +154,8 @@ Deepgram may restart numbering after a reconnect. Arco namespaces identities by 
 ## Doubao streaming transcription
 
 Doubao uses the bidirectional speech-recognition WebSocket at
-`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel` with resource ID
-`volc.bigasr.sauc.duration`. Arco splits its stereo capture into one mono stream
+`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async` with resource ID
+`volc.seedasr.sauc.duration`. Arco splits its stereo capture into one mono stream
 per active source and sends the required gzip-compressed full request followed
 by sequenced audio frames.
 
@@ -170,10 +170,11 @@ by sequenced audio frames.
   falls back to the generic Ark/LLM `DOUBAO_API_KEY`.
 - The worker is ready only after every active channel receives a server
   response. Provider handshake errors remain terminal. A transient disconnect
-  receives at most three recovery attempts; only a new finalized utterance
-  resets that budget. Recovery retains audio that has not yet been sent, closes
-  the disconnected channel's stale tentative edge, and advances past already
-  sent frames instead of replaying them into every replacement connection.
+  retries with capped backoff while stdin continues draining into the anonymous
+  disk recovery spool. Recovery closes the disconnected channel's stale
+  tentative edge, removes only the provider-confirmed prefix, and replays every
+  sent-but-unconfirmed frame byte-for-byte before newer audio. Repeated outages
+  therefore cannot silently skip audio or multiply the recovery backlog.
 
 Primary references:
 
@@ -201,12 +202,15 @@ Primary references:
 
 - Only finalized results become durable transcript events.
 - Events from both channels are ordered by audio start time when the provider can emit them concurrently.
-- Exact repeated speech is preserved; text equality is not a deduplication key.
+- A finalized event waiting behind the other channel's ordering watermark remains visible in the live sidecar. The main window and floating transcript render that same active-meeting snapshot, then remove the sidecar copy when Markdown commits it.
+- Durable exact repeated speech is preserved. The live reader only suppresses the same timestamp/speaker/text tuple during the atomic sidecar-to-Markdown handoff.
 - The mic channel is never assumed to be `You`. That name requires a future explicit mapping, personal-mic mode, or voice enrollment.
 
 The Rust cloud adapters drain recorder stdout into bounded in-memory queues: 60 seconds by default, configurable with `ARCO_AUDIO_BUFFER_SECONDS` and hard-clamped to 1–300 seconds. When that ceiling is reached, pipe backpressure pauses capture rather than growing memory without bound. A completed WebSocket `send()` is not a server acknowledgement; all cloud providers remain streaming-only.
 
-Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and provider error messages are terminal configuration failures. The cloud adapters retry transient network failures with bounded backoff while stdin continues draining. Deepgram and Doubao each limit a stream to three consecutive recovery attempts and reset that budget only after finalized transcript progress. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
+Rust reports `recording` only after every resolved worker is ready. Deepgram signals after its WebSocket is accepted; Doubao after every active source returns its first server response; ElevenLabs after every active source connection is accepted. HTTP 4xx handshakes and credential rejections are terminal configuration failures. The cloud adapters retry transient network failures with bounded backoff while stdin continues draining; Doubao keeps retrying recoverable network and provider-session failures instead of abandoning a channel mid-meeting. Each local worker signals after model load; a missing or incomplete model is a terminal setup error. If any selected worker exits, the owned capture pipeline fails as one unit rather than silently continuing with a different contract.
+
+`recorder.log` and `transcriber.log` contain matching JSON session start/end boundaries with wall-clock time, session ID, meeting ID, transcript path, pipeline, app version, and outcome. Doubao recovery logs carry the same session ID and report reconnect queue size, replayed frame ranges, catch-up completion, retries, and 30-second cross-channel watermark-gap buckets.
 
 ## Echo caveat
 

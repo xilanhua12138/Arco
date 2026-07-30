@@ -293,6 +293,16 @@ public struct ArcoMainShellView: View {
         )
         .frame(width: 40, height: 40)
         .focused($settingsTriggerFocused)
+        .overlay(alignment: .topTrailing) {
+            if controller.updateAvailable {
+                Circle()
+                    .fill(ArcoNativeColors.record)
+                    .frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(ArcoNativeColors.surfaceDocument, lineWidth: 1.5))
+                    .offset(x: -2, y: 2)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     private func pageStage(viewportWidth: CGFloat) -> some View {

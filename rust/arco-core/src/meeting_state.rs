@@ -162,7 +162,11 @@ impl MeetingStateStore {
                 "a meeting can have at most {MAX_ATTACHMENTS_PER_MEETING} attachments"
             ));
         }
-        if state.attachments.iter().any(|attachment| attachment.name == name) {
+        if state
+            .attachments
+            .iter()
+            .any(|attachment| attachment.name == name)
+        {
             return Err(format!("an attachment named {name} already exists"));
         }
         state.attachments.push(MeetingAttachment {

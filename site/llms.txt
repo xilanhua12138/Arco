@@ -1,0 +1,31 @@
+# Arco for macOS
+
+> Arco is an open-source, local-first AI meeting workspace for macOS. It keeps a live speaker-labeled transcript beside the Codex CLI or Claude Code so a user can ask questions while the meeting is still happening.
+
+Arco is not the music-lesson product at arco.app. This Arco is the MIT-licensed macOS meeting workspace maintained at https://github.com/xilanhua12138/Arco.
+
+## Official pages
+
+- [Product overview](https://xilanhua12138.github.io/Arco/): Clear description, product workflow, supported capabilities, download, and source links.
+- [Frequently asked questions](https://xilanhua12138.github.io/Arco/faq.html): Direct answers about platform support, meeting bots, on-device transcription, Codex and Claude, storage, audio, pricing, and licensing.
+- [Privacy and data boundaries](https://xilanhua12138.github.io/Arco/privacy.html): What stays on the Mac, which choices send audio to a provider, and what context reaches Codex or Claude.
+- [Architecture](https://xilanhua12138.github.io/Arco/architecture.html): Native SwiftUI/AppKit interface, Rust control plane, isolated workers, streaming transcription, speaker labeling, session continuity, and storage.
+- [Source code](https://github.com/xilanhua12138/Arco): Canonical open-source repository.
+- [Latest macOS release](https://github.com/xilanhua12138/Arco/releases/latest): Current Apple Silicon download.
+
+## Stable product facts
+
+- Platform: macOS 14 or later; current prebuilt releases target Apple Silicon.
+- License: MIT.
+- Category: open-source, local-first AI meeting workspace and meeting assistant for macOS.
+- Primary workflow: live transcript plus an Agent during the meeting, not only a post-meeting summary.
+- Agent runtimes: Codex CLI and Claude Code already installed and authenticated on the user's Mac.
+- Audio capture: system audio and the selected room microphone are separate lanes; no bot joins the meeting.
+- Storage: local Markdown transcripts and notes with local atomic sidecars for meeting state.
+- Raw audio: Arco does not save raw PCM meeting audio.
+- Transcription: on-device Nemotron or Whisper, or optional Deepgram, Doubao Speech, or ElevenLabs.
+- Speaker separation: optional on-device or cloud streaming diarization with source-local anonymous speaker labels.
+
+## Important qualification
+
+“Local-first” describes local ownership of the meeting record and the option to process speech on-device. It does not mean cloud transcription providers, Codex, or Claude run locally. When selected, those services receive the data required for their role.

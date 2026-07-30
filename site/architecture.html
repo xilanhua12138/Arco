@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How Arco works — native macOS meeting architecture</title>
+  <meta name="description" content="How Arco works: SwiftUI and AppKit interface, Rust control plane, isolated audio and transcription workers, local Markdown evidence, and exact Codex or Claude session bindings.">
+  <link rel="canonical" href="https://xilanhua12138.github.io/Arco/architecture.html">
+  <link rel="icon" href="assets/arco-app-icon.webp">
+  <link rel="stylesheet" href="assets/styles.css">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Arco for macOS">
+  <meta property="og:title" content="How Arco works">
+  <meta property="og:description" content="The native macOS, Rust, transcription, storage, and Agent boundaries behind Arco.">
+  <meta property="og:url" content="https://xilanhua12138.github.io/Arco/architecture.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "How Arco works",
+    "description": "The native macOS, Rust, transcription, storage, and Agent architecture behind the Arco meeting workspace.",
+    "url": "https://xilanhua12138.github.io/Arco/architecture.html",
+    "isPartOf": {"@id": "https://xilanhua12138.github.io/Arco/#website"},
+    "about": {"@id": "https://xilanhua12138.github.io/Arco/#software"},
+    "inLanguage": "en"
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./" aria-label="Arco home">
+        <img src="assets/arco-app-icon.webp" alt="" width="34" height="34">
+        <span>Arco</span>
+      </a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="architecture.html" aria-current="page">How it works</a>
+        <a href="https://github.com/xilanhua12138/Arco">GitHub</a>
+        <a class="nav-download" href="https://github.com/xilanhua12138/Arco/releases/latest">Download</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="main" class="page-shell">
+    <header class="content-hero">
+      <p class="entity-label">Native macOS architecture</p>
+      <h1>Evidence, interpretation, outcomes.</h1>
+      <p>Arco separates the durable meeting record from optional Agent interpretation. The UI, Rust control plane, audio workers, transcription providers, and Codex or Claude sessions each have a narrow boundary.</p>
+    </header>
+
+    <article class="prose">
+      <h2>The three-layer model</h2>
+      <ol>
+        <li><strong>Evidence:</strong> a timestamped, speaker-labeled transcript that remains useful even when Agent features are disabled.</li>
+        <li><strong>Interpretation:</strong> optional Codex or Claude answers, generated meeting titles, and end-of-meeting summaries with explicit context boundaries.</li>
+        <li><strong>Outcomes:</strong> only the notes and Agent answers the user explicitly chooses to keep.</li>
+      </ol>
+      <p>This prevents a plausible model response from silently becoming a fact, decision, or task.</p>
+
+      <h2>Native interface, Rust authority</h2>
+      <p>Arco is a native macOS application. SwiftUI renders the main workspace, History, Settings, onboarding, recording HUD, and global Agent window. AppKit owns native window and panel lifecycle, global shortcuts, and system pickers.</p>
+      <p>An in-process Rust static library owns meeting state, capture policy, storage, credentials, provider routing, and Agent lifecycle. Swift and Rust communicate through a narrow C ABI with versioned JSON commands and events. There is no browser runtime inside the app.</p>
+
+      <h2>Isolated real-time and model work</h2>
+      <p>Audio capture, cloud transcription streams, and local speech models run in app-managed worker processes instead of the UI process. This keeps model memory, network failures, and audio lifecycle failures from directly taking down the main interface.</p>
+      <ul>
+        <li>ScreenCaptureKit captures system audio.</li>
+        <li>AVAudioEngine captures the selected room microphone.</li>
+        <li>The recorder outputs two source lanes for online, in-person, or hybrid meetings.</li>
+        <li>Cloud and on-device transcription workers publish readiness before Arco reports that recording has started.</li>
+        <li>Stopping or failing a meeting targets only the exact process tree Arco created.</li>
+      </ul>
+
+      <h2>Streaming transcription and speaker separation</h2>
+      <p>Speech recognition and speaker separation are independently selectable roles. Arco can fuse a provider that supplies both, or combine one ASR provider with another streaming diarization provider.</p>
+      <p>Supported ASR paths include Deepgram, Doubao Speech, ElevenLabs Scribe v2 Realtime, on-device Nemotron, and on-device Whisper. Supported speaker-separation paths include Deepgram, Doubao Speech, and on-device Sortformer, Pyannote + WeSpeaker, and LS-EEND.</p>
+      <p>Only finalized speech becomes durable transcript evidence. Arco does not wait until the meeting ends to run a second batch pass and overwrite the transcript.</p>
+
+      <h2>Speaker labels do not invent identity</h2>
+      <p>The identity key is the combination of source channel and speaker slot. System audio produces labels such as <code>Remote 1</code>; the room microphone produces labels such as <code>In room 1</code>. A single room microphone may contain multiple people, so Arco never assumes that microphone audio is the user.</p>
+
+      <h2>Exact Agent session continuity</h2>
+      <p>Each meeting, provider, context scope, and selected workspace owns an exact native Codex or Claude session binding. Follow-up questions resume that provider-generated ID. Arco never asks the CLI to resume whichever conversation happened most recently.</p>
+      <p>The provider's native conversation remains the continuity source. Arco stores the meeting binding, a display cache, and saved-note metadata locally. Background title and summary generation uses a separate session so those prompts never appear as user questions in Ask Arco.</p>
+
+      <h2>Portable storage</h2>
+      <p>Transcripts and notes are Markdown. Atomic JSON sidecars preserve Agent session bindings, cached answer cards, generated meeting output, and saved-note state without rewriting legacy transcript files. The active meeting and the meeting currently being reviewed remain separate state, so opening History cannot redirect an active recording.</p>
+
+      <h2>Read the source-level contracts</h2>
+      <ul>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/docs/ARCHITECTURE.md">Complete architecture document</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/docs/TRANSCRIPTION.md">Transcription and diarization document</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/PRODUCT.md">Product behavior and invariants</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco/blob/main/DESIGN.md">Interface design system</a></li>
+        <li><a href="https://github.com/xilanhua12138/Arco">Complete repository</a></li>
+      </ul>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="page-shell footer-inner">
+      <span>Arco is an open-source project for macOS.</span>
+      <div class="footer-links">
+        <a href="./">Home</a>
+        <a href="faq.html">FAQ</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="https://github.com/xilanhua12138/Arco">Source</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

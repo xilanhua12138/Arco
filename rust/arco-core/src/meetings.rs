@@ -290,12 +290,29 @@ fn append_live_transcript_lines(path: &Path, lines: &mut Vec<TranscriptLine>) {
     let Ok(snapshot) = serde_json::from_slice::<LiveTranscriptSnapshot>(&bytes) else {
         return;
     };
+    let mut visible = lines
+        .iter()
+        .map(|line| {
+            (
+                line.timestamp.clone(),
+                line.speaker.clone(),
+                line.text.trim().to_string(),
+            )
+        })
+        .collect::<HashSet<_>>();
     let first_sequence = lines.len();
     lines.extend(
         snapshot
             .lines
             .into_iter()
             .filter(|line| !line.text.trim().is_empty())
+            .filter(|line| {
+                visible.insert((
+                    line.timestamp.clone(),
+                    line.speaker.clone(),
+                    line.text.trim().to_string(),
+                ))
+            })
             .enumerate()
             .map(|(offset, line)| TranscriptLine {
                 id: line.id,
@@ -576,5 +593,35 @@ mod tests {
             .lines
             .iter()
             .all(|line| line.text != "live draft"));
+    }
+
+    #[test]
+    fn stale_live_snapshot_does_not_duplicate_a_segment_that_just_became_durable() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("transcript-20260716-090000.md");
+        fs::write(
+            &path,
+            "# Meeting Transcript\n\n> Started: 2026-07-16 09:00:00 (live)\n\n\
+             **[09:00:03] Speaker 2:** committed once\n\n",
+        )
+        .unwrap();
+        fs::write(
+            live_transcript_path(&path),
+            r#"{"lines":[{"id":"doubao-pending-1-3000-3500","timestamp":"09:00:03","speaker":"Speaker 2","text":"committed once"},{"id":"doubao-live-1-4000-4500","timestamp":"09:00:04","speaker":"Speaker 2","text":"new live edge"}]}"#,
+        )
+        .unwrap();
+
+        let meeting = parse_meeting(&path, "local", Some(&path)).unwrap();
+        assert_eq!(meeting.lines.len(), 2);
+        assert_eq!(
+            meeting
+                .lines
+                .iter()
+                .filter(|line| line.text == "committed once")
+                .count(),
+            1,
+            "an atomic Markdown/live snapshot handoff must never flash duplicate text"
+        );
+        assert_eq!(meeting.lines[1].text, "new live edge");
     }
 }

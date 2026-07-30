@@ -37,7 +37,12 @@ const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
 const MAX_PENDING_TRANSCRIPT_SEGMENTS: usize = 10_000;
+const WATERMARK_GAP_LOG_BUCKET_SECONDS: f64 = 30.0;
 const FATAL_ERROR_PREFIX: &str = "ARCO_DOUBAO_FATAL:";
+
+fn session_log_id() -> String {
+    std::env::var("ARCO_SESSION_ID").unwrap_or_else(|_| "unknown".into())
+}
 
 type DoubaoSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -337,16 +342,8 @@ impl InFlightAudio {
         confirmation
     }
 
-    fn abandon(&mut self) -> AudioConfirmation {
-        let mut abandoned = AudioConfirmation::default();
-        while let Some(sent) = self.chunks.pop_front() {
-            abandoned.confirmed_chunks += 1;
-            abandoned.final_confirmed |= sent.final_packet;
-            abandoned.confirmed_through_frame = abandoned
-                .confirmed_through_frame
-                .max(Some(sent.chunk.end_frame()));
-        }
-        abandoned
+    fn take_unconfirmed(&mut self) -> Vec<SentAudio> {
+        self.chunks.drain(..).collect()
     }
 
     #[cfg(test)]
@@ -429,6 +426,7 @@ struct TranscriptWriter {
     processed_until: [f64; 2],
     pending: Vec<Segment>,
     live_lines: [Vec<LiveTranscriptLine>; 2],
+    reported_watermark_gap_bucket: u64,
 }
 
 impl TranscriptWriter {
@@ -457,6 +455,7 @@ impl TranscriptWriter {
             processed_until: [0.0, 0.0],
             pending: Vec::new(),
             live_lines: [Vec::new(), Vec::new()],
+            reported_watermark_gap_bucket: 0,
         })
     }
 
@@ -479,29 +478,32 @@ impl TranscriptWriter {
         self.flush_ready()
     }
 
+    fn live_line_for_segment(&self, segment: &Segment, state: &str) -> LiveTranscriptLine {
+        let seconds = self.session_started_at + segment.start;
+        let timestamp = Local
+            .timestamp_opt(seconds as i64, 0)
+            .single()
+            .unwrap_or_else(Local::now)
+            .format("%H:%M:%S")
+            .to_string();
+        LiveTranscriptLine {
+            id: format!(
+                "doubao-{state}-{}-{}-{}",
+                segment.channel,
+                (segment.start * 1_000.0).round() as i64,
+                (segment.end * 1_000.0).round() as i64,
+            ),
+            timestamp,
+            speaker: segment.label.clone(),
+            text: segment.text.clone(),
+        }
+    }
+
     fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {
         let channel = channel.min(1);
         self.live_lines[channel] = segments
             .iter()
-            .map(|segment| {
-                let seconds = self.session_started_at + segment.start;
-                let timestamp = Local
-                    .timestamp_opt(seconds as i64, 0)
-                    .single()
-                    .unwrap_or_else(Local::now)
-                    .format("%H:%M:%S")
-                    .to_string();
-                LiveTranscriptLine {
-                    id: format!(
-                        "doubao-live-{}-{}",
-                        segment.channel,
-                        (segment.start * 1_000.0).round() as i64
-                    ),
-                    timestamp,
-                    speaker: segment.label.clone(),
-                    text: segment.text.clone(),
-                }
-            })
+            .map(|segment| self.live_line_for_segment(segment, "live"))
             .collect();
         self.persist_live_snapshot()
     }
@@ -518,10 +520,10 @@ impl TranscriptWriter {
 
     fn persist_live_snapshot(&self) -> Result<(), String> {
         let mut lines = self
-            .live_lines
+            .pending
             .iter()
-            .flatten()
-            .cloned()
+            .map(|segment| self.live_line_for_segment(segment, "pending"))
+            .chain(self.live_lines.iter().flatten().cloned())
             .collect::<Vec<_>>();
         lines.sort_by(|left, right| {
             left.timestamp
@@ -558,6 +560,7 @@ impl TranscriptWriter {
     fn advance(&mut self, channel: usize, processed_until: f64) -> Result<(), String> {
         let channel = channel.min(1);
         self.processed_until[channel] = self.processed_until[channel].max(processed_until);
+        self.report_watermark_gap();
         self.flush_ready()
     }
 
@@ -574,7 +577,39 @@ impl TranscriptWriter {
 
     fn complete_channel(&mut self, channel: usize) -> Result<(), String> {
         self.processed_until[channel.min(1)] = f64::INFINITY;
+        self.report_watermark_gap();
         self.flush_ready()
+    }
+
+    fn report_watermark_gap(&mut self) {
+        let watermarks = self
+            .processed_until
+            .iter()
+            .enumerate()
+            .filter(|(channel, value)| self.active_channels[*channel] && value.is_finite())
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
+        let gap = if watermarks.len() < 2 {
+            0.0
+        } else {
+            watermarks.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                - watermarks.iter().copied().fold(f64::INFINITY, f64::min)
+        };
+        let bucket = (gap / WATERMARK_GAP_LOG_BUCKET_SECONDS).floor() as u64;
+        if bucket == self.reported_watermark_gap_bucket {
+            return;
+        }
+        self.reported_watermark_gap_bucket = bucket;
+        if bucket > 0 {
+            eprintln!(
+                "ARCO_DOUBAO_WATERMARK_GAP session={} gap_seconds={gap:.3} channel_0_seconds={:.3} channel_1_seconds={:.3} pending_segments={} bucket_seconds={}",
+                session_log_id(),
+                self.processed_until[0],
+                self.processed_until[1],
+                self.pending.len(),
+                WATERMARK_GAP_LOG_BUCKET_SECONDS as u64,
+            );
+        }
     }
 
     fn flush_ready(&mut self) -> Result<(), String> {
@@ -585,11 +620,13 @@ impl TranscriptWriter {
             .filter(|(channel, _)| self.active_channels[*channel])
             .map(|(_, value)| *value)
             .fold(f64::INFINITY, f64::min);
-        self.flush_through(cutoff)
+        self.flush_through(cutoff)?;
+        self.persist_live_snapshot()
     }
 
     fn flush_all(&mut self) -> Result<(), String> {
-        self.flush_through(f64::INFINITY)
+        self.flush_through(f64::INFINITY)?;
+        self.persist_live_snapshot()
     }
 
     fn flush_through(&mut self, cutoff: f64) -> Result<(), String> {
@@ -1206,11 +1243,14 @@ async fn stream_connected_channel(
     timeline_store: Option<&Arc<Mutex<crate::speaker_timeline::SpeakerTimelineStore>>>,
     state: &mut ChannelState,
 ) -> Result<bool, String> {
+    state.drain_audio_input(receiver)?;
     let catchup_buffered_seconds = buffered_audio_seconds(&state.pending, receiver);
+    let catchup_target_frame = state.pending.chunks.back().map(BufferedAudio::end_frame);
     let (mut sink, mut stream) = socket.split();
     if state.connection_id > 1 {
         eprintln!(
-            "ARCO_DOUBAO_RECONNECT channel={} connection={} queued_audio={:.3}s pending_bytes={} pending_ram_bytes={} catchup_pacing=socket_backpressure",
+            "ARCO_DOUBAO_RECONNECT session={} channel={} connection={} queued_audio={:.3}s pending_bytes={} pending_ram_bytes={} catchup_pacing=socket_backpressure",
+            session_log_id(),
             state.channel,
             state.connection_id,
             catchup_buffered_seconds,
@@ -1225,7 +1265,7 @@ async fn stream_connected_channel(
     let mut stream_started = false;
     let connection_started = Instant::now();
     let trace_protocol = std::env::var("ARCO_DOUBAO_TRACE").as_deref() == Ok("1");
-    let mut catchup_reported = state.connection_id == 1 || catchup_buffered_seconds == 0.0;
+    let mut catchup_reported = state.connection_id == 1 || catchup_target_frame.is_none();
     let mut closing = false;
     let mut flush_sent = false;
     let dormant_deadline = Duration::from_secs(365 * 24 * 60 * 60);
@@ -1236,11 +1276,7 @@ async fn stream_connected_channel(
     let mut heartbeat = tokio::time::interval_at(first_heartbeat, state.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat_pending = false;
-    tokio::pin!(
-        final_response_deadline,
-        eof_deadline,
-        heartbeat_deadline
-    );
+    tokio::pin!(final_response_deadline, eof_deadline, heartbeat_deadline);
 
     loop {
         state.observe_eof(receiver);
@@ -1301,13 +1337,6 @@ async fn stream_connected_channel(
                             .await
                             .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
                             return Err(format!("Doubao audio send failed: {error}"));
-                        }
-                        if !catchup_reported && state.pending.is_empty() && receiver.is_empty() {
-                            eprintln!(
-                                "ARCO_DOUBAO_CATCHUP_COMPLETE channel={} connection={} queued_audio={:.3}s",
-                                state.channel, state.connection_id, catchup_buffered_seconds
-                            );
-                            catchup_reported = true;
                         }
                     }
                     None => {
@@ -1590,6 +1619,23 @@ async fn stream_connected_channel(
 
                     }
                 }
+                if !catchup_reported
+                    && catchup_target_frame.is_some_and(|target| {
+                        confirmation
+                            .confirmed_through_frame
+                            .is_some_and(|confirmed| confirmed >= target)
+                    })
+                {
+                    eprintln!(
+                        "ARCO_DOUBAO_CATCHUP_COMPLETE session={} channel={} connection={} queued_audio={:.3}s confirmed_through_frame={}",
+                        session_log_id(),
+                        state.channel,
+                        state.connection_id,
+                        catchup_buffered_seconds,
+                        confirmation.confirmed_through_frame.unwrap_or(0),
+                    );
+                    catchup_reported = true;
+                }
                 reclaim_recovery_spool(
                     &mut state.pending,
                     &mut lookahead,
@@ -1797,15 +1843,37 @@ where
     Ok(())
 }
 
-fn abandon_sent_audio_after_disconnect(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DisconnectRecovery {
+    replayed_chunks: usize,
+    replayed_bytes: usize,
+    start_frame: Option<usize>,
+    end_frame: Option<usize>,
+}
+
+fn requeue_unconfirmed_audio_after_disconnect(
     pending: &mut PendingAudio,
     lookahead: &mut Option<BufferedAudio>,
     in_flight: &mut InFlightAudio,
-) -> AudioConfirmation {
+) -> DisconnectRecovery {
+    let mut replay = in_flight
+        .take_unconfirmed()
+        .into_iter()
+        .map(|sent| sent.chunk)
+        .collect::<Vec<_>>();
     if let Some(chunk) = lookahead.take() {
+        replay.push(chunk);
+    }
+    let recovery = DisconnectRecovery {
+        replayed_chunks: replay.len(),
+        replayed_bytes: replay.iter().map(BufferedAudio::len).sum(),
+        start_frame: replay.first().map(BufferedAudio::start_frame),
+        end_frame: replay.last().map(BufferedAudio::end_frame),
+    };
+    for chunk in replay.into_iter().rev() {
         pending.restore(chunk);
     }
-    in_flight.abandon()
+    recovery
 }
 
 async fn close_disconnected_segment(
@@ -1815,10 +1883,19 @@ async fn close_disconnected_segment(
     lookahead: &mut Option<BufferedAudio>,
     in_flight: &mut InFlightAudio,
 ) -> Result<(), String> {
-    let abandoned = abandon_sent_audio_after_disconnect(pending, lookahead, in_flight);
+    let recovery = requeue_unconfirmed_audio_after_disconnect(pending, lookahead, in_flight);
+    if recovery.replayed_chunks > 0 {
+        eprintln!(
+            "ARCO_DOUBAO_REPLAY session={} channel={channel} chunks={} audio_seconds={:.3} start_frame={} end_frame={} reason=unconfirmed_after_disconnect",
+            session_log_id(),
+            recovery.replayed_chunks,
+            recovery.replayed_bytes as f64 / (SAMPLE_RATE * MONO_FRAME_BYTES) as f64,
+            recovery.start_frame.unwrap_or(0),
+            recovery.end_frame.unwrap_or(0),
+        );
+    }
     let mut transcript = writer.lock().await;
-    transcript.clear_live_channel(channel)?;
-    transcript.advance_from_confirmation(channel, &abandoned)
+    transcript.clear_live_channel(channel)
 }
 
 fn reclaim_recovery_spool(
@@ -2044,7 +2121,8 @@ async fn run_channel(
                 // connection comes back. Giving up mid-meeting is how a
                 // transient outage silently ends the whole capture.
                 eprintln!(
-                    "[doubao channel {channel}] {error}; retrying in {retry_delay}s; queued_audio={:.3}s pending_bytes={} pending_ram_bytes={}",
+                    "ARCO_DOUBAO_RETRY session={} channel={channel} retry_in_seconds={retry_delay} queued_audio={:.3}s pending_bytes={} pending_ram_bytes={} error={error:?}",
+                    session_log_id(),
                     buffered_audio_seconds(&state.pending, &receiver),
                     state.pending.bytes(),
                     state.pending.resident_audio_bytes(),
@@ -2664,7 +2742,7 @@ mod tests {
     }
 
     #[test]
-    fn livekit_style_disconnect_drops_sent_audio_and_keeps_only_unsent_audio() {
+    fn disconnect_replays_sent_but_unconfirmed_final_audio_before_unsent_audio() {
         let final_audio = AudioChunk {
             data: vec![21, 22, 23, 24],
             start_frame: 9_900,
@@ -2678,25 +2756,23 @@ mod tests {
         let mut in_flight = InFlightAudio::default();
         in_flight.record(2, final_audio.clone(), true);
 
-        let abandoned =
-            abandon_sent_audio_after_disconnect(&mut pending, &mut lookahead, &mut in_flight);
+        let recovery = requeue_unconfirmed_audio_after_disconnect(
+            &mut pending,
+            &mut lookahead,
+            &mut in_flight,
+        );
 
-        assert_eq!(
-            abandoned.confirmed_through_frame,
-            Some(final_audio.end_frame()),
-            "the abandoned sent tail must advance the stream watermark"
-        );
-        assert!(
-            abandoned.final_confirmed,
-            "an abandoned logical EOF must not be replayed forever"
-        );
+        assert_eq!(recovery.replayed_chunks, 2);
+        assert_eq!(recovery.start_frame, Some(final_audio.start_frame));
+        assert_eq!(recovery.end_frame, Some(held.end_frame()));
+        assert_eq!(pending.take(), Some(final_audio));
         assert_eq!(pending.take(), Some(held));
         assert_eq!(pending.take(), None);
         assert!(in_flight.is_empty());
     }
 
     #[test]
-    fn livekit_style_disconnect_never_requeues_already_sent_frames() {
+    fn partial_ack_disconnect_replays_only_unconfirmed_audio_in_original_order() {
         let first = AudioChunk {
             data: vec![1, 2],
             start_frame: 100,
@@ -2716,15 +2792,28 @@ mod tests {
         let mut in_flight = InFlightAudio::default();
         in_flight.record(2, first.clone(), false);
         in_flight.record(3, second.clone(), false);
+        let confirmation = in_flight.confirm_through(2);
+        assert_eq!(
+            confirmation.confirmed_through_frame,
+            Some(first.end_frame())
+        );
         let mut pending = PendingAudio::default();
         pending.restore(queued.clone());
         let mut lookahead = Some(held.clone().into());
 
-        let abandoned =
-            abandon_sent_audio_after_disconnect(&mut pending, &mut lookahead, &mut in_flight);
+        let recovery = requeue_unconfirmed_audio_after_disconnect(
+            &mut pending,
+            &mut lookahead,
+            &mut in_flight,
+        );
 
-        assert_eq!(abandoned.confirmed_chunks, 2);
-        assert_eq!(abandoned.confirmed_through_frame, Some(second.end_frame()));
+        assert_eq!(
+            recovery.replayed_chunks, 2,
+            "only the unconfirmed sent tail and unsent lookahead must be replayed"
+        );
+        assert_eq!(recovery.start_frame, Some(second.start_frame));
+        assert_eq!(recovery.end_frame, Some(held.end_frame()));
+        assert_eq!(pending.take(), Some(second));
         assert_eq!(pending.take(), Some(held));
         assert_eq!(pending.take(), Some(queued));
         assert_eq!(pending.take(), None);
@@ -2772,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledgements_advance_a_monotonic_watermark_before_disconnect_drops_the_tail() {
+    fn acknowledgements_remove_only_the_confirmed_prefix_before_replay() {
         let chunks: Vec<_> = (0..3)
             .map(|index| AudioChunk {
                 data: vec![index as u8; 2],
@@ -2789,12 +2878,9 @@ mod tests {
         assert!(!confirmation.final_confirmed);
         assert_eq!(in_flight.len(), 1);
 
-        let abandoned = in_flight.abandon();
-        assert_eq!(abandoned.confirmed_chunks, 1);
-        assert_eq!(
-            abandoned.confirmed_through_frame,
-            Some(chunks[2].end_frame())
-        );
+        let replay = in_flight.take_unconfirmed();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].chunk.start_frame(), chunks[2].start_frame);
         assert!(in_flight.is_empty());
     }
 
@@ -2953,12 +3039,10 @@ mod tests {
 
         assert!(!confirmation.final_confirmed);
         assert_eq!(in_flight.len(), 2);
-        let abandoned = in_flight.abandon();
-        assert_eq!(abandoned.confirmed_chunks, 2);
-        assert_eq!(
-            abandoned.confirmed_through_frame,
-            Some(chunks[1].end_frame())
-        );
+        let replay = in_flight.take_unconfirmed();
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[0].chunk.start_frame(), chunks[0].start_frame);
+        assert_eq!(replay[1].chunk.start_frame(), chunks[1].start_frame);
         assert!(in_flight.is_empty());
     }
 
@@ -3125,6 +3209,71 @@ mod tests {
         assert!(
             content.find("earlier recovered room").unwrap() < content.find("later remote").unwrap(),
             "replayed older room audio must not be appended after newer remote audio"
+        );
+    }
+
+    #[test]
+    fn finalized_segments_blocked_by_the_other_channel_remain_visible_in_live_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        let live = crate::meetings::live_transcript_path(&transcript);
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "visible before the remote channel catches up".into(),
+                start: 10.0,
+                end: 11.0,
+            })
+            .unwrap();
+        writer.advance(1, 12.0).unwrap();
+
+        assert!(
+            !fs::read_to_string(&transcript)
+                .unwrap()
+                .contains("visible before the remote channel catches up"),
+            "the durable transcript must retain absolute cross-channel ordering"
+        );
+        let snapshot = fs::read_to_string(&live)
+            .expect("a finalized-but-blocked segment must be published to the live UI");
+        assert!(snapshot.contains("visible before the remote channel catches up"));
+        assert!(snapshot.contains("doubao-pending-1-10000-11000"));
+
+        writer.advance(0, 12.0).unwrap();
+        assert!(fs::read_to_string(&transcript)
+            .unwrap()
+            .contains("visible before the remote channel catches up"));
+        assert!(
+            !live.exists(),
+            "the live duplicate must disappear as soon as the segment becomes durable"
+        );
+    }
+
+    #[test]
+    fn watermark_gap_metrics_are_bucketed_and_reset_after_channels_recover() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer.advance(0, 31.0).unwrap();
+        assert_eq!(writer.reported_watermark_gap_bucket, 1);
+        writer.advance(0, 35.0).unwrap();
+        assert_eq!(
+            writer.reported_watermark_gap_bucket, 1,
+            "the log must not repeat within the same 30-second gap bucket"
+        );
+        writer.advance(0, 61.0).unwrap();
+        assert_eq!(writer.reported_watermark_gap_bucket, 2);
+        writer.advance(1, 60.0).unwrap();
+        assert_eq!(
+            writer.reported_watermark_gap_bucket, 0,
+            "a recovered channel resets the metric for a future incident"
         );
     }
 
@@ -3643,12 +3792,12 @@ mod tests {
         assert!(result.contains("reconnecting"));
         assert_eq!(
             state.pending.bytes(),
-            chunk_bytes,
-            "only the one unsent lookahead may cross a LiveKit-style reconnect"
+            10 * chunk_bytes,
+            "every sent-but-unconfirmed frame must survive the first stalled connection"
         );
         assert!(
-            (writer.lock().await.processed_until[0] - 0.9).abs() < 0.000_001,
-            "already-sent audio must advance the abandoned connection watermark"
+            writer.lock().await.processed_until[0].abs() < 0.000_001,
+            "an abandoned connection must not manufacture transcript progress"
         );
         assert!(
             !sender.is_closed(),
@@ -3684,17 +3833,17 @@ mod tests {
         assert!(next_result.contains("heartbeat"));
         assert_eq!(
             state.pending.bytes(),
-            chunk_bytes,
-            "a second outage must not re-add audio already sent by the first or second connection"
+            15 * chunk_bytes,
+            "a second outage must preserve the ten replayed and five new frames exactly once"
         );
         assert!(
-            (writer.lock().await.processed_until[0] - 1.4).abs() < 0.000_001,
-            "the stream watermark must continue moving across repeated outages"
+            writer.lock().await.processed_until[0].abs() < 0.000_001,
+            "repeated outages without provider confirmation must keep the watermark unchanged"
         );
     }
 
     #[tokio::test]
-    async fn missing_websocket_heartbeat_keeps_only_the_unsent_lookahead() {
+    async fn missing_websocket_heartbeat_replays_all_unconfirmed_audio() {
         let (socket, _server) = local_websocket_pair().await;
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("transcript.md");
@@ -3735,10 +3884,10 @@ mod tests {
         assert!(result.contains("reconnecting"));
         assert_eq!(
             state.pending.bytes(),
-            tenth_second_chunk(0, 3).data.len(),
-            "heartbeat recovery must not replay frames already consumed by the failed connection"
+            2 * tenth_second_chunk(0, 3).data.len(),
+            "heartbeat recovery must replay both sent and held frames when neither was confirmed"
         );
-        assert!((writer.lock().await.processed_until[0] - 0.1).abs() < 0.000_001);
+        assert!(writer.lock().await.processed_until[0].abs() < 0.000_001);
         assert!(!sender.is_closed(), "the recorder must remain attached");
     }
 
@@ -4121,9 +4270,7 @@ mod tests {
             "the provider's 8s packet-wait timeout must reconnect, not kill the channel"
         );
         assert!(
-            !is_fatal_channel_error(
-                "Doubao transcription failed (55000031): server busy"
-            ),
+            !is_fatal_channel_error("Doubao transcription failed (55000031): server busy"),
             "a busy provider must be retried, not treated as a fatal rejection"
         );
     }

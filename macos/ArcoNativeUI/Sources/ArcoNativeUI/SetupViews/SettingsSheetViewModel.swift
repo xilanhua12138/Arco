@@ -22,6 +22,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
     public var transcriptStorageChanging: Bool
     public var notesStorage: StorageSettings
     public var notesStorageChanging: Bool
+    public var update: UpdateState
+    public var currentVersion: String
 
     public init(
         isDesktop: Bool = true,
@@ -43,7 +45,9 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         transcriptStorage: StorageSettings? = nil,
         transcriptStorageChanging: Bool = false,
         notesStorage: StorageSettings? = nil,
-        notesStorageChanging: Bool = false
+        notesStorageChanging: Bool = false,
+        update: UpdateState = .idle,
+        currentVersion: String = "0.0.0"
     ) {
         self.isDesktop = isDesktop
         self.locale = locale
@@ -73,6 +77,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
             usingDefault: true
         )
         self.notesStorageChanging = notesStorageChanging
+        self.update = update
+        self.currentVersion = currentVersion
     }
 }
 
@@ -99,6 +105,8 @@ public struct SettingsSheetActions {
     public var onResetTranscriptDirectory: () async -> Bool
     public var onChooseNotesDirectory: () async -> Bool
     public var onResetNotesDirectory: () async -> Bool
+    public var onCheckForUpdates: () -> Void
+    public var onInstallUpdate: () -> Void
 
     public init(
         onClose: @escaping () -> Void,
@@ -121,7 +129,9 @@ public struct SettingsSheetActions {
         onChooseTranscriptDirectory: @escaping () async -> Bool = { true },
         onResetTranscriptDirectory: @escaping () async -> Bool = { true },
         onChooseNotesDirectory: @escaping () async -> Bool = { true },
-        onResetNotesDirectory: @escaping () async -> Bool = { true }
+        onResetNotesDirectory: @escaping () async -> Bool = { true },
+        onCheckForUpdates: @escaping () -> Void = {},
+        onInstallUpdate: @escaping () -> Void = {}
     ) {
         self.onClose = onClose
         self.onChangeLocale = onChangeLocale
@@ -144,6 +154,8 @@ public struct SettingsSheetActions {
         self.onResetTranscriptDirectory = onResetTranscriptDirectory
         self.onChooseNotesDirectory = onChooseNotesDirectory
         self.onResetNotesDirectory = onResetNotesDirectory
+        self.onCheckForUpdates = onCheckForUpdates
+        self.onInstallUpdate = onInstallUpdate
     }
 }
 

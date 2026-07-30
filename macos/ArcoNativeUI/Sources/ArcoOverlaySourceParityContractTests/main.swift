@@ -182,8 +182,8 @@ expectTrue(
     "Agent header centering must use an explicit finite column height instead of an unresolved infinite-height proposal"
 )
 expectTrue(
-    agent.contains("model.snapshot.capture.phase == .recording")
-        && agent.contains("== model.snapshot.capture.activeMeetingId"),
+    agent.contains("transcriptCapture.phase == .recording")
+        && agent.contains("== transcriptCapture.activeMeetingId"),
     "Live badge must require both recording phase and the active meeting identity"
 )
 expectTrue(
@@ -325,6 +325,13 @@ expectTrue(
     agent.contains("func applyRunning(_ running: Bool)")
         && application.contains(".onChange(of: store.agentRunning)"),
     "The Agent overlay must disable its buttons when a request starts from any shared surface"
+)
+expectTrue(
+    application.contains("transcriptMeeting: store.activeMeetingDetail")
+        && application.contains("transcriptCapture: store.capture")
+        && agent.contains("meeting: transcriptMeeting")
+        && agent.contains("capture: transcriptCapture"),
+    "Main window and floating transcript must render the same store-owned active meeting snapshot"
 )
 let agentWorkspace = sourceSection(
     agent,
