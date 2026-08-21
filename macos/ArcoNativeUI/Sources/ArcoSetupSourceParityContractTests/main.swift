@@ -527,6 +527,12 @@ private func testSourceParityHooks() {
         providerSetup.contains("common.optional"),
         "Provider Setup keeps the source Secondary optional label"
     )
+    expectTrue(
+        !providerSetup.contains(".arcoLiquidGlass")
+            && providerSetup.contains("ArcoPressFeedbackButtonStyle")
+            && providerSetup.contains("? Color(red: 233 / 255, green: 237 / 255, blue: 240 / 255)"),
+        "Provider Setup must use stable form surfaces and explicit selection feedback without decorative Liquid Glass"
+    )
 
     let output = source("ArcoNativeUI/SetupViews/MeetingOutputSettingsView.swift")
     expectTrue(
@@ -544,15 +550,10 @@ private func testSourceParityHooks() {
         "Meeting Output recreates the source textarea height when its DOM-equivalent view remounts"
     )
 
-    for relativePath in [
-        "ArcoNativeUI/SetupViews/OnboardingView.swift",
-        "ArcoNativeUI/SetupViews/ProviderSetupView.swift",
-    ] {
-        expectTrue(
-            source(relativePath).contains("arcoLiquidGlass"),
-            "\(relativePath) must use native Liquid Glass"
-        )
-    }
+    expectTrue(
+        onboarding.contains("arcoLiquidGlass"),
+        "The full onboarding flow may retain native Liquid Glass on its functional control layer"
+    )
 }
 
 testNotesTitleUsesHTMLMaxLengthSemantics()

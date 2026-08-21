@@ -110,7 +110,7 @@ expectTrue(
     "The transcript live-edge control must acknowledge pointer-down immediately"
 )
 expectTrue(
-    appStore.contains("Task.sleep(for: .milliseconds(450))"),
+    appStore.contains("Task.sleep(for: .milliseconds(250))"),
     "Live first-pass captions must be polled quickly enough to feel real-time"
 )
 expectTrue(
