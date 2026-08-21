@@ -233,7 +233,6 @@ public struct ProviderSetupView: View {
                     .padding(.horizontal, 48)
                     .padding(.bottom, 32)
                     .background(Color(red: 252 / 255, green: 252 / 255, blue: 253 / 255))
-                    .arcoLiquidGlass(in: Rectangle())
                 }
                 .frame(
                     width: min(920, max(712, geometry.size.width - 48)),
@@ -244,7 +243,6 @@ public struct ProviderSetupView: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(red: 28 / 255, green: 35 / 255, blue: 40 / 255).opacity(0.08)))
                 .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
                 .shadow(color: .black.opacity(0.28), radius: 22, y: 20)
-                .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
         .onChange(of: viewModel.step) { previous, current in
@@ -314,7 +312,7 @@ public struct ProviderSetupView: View {
                             }
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
                     .disabled(index > viewModel.furthestStep)
                     .accessibilityLabel(translate(key, [:]))
                     .accessibilityAddTraits(index == viewModel.step ? .isSelected : [])
@@ -326,7 +324,6 @@ public struct ProviderSetupView: View {
         .padding(.bottom, 28)
         .background(Color(red: 239 / 255, green: 243 / 255, blue: 246 / 255))
         .overlay(alignment: .trailing) { Rectangle().fill(Color(red: 28 / 255, green: 35 / 255, blue: 40 / 255).opacity(0.08)).frame(width: 1) }
-        .arcoLiquidGlass(in: Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("onboarding.progress", [:]))
     }
@@ -348,11 +345,11 @@ public struct ProviderSetupView: View {
             .frame(height: 32)
             .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineThin))
-            .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
             if let onCancel {
                 Button(action: onCancel) { Image(systemName: "xmark").font(.system(size: 18)).frame(width: 34, height: 34) }
-                    .buttonStyle(.plain)
-                    .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                    .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
+                    .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineThin))
                     .accessibilityLabel(translate("onboarding.cancel", [:]))
             }
         }
@@ -411,12 +408,12 @@ public struct ProviderSetupView: View {
                             Text(translate(viewModel.refreshing ? "onboarding.checking" : "onboarding.recheck", [:]))
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ArcoPressFeedbackButtonStyle())
                     .font(ArcoTypography.small)
                     .foregroundStyle(ArcoNativeColors.ink)
                     .padding(.horizontal, 8).padding(.vertical, 5).frame(minHeight: 30)
                     .background(Color(red: 238 / 255, green: 241 / 255, blue: 244 / 255), in: RoundedRectangle(cornerRadius: 7))
-                    .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 7), interactive: true)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(ArcoNativeColors.lineThin))
                     .disabled(viewModel.refreshing)
                     .accessibilityLabel(translate("onboarding.recheckInstallations", [:]))
                 }
@@ -482,13 +479,12 @@ public struct ProviderSetupView: View {
                     ))
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ArcoPressFeedbackButtonStyle())
             .font(ArcoTypography.sans(13, weight: .semibold))
             .foregroundStyle(ArcoNativeColors.actionInk)
             .padding(.horizontal, 16)
             .frame(minHeight: 42)
             .background(ArcoNativeColors.action, in: RoundedRectangle(cornerRadius: 9))
-            .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 9), interactive: true)
             .padding(.top, 28)
             .disabled(!viewModel.primaryAvailable || viewModel.testState == .working)
             .opacity(!viewModel.primaryAvailable || viewModel.testState == .working ? 0.5 : 1)
@@ -604,10 +600,19 @@ public struct ProviderSetupView: View {
             .foregroundStyle(prominent ? ArcoNativeColors.actionInk : muted ? ArcoNativeColors.inkMuted : ArcoNativeColors.ink)
             .padding(.horizontal, 16)
             .frame(minHeight: 42)
-            .background(prominent ? ArcoNativeColors.action : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+            .background(
+                prominent
+                    ? ArcoNativeColors.action
+                    : muted ? Color.clear : ArcoNativeColors.surfaceSubtle,
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay {
+                if !prominent && !muted {
+                    RoundedRectangle(cornerRadius: 9).stroke(ArcoNativeColors.lineThin)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 9), interactive: true)
+        .buttonStyle(ArcoPressFeedbackButtonStyle())
     }
 
     private func heading(_ titleKey: String, help helpKey: String, parameters: [String: String] = [:]) -> some View {
@@ -656,7 +661,6 @@ public struct ProviderSetupView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(ArcoNativeColors.line))
-            .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 10), interactive: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -677,11 +681,14 @@ public struct ProviderSetupView: View {
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 42)
-            .background(selected ? Color(red: 233 / 255, green: 237 / 255, blue: 240 / 255) : Color.white)
+            .background(
+                selected
+                    ? Color(red: 233 / 255, green: 237 / 255, blue: 240 / 255)
+                    : ArcoNativeColors.surfaceDocument
+            )
             .overlay(alignment: .leading) { Rectangle().fill(ArcoNativeColors.line).frame(width: 1).opacity(separator ? 1 : 0) }
         }
-        .buttonStyle(.plain)
-        .arcoLiquidGlass(in: Rectangle(), interactive: true)
+        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.995))
         .disabled(!enabled)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

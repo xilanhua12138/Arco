@@ -38,6 +38,24 @@ public enum InsightSourceLayout {
     }
 }
 
+@_spi(Testing)
+public enum InsightQuestionTextSynchronization {
+    public static func shouldApplyBindingText(
+        editorHasMarkedText: Bool,
+        editorText: String,
+        bindingText: String
+    ) -> Bool {
+        !editorHasMarkedText && editorText != bindingText
+    }
+}
+
+@_spi(Testing)
+public enum InsightQuestionPlaceholderPresentation {
+    public static func shouldShow(questionText: String, editorFocused: Bool) -> Bool {
+        questionText.isEmpty && !editorFocused
+    }
+}
+
 public struct InsightAskRequest: Sendable {
     public var provider: ProviderID
     public var usedFallback: Bool
@@ -103,6 +121,7 @@ public struct InsightPanelView: View {
     @State private var measuredWidth: CGFloat = .infinity
     @State private var closeHovering = false
     @State private var contextButtonHovering = false
+    @State private var questionEditorFocused = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -681,7 +700,10 @@ public struct InsightPanelView: View {
             .accessibilityLabel(translate("agent.referenceContext", [:]))
 
             ZStack(alignment: .topLeading) {
-                if questionText.isEmpty {
+                if InsightQuestionPlaceholderPresentation.shouldShow(
+                    questionText: questionText,
+                    editorFocused: questionEditorFocused
+                ) {
                     Text(translate("agent.placeholder", [:]))
                         .font(ArcoTypography.body)
                         .foregroundStyle(ArcoNativeColors.inkMuted)
@@ -689,26 +711,18 @@ public struct InsightPanelView: View {
                         .padding(.leading, InsightSourceLayout.textContainerInset)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: questionBinding)
-                    .font(ArcoTypography.body)
-                    .foregroundStyle(ArcoNativeColors.inkStrong)
-                    .lineSpacing(4.2)
-                    .scrollContentBackground(.hidden)
-                    .scrollIndicators(.never)
-                    .contentMargins(0, for: .scrollContent)
+                InsightQuestionEditor(
+                    text: questionBinding,
+                    accessibilityLabel: translate("agent.questionAria", [:]),
+                    onSubmit: {
+                        Task { @MainActor in await submit() }
+                    },
+                    onFocusChange: { focused in
+                        questionEditorFocused = focused
+                    }
+                )
                     .frame(height: InsightSourceLayout.composerHeight(for: layout))
                     .padding(0)
-                    .accessibilityLabel(translate("agent.questionAria", [:]))
-                    .onKeyPress(phases: .down) { press in
-                        guard press.key == .return, !press.modifiers.contains(.shift) else { return .ignored }
-                        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
-                           editor.hasMarkedText()
-                        {
-                            return .ignored
-                        }
-                        Task { @MainActor in await submit() }
-                        return .handled
-                    }
             }
 
             if requestError {
@@ -971,6 +985,142 @@ public struct InsightPanelView: View {
 }
 
 public typealias InsightPanel = InsightPanelView
+
+private struct InsightQuestionEditor: NSViewRepresentable {
+    @Binding var text: String
+    let accessibilityLabel: String
+    let onSubmit: () -> Void
+    let onFocusChange: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return scrollView
+        }
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.textContainerInset = NSSize(
+            width: InsightSourceLayout.textContainerInset,
+            height: 0
+        )
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.allowsUndo = true
+        textView.isContinuousSpellCheckingEnabled = true
+        textView.setAccessibilityLabel(accessibilityLabel)
+        textView.string = text
+        Self.applyTypography(to: textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        textView.setAccessibilityLabel(accessibilityLabel)
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+
+        guard InsightQuestionTextSynchronization.shouldApplyBindingText(
+            editorHasMarkedText: textView.hasMarkedText(),
+            editorText: textView.string,
+            bindingText: text
+        ) else { return }
+
+        context.coordinator.updating = true
+        let selection = textView.selectedRange()
+        textView.string = text
+        Self.applyTypography(to: textView)
+        textView.setSelectedRange(Self.clamped(selection, for: text))
+        context.coordinator.updating = false
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        (scrollView.documentView as? NSTextView)?.delegate = nil
+    }
+
+    private static func clamped(_ selection: NSRange, for text: String) -> NSRange {
+        let length = text.utf16.count
+        let location = min(max(0, selection.location), length)
+        return NSRange(
+            location: location,
+            length: min(max(0, selection.length), length - location)
+        )
+    }
+
+    private static func applyTypography(to textView: NSTextView) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4.2
+        let font = NSFont(name: "Avenir Next", size: 14) ?? NSFont.systemFont(ofSize: 14)
+        let color = NSColor(
+            srgbRed: 23 / 255,
+            green: 26 / 255,
+            blue: 31 / 255,
+            alpha: 1
+        )
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ]
+        textView.font = font
+        textView.textColor = color
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes = attributes
+        if let storage = textView.textStorage, storage.length > 0 {
+            storage.addAttributes(attributes, range: NSRange(location: 0, length: storage.length))
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: InsightQuestionEditor
+        var updating = false
+
+        init(_ parent: InsightQuestionEditor) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !updating, let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.onFocusChange(true)
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.onFocusChange(false)
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            guard !textView.hasMarkedText(), !NSEvent.modifierFlags.contains(.shift) else {
+                return false
+            }
+            parent.onSubmit()
+            return true
+        }
+    }
+}
 
 private struct InsightWidthPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = .infinity

@@ -118,6 +118,51 @@ expectTrue(
     "Composer placeholder must share AppKit's text-container inset so the caret stays before the first glyph"
 )
 expectTrue(
+    !InsightQuestionTextSynchronization.shouldApplyBindingText(
+        editorHasMarkedText: true,
+        editorText: "ni",
+        bindingText: ""
+    ),
+    "Live transcript refreshes must not replace in-progress input-method composition text"
+)
+expectTrue(
+    InsightQuestionTextSynchronization.shouldApplyBindingText(
+        editorHasMarkedText: false,
+        editorText: "old",
+        bindingText: "new"
+    ),
+    "The question editor must still accept external binding updates after composition finishes"
+)
+expectTrue(
+    !InsightQuestionTextSynchronization.shouldApplyBindingText(
+        editorHasMarkedText: false,
+        editorText: "same",
+        bindingText: "same"
+    ),
+    "Matching question text must not reset the native editor selection"
+)
+expectTrue(
+    !InsightQuestionPlaceholderPresentation.shouldShow(
+        questionText: "",
+        editorFocused: true
+    ),
+    "The placeholder must hide while an input method is composing text in the focused editor"
+)
+expectTrue(
+    InsightQuestionPlaceholderPresentation.shouldShow(
+        questionText: "",
+        editorFocused: false
+    ),
+    "The placeholder must remain visible for an empty unfocused editor"
+)
+expectTrue(
+    insightSource.contains("InsightQuestionEditor(")
+        && insightSource.contains("editorHasMarkedText: textView.hasMarkedText()")
+        && insightSource.contains("func textDidBeginEditing(_ notification: Notification)")
+        && !insightSource.contains("TextEditor(text: questionBinding)"),
+    "The composer must use the marked-text-aware native editor and track focus for its placeholder"
+)
+expectTrue(
     insightSource.contains(".background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)"),
     "Agent-overlay composer must inherit the stable workspace surface instead of drawing an opaque rectangle"
 )
