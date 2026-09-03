@@ -221,10 +221,10 @@ public struct ArcoMainShellView: View {
     private var captureCard: some View {
         let capture = controller.store.capture
         let recording = capture.phase == .recording
+        let stoppable = capture.phase == .starting || recording
         let busy = controller.store.loading
-            || capture.phase == .starting
             || capture.phase == .stopping
-        let showAction = controller.page != .current || recording
+        let showAction = controller.page != .current || stoppable
         let mode = captureMode
         return VStack(spacing: 10) {
             HStack(spacing: 8) {
@@ -242,7 +242,7 @@ public struct ArcoMainShellView: View {
                 Spacer(minLength: 0)
             }
             if showAction {
-                sidebarCaptureButton(recording: recording, enabled: !busy)
+                sidebarCaptureButton(recording: stoppable, enabled: !busy)
             }
         }
         .padding(12)
@@ -614,7 +614,7 @@ public struct ArcoMainShellView: View {
         if controller.store.loading { return translate("common.loading", [:]) }
         return switch controller.store.capture.phase {
         case .recording: translate("capture.stop", [:])
-        case .starting: translate("common.starting", [:])
+        case .starting: translate("common.cancel", [:])
         case .stopping: translate("common.stopping", [:])
         case .idle, .error: translate(controller.page == .review ? "capture.continue" : "capture.start", [:])
         }

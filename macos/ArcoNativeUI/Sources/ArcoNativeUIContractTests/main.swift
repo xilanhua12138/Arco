@@ -385,7 +385,7 @@ private func testNavigationAndCaptureInvariants() {
 
     expect(CapturePhase.idle.optimisticToggle, .starting, "Idle capture starts")
     expect(CapturePhase.recording.optimisticToggle, .stopping, "Recording capture stops")
-    expect(CapturePhase.starting.optimisticToggle, nil, "Starting ignores duplicate toggle")
+    expect(CapturePhase.starting.optimisticToggle, .stopping, "Starting can be cancelled")
     expect(CapturePhase.stopping.optimisticToggle, nil, "Stopping ignores duplicate toggle")
 }
 
@@ -1046,6 +1046,83 @@ private func testCaptureOptimismSurfacesAndGenerationOrder() async {
         "Periodic and final titles explicitly replace generated output while summaries remain one-shot"
     )
     expect(store.completedMeetingId, "live", "Stopped meeting remains selected for review")
+    store.dispose()
+}
+
+@MainActor
+private func testCaptureStartingCanBeCancelledWithoutWaitingForProviderHandshake() async {
+    let backend = ScriptedBackend()
+    let surfaces = TestCaptureSurfaces()
+    backend.respond(
+        "start_capture",
+        with: capture(phase: .starting, meetingId: nil, mode: .both)
+    )
+    backend.respond(
+        "stop_capture",
+        with: capture(phase: .stopping, meetingId: nil, mode: .both)
+    )
+    let store = ArcoStore(backend: backend, captureSurfaces: surfaces)
+
+    let starting = await store.toggleCapture(mode: .both, transcription: .default)
+    expect(starting?.phase, .starting, "Provider startup returns its transitional state immediately")
+    expect(store.capture.phase, .starting, "The optimistic HUD stays visible while the provider connects")
+    expect(backend.callNames(), ["start_capture"], "Startup does not refresh meetings before a meeting exists")
+
+    let stopping = await store.toggleCapture(mode: .both, transcription: .default)
+    expect(stopping?.phase, .stopping, "A second click cancels provider startup")
+    expect(store.capture.phase, .stopping, "Cancellation is visible without waiting for provider teardown")
+    expect(
+        backend.callNames(),
+        ["start_capture", "stop_capture"],
+        "Startup cancellation reaches the recorder instead of being ignored"
+    )
+    expect(surfaces.releaseCount, 1, "Cancelling startup closes the recording HUD immediately")
+
+    backend.respond("capture_status", with: capture(phase: .idle))
+    backend.respond("list_meetings", with: [MeetingSummary]())
+    try? backend.emit("arco:capture-changed", payload: capture(phase: .idle))
+    let cancellationCompleted = await eventually { store.capture.phase == .idle }
+    expectTrue(cancellationCompleted, "The background completion event settles cancellation to idle")
+    expect(
+        backend.callNames(),
+        ["start_capture", "stop_capture", "capture_status", "list_meetings"],
+        "Meeting data refreshes once, after background cleanup reaches a stable state"
+    )
+    store.dispose()
+}
+
+@MainActor
+private func testLateStartResponseCannotUndoANewerCancellation() async {
+    let backend = ScriptedBackend()
+    let surfaces = TestCaptureSurfaces()
+    backend.on("start_capture") { _ in
+        try await Task.sleep(for: .milliseconds(120))
+        return try JSONEncoder().encode(capture(phase: .starting, mode: .both))
+    }
+    backend.on("stop_capture") { _ in
+        try await Task.sleep(for: .milliseconds(5))
+        return try JSONEncoder().encode(capture(phase: .idle))
+    }
+    backend.respond("list_meetings", with: [MeetingSummary]())
+    let store = ArcoStore(backend: backend, captureSurfaces: surfaces)
+
+    let start = Task { @MainActor in
+        await store.toggleCapture(mode: .both, transcription: .default)
+    }
+    try? await Task.sleep(for: .milliseconds(10))
+    let stop = Task { @MainActor in
+        await store.toggleCapture(mode: .both, transcription: .default)
+    }
+    _ = await stop.value
+    _ = await start.value
+
+    expect(store.capture.phase, .idle, "A late start response cannot resurrect cancelled capture")
+    expect(
+        backend.callNames(),
+        ["start_capture", "stop_capture", "list_meetings"],
+        "Cancellation remains the newest capture command while the old start finishes"
+    )
+    expect(surfaces.releaseCount, 1, "The cancelled optimistic HUD remains closed")
     store.dispose()
 }
 
@@ -2035,6 +2112,8 @@ testMeetingStatisticsContracts()
 testMeetingTitleRefreshPolicyUsesFiveMinuteWindows()
 await testSelectionAndNotesRejectStaleRequests()
 await testCaptureOptimismSurfacesAndGenerationOrder()
+await testCaptureStartingCanBeCancelledWithoutWaitingForProviderHandshake()
+await testLateStartResponseCannotUndoANewerCancellation()
 await testHUDFailurePreventsCaptureStart()
 await testProviderStartFailureReleasesOptimisticHUD()
 await testCaptureStartCannotRaceInitialSnapshot()

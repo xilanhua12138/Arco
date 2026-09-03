@@ -62,6 +62,9 @@ private final class NativeApplicationBridge {
     weak var shellController: ArcoAppShellController?
     weak var shortcutController: GlobalShortcutController?
     weak var localization: ArcoLocalization?
+    weak var windowCoordinator: WindowCoordinator?
+    weak var meetingAwarenessController: MeetingAwarenessController?
+    weak var menuBarController: MenuBarController?
 
     private var shortcutBeforeRecording: ListeningShortcut?
     private var recordingShortcut = false
@@ -77,6 +80,7 @@ private final class NativeApplicationBridge {
             try shortcutController.replace(with: shortcut)
             shortcutBeforeRecording = nil
             recordingShortcut = false
+            menuBarController?.updateShortcut(shortcut)
             return true
         } catch {
             shellController?.presentShortcutError(error.localizedDescription)
@@ -110,6 +114,43 @@ private final class NativeApplicationBridge {
 
     func setLocale(_ locale: AppLocale) {
         localization?.setLocale(locale)
+        menuBarController?.refresh()
+    }
+
+    func showArco() {
+        do { try windowCoordinator?.focusMainWindow() }
+        catch { shellController?.presentInterfaceError(error.localizedDescription) }
+    }
+
+    func toggleCaptureFromMenuBar() async {
+        await shellController?.toggleCapture()
+    }
+
+    func startDetectedMeetingCapture() async -> Bool {
+        guard let shellController,
+              shellController.store.capture.phase == .idle
+                || shellController.store.capture.phase == .error else {
+            return false
+        }
+        await shellController.toggleCapture()
+        let started = shellController.store.capture.phase == .starting
+            || shellController.store.capture.phase == .recording
+        if started {
+            meetingAwarenessController?.registerPromptRecordingStarted()
+        }
+        return started
+    }
+
+    func dismissDetectedMeetingPrompt() {
+        meetingAwarenessController?.dismissCurrentPrompt()
+    }
+
+    func requestMeetingAccess() {
+        meetingAwarenessController?.requestAuthorization()
+    }
+
+    func resumeMeetingPrompts() {
+        meetingAwarenessController?.resumeAutomaticPrompts()
     }
 
     func relaunch() async {
@@ -138,6 +179,8 @@ private final class NativeApplicationRuntime {
     private let shortcutController: GlobalShortcutController
     private let recordingHUDModel: RecordingHUDModel
     private let agentOverlayModel: AgentOverlayModel
+    private let meetingAwarenessController: MeetingAwarenessController
+    private let menuBarController: MenuBarController
     private var migrationError: String?
 
     init() throws {
@@ -176,7 +219,9 @@ private final class NativeApplicationRuntime {
                 await bridge?.cancelShortcutRecording()
             },
             localeChanged: { [weak bridge] locale in bridge?.setLocale(locale) },
-            relaunch: { [weak bridge] in await bridge?.relaunch() }
+            relaunch: { [weak bridge] in await bridge?.relaunch() },
+            requestMeetingAccess: { [weak bridge] in bridge?.requestMeetingAccess() },
+            resumeMeetingPrompts: { [weak bridge] in bridge?.resumeMeetingPrompts() }
         )
         let shellController = ArcoAppShellController(
             store: store,
@@ -189,13 +234,30 @@ private final class NativeApplicationRuntime {
             bridge?.handleGlobalShortcut()
         }
         bridge.shortcutController = shortcutController
+        bridge.windowCoordinator = windowCoordinator
+
+        let meetingAwarenessController = MeetingAwarenessController(
+            preferences: preferences,
+            windowCoordinator: windowCoordinator
+        )
+        bridge.meetingAwarenessController = meetingAwarenessController
+
+        let menuBarController = MenuBarController(
+            translate: translate,
+            shortcut: preferences.loadListeningShortcut(),
+            onOpenArco: { [weak bridge] in bridge?.showArco() },
+            onToggleCapture: { [weak bridge] in
+                await bridge?.toggleCaptureFromMenuBar()
+            }
+        )
+        bridge.menuBarController = menuBarController
 
         let recordingHUDModel = RecordingHUDModel(
             readCapture: {
                 try await backend.call("capture_status")
             },
             stopCapture: {
-                guard store.capture.phase == .recording else {
+                guard store.capture.phase == .starting || store.capture.phase == .recording else {
                     throw BackendTransportError.backend("No capture is running")
                 }
                 guard let state = await store.toggleCapture() else {
@@ -281,6 +343,8 @@ private final class NativeApplicationRuntime {
         self.shortcutController = shortcutController
         self.recordingHUDModel = recordingHUDModel
         self.agentOverlayModel = agentOverlayModel
+        self.meetingAwarenessController = meetingAwarenessController
+        self.menuBarController = menuBarController
 
         windowCoordinator.canShowAgent = { [weak store] in
             store?.capture.phase == .recording && store?.capture.activeMeetingId != nil
@@ -295,8 +359,21 @@ private final class NativeApplicationRuntime {
         windowCoordinator.onAgentFocused = { [weak agentOverlayModel] in
             Task { @MainActor in await agentOverlayModel?.refresh() }
         }
+        windowCoordinator.onMainWindowHidden = { [weak shellController] in
+            shellController?.enterMenuBarMode()
+        }
         windowCoordinator.onSurfaceError = { [weak shellController] error in
             shellController?.presentInterfaceError(error.localizedDescription)
+        }
+        meetingAwarenessController.onStateChanged = { [weak shellController] authorized, enabled in
+            shellController?.updateMeetingAwareness(
+                authorized: authorized,
+                automaticPromptsEnabled: enabled
+            )
+        }
+        store.onCaptureStateChanged = { [weak menuBarController, weak meetingAwarenessController] state in
+            menuBarController?.updateCapture(state.phase)
+            meetingAwarenessController?.updateCapturePhase(state.phase)
         }
         windowCoordinator.install(WindowContentFactories(
             main: { [weak shellController] in
@@ -333,11 +410,27 @@ private final class NativeApplicationRuntime {
                     translate: translate,
                     actions: actions
                 ))
+            },
+            meetingPrompt: { [weak bridge] meeting in
+                guard let bridge else {
+                    throw WindowCoordinatorError.contentNotInstalled("meeting prompt")
+                }
+                return AnyView(MeetingPromptView(
+                    meeting: meeting,
+                    translate: translate,
+                    onStart: { [weak bridge] in
+                        await bridge?.startDetectedMeetingCapture() ?? false
+                    },
+                    onDismiss: { [weak bridge] in
+                        bridge?.dismissDetectedMeetingPrompt()
+                    }
+                ))
             }
         ))
     }
 
     func start() throws {
+        menuBarController.start()
         do {
             try shortcutController.register(preferences.loadListeningShortcut())
         } catch {
@@ -347,10 +440,14 @@ private final class NativeApplicationRuntime {
             shellController.presentInterfaceError(migrationError)
         }
         _ = try windowCoordinator.showMainWindow()
+        meetingAwarenessController.start()
     }
 
     func shutdown() {
+        meetingAwarenessController.stop()
+        menuBarController.stop()
         store.dispose()
+        windowCoordinator.hideMeetingPrompt()
         windowCoordinator.releaseCaptureSurfaces()
         try? shortcutController.unregister()
         backend.shutdown()

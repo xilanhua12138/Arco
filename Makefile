@@ -20,7 +20,8 @@ test:
 		ArcoOverlaySourceParityContractTests \
 		ArcoWindowChromeContractTests \
 		ArcoPreferencesContractTests \
-		ArcoLocalizationContractTests; do \
+		ArcoLocalizationContractTests \
+		ArcoMeetingAwarenessContractTests; do \
 		swift run --package-path macos/ArcoNativeUI "$$product"; \
 	done
 	./native/build-recorder.sh

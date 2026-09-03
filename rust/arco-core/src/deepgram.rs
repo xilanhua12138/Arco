@@ -23,6 +23,9 @@ const READ_CHUNK_BYTES: usize = 6_400;
 const DEFAULT_BUFFER_SECONDS: usize = 60;
 const SPEAKER_TIMELINE_WAIT: Duration = Duration::from_millis(1_500);
 const MAX_STREAM_RETRIES: usize = 3;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const LIVE_AUDIO_SEND_TIMEOUT: Duration = Duration::from_secs(3);
+const REMOTE_FINALIZATION_GRACE: Duration = Duration::from_secs(4);
 
 // UNVERIFIED BY LIVEKIT DOCS MCP (not configured): the parity contract below
 // was checked against the official livekit/agents Deepgram plugin and STT
@@ -87,6 +90,10 @@ where
     S: Sink<Message> + Unpin,
 {
     sink.send(Message::Binary(chunk.data.clone().into())).await
+}
+
+fn shutdown_messages() -> [Message; 1] {
+    [Message::Text(r#"{"type":"CloseStream"}"#.into())]
 }
 
 fn buffered_audio_seconds(receiver: &mpsc::Receiver<AudioChunk>) -> f64 {
@@ -745,8 +752,14 @@ async fn stream_connection(
         HeaderValue::from_str(&format!("Token {api_key}"))
             .map_err(|_| "invalid Deepgram credential header".to_string())?,
     );
-    let (socket, _) = connect_async(request)
+    let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
+        .map_err(|_| {
+            format!(
+                "Deepgram connection timed out after {:.0} seconds",
+                CONNECT_TIMEOUT.as_secs_f64()
+            )
+        })?
         .map_err(|error| format!("Deepgram connection failed: {error}"))?;
     signal_ready()?;
     let (mut sink, mut stream) = socket.split();
@@ -761,7 +774,7 @@ async fn stream_connection(
     let mut connection_origin: Option<f64> = None;
     let mut catchup_reported = connection_id == 1 || catchup_buffered_seconds == 0.0;
     let mut closing = false;
-    let close_deadline = tokio::time::sleep(Duration::from_secs(8));
+    let close_deadline = tokio::time::sleep(REMOTE_FINALIZATION_GRACE);
     tokio::pin!(close_deadline);
     loop {
         tokio::select! {
@@ -772,8 +785,20 @@ async fn stream_connection(
                 match chunk {
                     Some(chunk) => {
                         connection_origin.get_or_insert(chunk.start_frame as f64 / SAMPLE_RATE as f64);
-                        if let Err(error) = send_queued_audio_chunk(&mut sink, &chunk).await {
-                            return Err(format!("Deepgram audio send failed: {error}"));
+                        match tokio::time::timeout(
+                            LIVE_AUDIO_SEND_TIMEOUT,
+                            send_queued_audio_chunk(&mut sink, &chunk),
+                        ).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                return Err(format!("Deepgram audio send failed: {error}"));
+                            }
+                            Err(_) => {
+                                return Err(format!(
+                                    "Deepgram audio send timed out after {:.0} seconds",
+                                    LIVE_AUDIO_SEND_TIMEOUT.as_secs_f64()
+                                ));
+                            }
                         }
                         if !catchup_reported && receiver.is_empty() {
                             eprintln!(
@@ -785,7 +810,15 @@ async fn stream_connection(
                     }
                     None => {
                         closing = true;
-                        sink.send(Message::Text(r#"{"type":"CloseStream"}"#.into())).await.map_err(|error| format!("Deepgram close failed: {error}"))?;
+                        for message in shutdown_messages() {
+                            tokio::time::timeout(
+                                LIVE_AUDIO_SEND_TIMEOUT,
+                                sink.send(message),
+                            )
+                            .await
+                            .map_err(|_| "Deepgram finalization request timed out".to_string())?
+                            .map_err(|error| format!("Deepgram close failed: {error}"))?;
+                        }
                     }
                 }
             }
@@ -1003,6 +1036,21 @@ mod tests {
         ] {
             assert!(url.contains(expected), "missing {expected} from {url}");
         }
+    }
+
+    #[test]
+    fn close_stream_flushes_pending_audio_without_a_duplicate_finalize_round_trip() {
+        let messages = shutdown_messages();
+        assert_eq!(
+            messages.len(),
+            1,
+            "CloseStream already flushes cached audio; Finalize first adds a duplicate finalization round trip"
+        );
+        assert_eq!(
+            messages[0],
+            Message::Text(r#"{"type":"CloseStream"}"#.into()),
+            "Deepgram must ask the server to process cached audio and close gracefully"
+        );
     }
 
     #[test]

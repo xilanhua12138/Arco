@@ -29,6 +29,7 @@ let package = Package(
         .executable(name: "ArcoPreferencesContractTests", targets: ["ArcoPreferencesContractTests"]),
         .executable(name: "ArcoLocalizationContractTests", targets: ["ArcoLocalizationContractTests"]),
         .executable(name: "ArcoAppleDesignContractTests", targets: ["ArcoAppleDesignContractTests"]),
+        .executable(name: "ArcoMeetingAwarenessContractTests", targets: ["ArcoMeetingAwarenessContractTests"]),
     ],
     targets: [
         .target(
@@ -51,5 +52,6 @@ let package = Package(
         .executableTarget(name: "ArcoPreferencesContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoLocalizationContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoAppleDesignContractTests", dependencies: ["ArcoNativeUI"]),
+        .executableTarget(name: "ArcoMeetingAwarenessContractTests", dependencies: ["ArcoNativeUI"]),
     ]
 )

@@ -20,6 +20,8 @@ public struct ArcoAppEnvironment {
     public var cancelListeningShortcutRecording: () async -> Void
     public var localeChanged: (_ locale: AppLocale) -> Void
     public var relaunch: () async -> Void
+    public var requestMeetingAccess: () -> Void
+    public var resumeMeetingPrompts: () -> Void
 
     public init(
         chooseDirectory: @escaping (_ title: String) async -> String? = ArcoAppEnvironment.nativeDirectoryPicker,
@@ -34,7 +36,9 @@ public struct ArcoAppEnvironment {
         startListeningShortcutRecording: @escaping () async -> Bool = { true },
         cancelListeningShortcutRecording: @escaping () async -> Void = {},
         localeChanged: @escaping (_ locale: AppLocale) -> Void = { _ in },
-        relaunch: @escaping () async -> Void = {}
+        relaunch: @escaping () async -> Void = {},
+        requestMeetingAccess: @escaping () -> Void = {},
+        resumeMeetingPrompts: @escaping () -> Void = {}
     ) {
         self.chooseDirectory = chooseDirectory
         self.chooseWorkspace = chooseWorkspace
@@ -49,6 +53,8 @@ public struct ArcoAppEnvironment {
         self.cancelListeningShortcutRecording = cancelListeningShortcutRecording
         self.localeChanged = localeChanged
         self.relaunch = relaunch
+        self.requestMeetingAccess = requestMeetingAccess
+        self.resumeMeetingPrompts = resumeMeetingPrompts
     }
 
     public static func nativeDirectoryPicker(_ title: String) async -> String? {
@@ -118,6 +124,8 @@ public final class ArcoAppShellController: ObservableObject {
     @Published public private(set) var shortcutTestCount = 0
     @Published public private(set) var interfaceError: String?
     @Published public private(set) var shortcutError: String?
+    @Published public private(set) var meetingAccessAuthorized = false
+    @Published public private(set) var automaticMeetingPromptsEnabled: Bool
 
     public let store: ArcoStore
     public let preferences: ArcoPreferences
@@ -178,6 +186,9 @@ public final class ArcoAppShellController: ObservableObject {
         generationSettings = preferences.loadGenerationSettings()
         transcriptionConfiguration = preferences.loadTranscriptionConfiguration()
         listeningShortcut = preferences.loadListeningShortcut()
+        automaticMeetingPromptsEnabled = preferences
+            .loadMeetingPromptPreference()
+            .automaticPromptsEnabled
         locale = preferences.loadLocale()
         agentWorkspace = preferences.loadAgentWorkspace()
         let onboarding = preferences.loadOnboardingState()
@@ -325,7 +336,7 @@ public final class ArcoAppShellController: ObservableObject {
 
     public func toggleCapture(resumeMeetingID: String? = nil) async {
         guard !store.loading else { return }
-        guard store.capture.phase != .starting, store.capture.phase != .stopping else { return }
+        guard store.capture.phase != .stopping else { return }
         if store.capture.phase == .recording, page == .current {
             topBarViewModelStorage = nil
         }
@@ -334,7 +345,9 @@ public final class ArcoAppShellController: ObservableObject {
             transcription: transcriptionConfiguration,
             resumeMeetingId: resumeMeetingID
         )
-        if next?.phase == .recording { transition(to: .current) }
+        if next?.phase == .starting || next?.phase == .recording {
+            transition(to: .current)
+        }
     }
 
     public func captureCompletedMeetingChanged() {
@@ -378,6 +391,33 @@ public final class ArcoAppShellController: ObservableObject {
 
     public func closeSettingsWithoutRestoringFocus() {
         dismissSettings()
+    }
+
+    public func enterMenuBarMode() {
+        meetingSearchTask?.cancel()
+        meetingSearchTask = nil
+        notesSearchTask?.cancel()
+        notesSearchTask = nil
+        notesLoadTask?.cancel()
+        notesLoadTask = nil
+        pendingNotesQuery = nil
+        notesViewModelStorage?.teardown()
+        notesViewModelStorage = nil
+        topBarViewModelStorage = nil
+        settingsViewModelStorage = nil
+        providerViewModelStorage = nil
+        onboardingViewModelStorage = nil
+        settingsOpen = false
+        store.releaseIdlePresentationCache()
+    }
+
+    public func updateMeetingAwareness(
+        authorized: Bool,
+        automaticPromptsEnabled: Bool
+    ) {
+        meetingAccessAuthorized = authorized
+        automaticMeetingPromptsEnabled = automaticPromptsEnabled
+        updateSettingsViewModel()
     }
 
     public func openProviderSetup() {
@@ -655,6 +695,8 @@ public final class ArcoAppShellController: ObservableObject {
             providerConfiguration: providerConfiguration,
             generationSettings: generationSettings,
             shortcutError: shortcutError,
+            meetingAccessAuthorized: meetingAccessAuthorized,
+            automaticMeetingPromptsEnabled: automaticMeetingPromptsEnabled,
             transcriptStorage: store.storageSettings,
             transcriptStorageChanging: store.storageChanging,
             notesStorage: store.notesStorageSettings,
@@ -688,7 +730,9 @@ public final class ArcoAppShellController: ObservableObject {
             onChooseNotesDirectory: { [weak self] in await self?.chooseNotesDirectory() ?? false },
             onResetNotesDirectory: { [weak self] in await self?.store.setNotesDirectory(nil, query: self?.notesQuery ?? "") ?? false },
             onCheckForUpdates: { [weak self] in Task { await self?.checkForUpdates() } },
-            onInstallUpdate: { [weak self] in Task { await self?.installUpdate() } }
+            onInstallUpdate: { [weak self] in Task { await self?.installUpdate() } },
+            onRequestMeetingAccess: { [environment] in environment.requestMeetingAccess() },
+            onResumeMeetingPrompts: { [environment] in environment.resumeMeetingPrompts() }
         )
     }
 

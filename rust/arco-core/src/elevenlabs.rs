@@ -30,6 +30,7 @@ const MAX_REPLAY_RATE_NUMERATOR: u128 = 5;
 const MAX_REPLAY_RATE_DENOMINATOR: u128 = 4;
 const MAX_PREVIOUS_TEXT_CHARS: usize = 50;
 const FATAL_ERROR_PREFIX: &str = "ARCO_ELEVENLABS_FATAL:";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -515,8 +516,14 @@ async fn connect_socket(
         HeaderValue::from_str(api_key)
             .map_err(|_| "invalid ElevenLabs credential header".to_string())?,
     );
-    connect_async(request)
+    tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
+        .map_err(|_| {
+            format!(
+                "ElevenLabs connection timed out after {:.0} seconds",
+                CONNECT_TIMEOUT.as_secs_f64()
+            )
+        })?
         .map(|(socket, _)| socket)
         .map_err(|error| format!("ElevenLabs connection failed: {error}"))
 }

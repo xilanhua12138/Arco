@@ -24,7 +24,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, name: &str, payload: Value);
@@ -37,10 +38,40 @@ impl EventSink for NoopEventSink {
     fn emit(&self, _name: &str, _payload: Value) {}
 }
 
+#[derive(Default)]
+struct CaptureCommandCoordinator {
+    generation: AtomicU64,
+    commit: Mutex<()>,
+}
+
+impl CaptureCommandCoordinator {
+    fn begin_start(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn commit_start(&self, generation: u64) -> Result<Option<MutexGuard<'_, ()>>, String> {
+        let guard = self
+            .commit
+            .lock()
+            .map_err(|_| "capture command coordinator is unavailable".to_string())?;
+        Ok((self.generation.load(Ordering::Acquire) == generation).then_some(guard))
+    }
+
+    fn begin_stop(&self) -> Result<MutexGuard<'_, ()>, String> {
+        let guard = self
+            .commit
+            .lock()
+            .map_err(|_| "capture command coordinator is unavailable".to_string())?;
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        Ok(guard)
+    }
+}
+
 pub struct Controller {
     meetings: MeetingStore,
-    meeting_state: MeetingStateStore,
-    capture: CaptureManager,
+    meeting_state: Arc<MeetingStateStore>,
+    capture: Arc<CaptureManager>,
+    capture_commands: CaptureCommandCoordinator,
     audio_setup: AudioSetupTester,
     transcription: LocalTranscriptionRuntime,
     agent: AgentRunner,
@@ -65,7 +96,7 @@ impl Controller {
         let meetings =
             MeetingStore::new(paths.transcripts.clone(), paths.legacy_transcripts.clone());
         meetings.set_roots(storage.meeting_roots())?;
-        let capture = CaptureManager::new(CaptureConfig::discover(&paths));
+        let capture = Arc::new(CaptureManager::new(CaptureConfig::discover(&paths)));
         let audio_setup = AudioSetupTester::discover(&paths);
         capture.set_transcript_root(storage.active_root())?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -74,8 +105,9 @@ impl Controller {
             .map_err(|error| format!("could not start the Arco backend runtime: {error}"))?;
         Ok(Self {
             meetings,
-            meeting_state: MeetingStateStore::new(paths.app_data.join("meeting-state")),
+            meeting_state: Arc::new(MeetingStateStore::new(paths.app_data.join("meeting-state"))),
             capture,
+            capture_commands: CaptureCommandCoordinator::default(),
             audio_setup,
             transcription: LocalTranscriptionRuntime::discover(&paths),
             agent: AgentRunner::new(agent_workspace),
@@ -517,6 +549,7 @@ impl Controller {
         transcription: Option<TranscriptionConfig>,
         meeting_id: Option<String>,
     ) -> Result<crate::models::CaptureState, String> {
+        let capture_generation = self.capture_commands.begin_start();
         let _storage_guard = self
             .storage_change_lock
             .lock()
@@ -556,32 +589,46 @@ impl Controller {
             None
         };
         let resumed_meeting_id = resume.as_ref().map(|target| target.meeting_id.clone());
-        let capture = if let Some(resume) = resume {
-            self.capture.resume_with_transcription_and_secrets(
-                &mode,
-                transcription,
-                secrets,
-                resume,
-            )?
-        } else {
-            self.capture
-                .start_with_transcription_and_secrets(&mode, transcription, secrets)?
+        let Some(_command_guard) = self.capture_commands.commit_start(capture_generation)? else {
+            return Ok(crate::models::CaptureState::idle(Some(
+                "Capture cancelled".into(),
+            )));
         };
-        if let Some(meeting_id) = resumed_meeting_id.as_deref() {
-            if let Err(error) = self.meeting_state.invalidate_generated_summary(meeting_id) {
-                log::warn!(
-                    "Arco continued meeting {meeting_id} but could not invalidate its old summary: {error}"
+        let events = self.events.clone();
+        let meeting_state = self.meeting_state.clone();
+        self.capture.start_in_background(
+            &mode,
+            transcription,
+            secrets,
+            resume,
+            move |capture| {
+                if capture.phase == "recording" {
+                    if let Some(meeting_id) = resumed_meeting_id.as_deref() {
+                        if let Err(error) = meeting_state.invalidate_generated_summary(meeting_id)
+                        {
+                            log::warn!(
+                                "Arco continued meeting {meeting_id} but could not invalidate its old summary: {error}"
+                            );
+                        }
+                    }
+                }
+                events.emit(
+                    "arco:capture-changed",
+                    serde_json::to_value(capture).unwrap_or(Value::Null),
                 );
-            }
-        }
-        self.emit("arco:capture-changed", &capture);
-        Ok(capture)
+            },
+        )
     }
 
     fn stop_capture(&self) -> Result<crate::models::CaptureState, String> {
-        let result = self.capture.stop();
-        self.emit("arco:capture-changed", self.capture.status());
-        result
+        let _command_guard = self.capture_commands.begin_stop()?;
+        let events = self.events.clone();
+        self.capture.stop_in_background(move |capture| {
+            events.emit(
+                "arco:capture-changed",
+                serde_json::to_value(capture).unwrap_or(Value::Null),
+            );
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -756,4 +803,31 @@ fn optional<T: DeserializeOwned>(params: &Value, key: &str) -> Result<Option<T>,
     serde_json::from_value(value.clone())
         .map(Some)
         .map_err(|error| format!("invalid backend argument {key}: {error}"))
+}
+
+#[cfg(test)]
+mod capture_command_tests {
+    use super::CaptureCommandCoordinator;
+
+    #[test]
+    fn stop_invalidates_a_start_that_has_not_committed_to_the_capture_manager() {
+        let commands = CaptureCommandCoordinator::default();
+        let start = commands.begin_start();
+        drop(commands.begin_stop().unwrap());
+
+        assert!(
+            commands.commit_start(start).unwrap().is_none(),
+            "a slow credential read must not resurrect capture after a newer stop command"
+        );
+    }
+
+    #[test]
+    fn latest_start_can_commit_exactly_once_before_provider_setup() {
+        let commands = CaptureCommandCoordinator::default();
+        let stale = commands.begin_start();
+        let latest = commands.begin_start();
+
+        assert!(commands.commit_start(stale).unwrap().is_none());
+        assert!(commands.commit_start(latest).unwrap().is_some());
+    }
 }
