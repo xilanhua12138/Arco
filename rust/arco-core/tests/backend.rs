@@ -21,7 +21,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -2326,20 +2326,19 @@ fn process_group_termination_kills_descendants_of_a_cli_wrapper() {
     configure_process_group(&mut command).unwrap();
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !pid_file.is_file() && Instant::now() < deadline {
+    let pid = loop {
+        if let Ok(contents) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = contents.trim().parse::<i32>() {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "wrapper did not publish a complete descendant pid before the test deadline"
+        );
         std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        pid_file.is_file(),
-        "wrapper did not publish its descendant pid before the test deadline"
-    );
+    };
     terminate_process_tree(&mut child, Duration::from_millis(100)).unwrap();
-
-    let pid = fs::read_to_string(pid_file)
-        .unwrap()
-        .trim()
-        .parse::<i32>()
-        .unwrap();
     let reap_deadline = Instant::now() + Duration::from_secs(1);
     let exists = loop {
         let exists = unsafe { libc::kill(pid, 0) } == 0;
@@ -2816,6 +2815,249 @@ fn capture_manager_owns_pipeline_and_transitions_recording_to_idle() {
 
 #[cfg(unix)]
 #[test]
+fn capture_background_start_returns_starting_before_online_provider_is_ready() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nsleep 0.35\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let (completed_tx, completed_rx) = mpsc::channel();
+
+    let started_at = Instant::now();
+    let starting = manager
+        .start_in_background(
+            "both",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            None,
+            move |state| completed_tx.send(state).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(starting.phase, "starting");
+    assert!(
+        started_at.elapsed() < Duration::from_millis(100),
+        "the capture command must not wait for the provider handshake"
+    );
+    assert_eq!(manager.status().phase, "starting");
+    let recording = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(recording.phase, "recording");
+    assert!(recording.active_meeting_id.is_some());
+    assert_eq!(manager.stop().unwrap().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_can_be_cancelled_while_online_provider_is_starting() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nsleep 1\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let starting = manager
+        .start_in_background(
+            "both",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            None,
+            move |state| completed_tx.send(state).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(starting.phase, "starting");
+
+    let stopped_at = Instant::now();
+    let stopping = manager
+        .stop_in_background(|_| panic!("startup cancellation uses the startup completion"))
+        .unwrap();
+
+    assert_eq!(stopping.phase, "stopping");
+    assert!(
+        stopped_at.elapsed() < Duration::from_millis(100),
+        "cancelling startup must return before provider teardown"
+    );
+    let idle = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(idle.phase, "idle");
+    assert_eq!(idle.active_meeting_id, None);
+    assert_eq!(manager.status().phase, "idle");
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_background_start_reports_pre_ready_provider_exit_as_error() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(&root, "#!/bin/sh\nexit 47\n");
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let (completed_tx, completed_rx) = mpsc::channel();
+
+    let starting = manager
+        .start_in_background(
+            "system",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            None,
+            move |state| completed_tx.send(state).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(starting.phase, "starting");
+    let failed = completed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(failed.phase, "error");
+    let error = failed.error.as_deref().expect("provider exit detail");
+    assert!(
+        error.contains("transcriber exited before readiness"),
+        "{error}"
+    );
+    assert!(error.contains("47"), "{error}");
+    assert_eq!(manager.status(), failed);
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_background_start_rejects_invalid_mode_without_launching_callback() {
+    let root = TempDir::new().unwrap();
+    let manager = Arc::new(CaptureManager::new(fake_capture_config(
+        &root,
+        "#!/bin/sh\ncat >/dev/null\n",
+    )));
+    let (completed_tx, completed_rx) = mpsc::channel();
+
+    let error = manager
+        .start_in_background(
+            "desktop-and-secrets",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            None,
+            move |state| completed_tx.send(state).unwrap(),
+        )
+        .unwrap_err();
+
+    assert!(error.contains("unsupported capture mode"), "{error}");
+    assert_eq!(manager.status().phase, "idle");
+    assert_eq!(
+        completed_rx.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected),
+        "validation failure must drop the unused completion without invoking it"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_shutdown_cancels_background_start_before_returning() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nsleep 1\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let starting = manager
+        .start_in_background(
+            "mic",
+            TranscriptionConfig::default(),
+            CaptureSecrets::default(),
+            None,
+            move |state| completed_tx.send(state).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(starting.phase, "starting");
+
+    manager.shutdown();
+
+    assert_eq!(manager.status().phase, "idle");
+    assert_eq!(
+        completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .phase,
+        "idle"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_background_stop_returns_before_tail_audio_is_finalized() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\nsleep 0.35\nprintf '**[10:20:03] Remote 1:** final words\\n\\n' >> \"$1\"\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let recording = manager.start("both").unwrap();
+    let transcript = PathBuf::from(recording.transcript_path.unwrap());
+    let (completed_tx, completed_rx) = mpsc::channel();
+
+    let stopped_at = Instant::now();
+    let stopping = manager
+        .stop_in_background(move |state| completed_tx.send(state).unwrap())
+        .unwrap();
+
+    assert_eq!(stopping.phase, "stopping");
+    assert!(
+        stopped_at.elapsed() < Duration::from_millis(100),
+        "the stop command must not wait for remote finalization"
+    );
+    assert_eq!(manager.status().phase, "stopping");
+    let idle = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(idle.phase, "idle");
+    let saved = fs::read_to_string(transcript).unwrap();
+    assert!(
+        saved.contains("final words"),
+        "provider tail audio must be retained"
+    );
+    assert!(saved.contains("(stopped)"));
+    assert!(saved.contains("> Ended:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_background_stop_is_idempotent_and_shutdown_waits_for_finalization() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(
+        &root,
+        "#!/bin/sh\nprintf 'ready\\n' > \"$ARCO_READY_FILE\"\ncat >/dev/null\nsleep 0.2\nprintf '**[10:20:04] Remote 1:** shutdown tail\\n\\n' >> \"$1\"\n",
+    );
+    config.requires_ready_signal = true;
+    let manager = Arc::new(CaptureManager::new(config));
+    let recording = manager.start("both").unwrap();
+    let transcript = PathBuf::from(recording.transcript_path.unwrap());
+    let (completed_tx, completed_rx) = mpsc::channel();
+
+    let first = manager
+        .stop_in_background(move |state| completed_tx.send(state).unwrap())
+        .unwrap();
+    let duplicate = manager
+        .stop_in_background(|_| panic!("duplicate stop must not own another completion"))
+        .unwrap();
+
+    assert_eq!(first.phase, "stopping");
+    assert_eq!(
+        duplicate, first,
+        "duplicate stop must keep the same transition"
+    );
+    manager.shutdown();
+    assert_eq!(manager.status().phase, "idle");
+    assert_eq!(
+        completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .phase,
+        "idle"
+    );
+    let saved = fs::read_to_string(transcript).unwrap();
+    assert!(saved.contains("shutdown tail"));
+    assert!(saved.contains("(stopped)"));
+}
+
+#[cfg(unix)]
+#[test]
 fn capture_manager_continues_the_exact_historical_transcript_in_place() {
     let root = TempDir::new().unwrap();
     let transcript_dir = root.path().join("transcripts");
@@ -3005,8 +3247,11 @@ fn capture_surfaces_pre_ready_exit_instead_of_false_recording_state() {
     let manager = CaptureManager::new(config);
 
     let error = manager.start("system").unwrap_err();
-    assert!(error.contains("transcriber exited before readiness"));
-    assert!(error.contains("41"));
+    assert!(
+        error.contains("transcriber exited before readiness"),
+        "{error}"
+    );
+    assert!(error.contains("41"), "{error}");
     assert_eq!(manager.status().phase, "error");
 }
 

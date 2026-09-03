@@ -44,6 +44,7 @@ public enum ArcoPreferenceKey {
     public static let agentWorkspace = "arco.agentWorkspace"
     public static let agentTranscriptVisible = "arco.agentTranscriptVisible"
     public static let locale = "arco.locale"
+    public static let meetingPromptPreference = "arco.meetingPromptPreference.v1"
     public static let nativeMigrationMarker = "arco.nativePreferencesMigration.v1"
 
     public static let legacyImportKeys: Set<String> = [
@@ -57,6 +58,7 @@ public enum ArcoPreferenceKey {
         agentWorkspace,
         agentTranscriptVisible,
         locale,
+        meetingPromptPreference,
     ]
 }
 
@@ -120,6 +122,24 @@ public final class ArcoPreferences {
 
     public init(store: KeyValueStore = UserDefaultsKeyValueStore()) {
         self.store = store
+    }
+
+    public func loadMeetingPromptPreference() -> MeetingPromptPreferenceState {
+        guard let raw = store.string(forKey: ArcoPreferenceKey.meetingPromptPreference),
+              let data = raw.data(using: .utf8),
+              let preference = try? JSONDecoder().decode(
+                  MeetingPromptPreferenceState.self,
+                  from: data
+              ) else {
+            return MeetingPromptPreferenceState()
+        }
+        return preference
+    }
+
+    public func saveMeetingPromptPreference(_ preference: MeetingPromptPreferenceState) {
+        guard let data = try? JSONEncoder().encode(preference),
+              let raw = String(data: data, encoding: .utf8) else { return }
+        store.set(raw, forKey: ArcoPreferenceKey.meetingPromptPreference)
     }
 
     public func loadProviderConfiguration() -> ProviderConfiguration {

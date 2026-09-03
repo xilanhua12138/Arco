@@ -11,7 +11,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -19,6 +20,7 @@ use wait_timeout::ChildExt;
 const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(3);
 const TRANSCRIBER_FINALIZATION_GRACE: Duration = Duration::from_secs(6);
+const STARTUP_CANCELLED: &str = "capture startup cancelled";
 
 fn pipeline_layout(transcription: &TranscriptionConfig) -> Vec<&'static str> {
     match (
@@ -378,12 +380,15 @@ struct CaptureInner {
     state: CaptureState,
     children: Option<CaptureChildren>,
     transcript: Option<PathBuf>,
+    transition_in_progress: bool,
+    startup_cancel: Option<Arc<AtomicBool>>,
 }
 
 pub struct CaptureManager {
     config: CaptureConfig,
     destination: Mutex<MeetingRoot>,
     inner: Mutex<CaptureInner>,
+    transition_finished: Condvar,
 }
 
 impl CaptureManager {
@@ -399,7 +404,10 @@ impl CaptureManager {
                 state: CaptureState::idle(None::<String>),
                 children: None,
                 transcript: None,
+                transition_in_progress: false,
+                startup_cancel: None,
             }),
+            transition_finished: Condvar::new(),
         }
     }
 
@@ -468,6 +476,170 @@ impl CaptureManager {
         self.start_internal(mode, transcription, secrets, Some(resume))
     }
 
+    /// Starts recorder/provider setup off the caller's thread. The returned
+    /// `starting` state is deliberately immediate; `on_complete` receives the
+    /// first stable state (`recording`, `error`, or `idle` after cancellation).
+    pub fn start_in_background<F>(
+        self: &Arc<Self>,
+        mode: &str,
+        transcription: TranscriptionConfig,
+        secrets: CaptureSecrets,
+        resume: Option<CaptureResume>,
+        on_complete: F,
+    ) -> Result<CaptureState, String>
+    where
+        F: FnOnce(CaptureState) + Send + 'static,
+    {
+        validate_mode(mode)?;
+        transcription.validate()?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let starting = {
+            let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+            refresh_children(&mut inner);
+            if inner.children.is_some()
+                || inner.transition_in_progress
+                || matches!(
+                    inner.state.phase.as_str(),
+                    "starting" | "recording" | "stopping"
+                )
+            {
+                return Err("a capture session is already running".into());
+            }
+            inner.state = CaptureState {
+                phase: "starting".into(),
+                active_meeting_id: None,
+                started_at: None,
+                message: Some("Preparing native audio capture…".into()),
+                mode: Some(mode.into()),
+                transcript_path: None,
+                error: None,
+                transcription: Some(transcription.clone()),
+            };
+            inner.transition_in_progress = true;
+            inner.startup_cancel = Some(cancel.clone());
+            inner.state.clone()
+        };
+
+        let manager = Arc::clone(self);
+        let mode = mode.to_string();
+        std::thread::Builder::new()
+            .name("arco-capture-start".into())
+            .spawn(move || {
+                manager.finish_background_start(
+                    mode,
+                    transcription,
+                    secrets,
+                    resume,
+                    cancel,
+                    on_complete,
+                );
+            })
+            .map_err(|error| {
+                let message = format!("could not start capture setup worker: {error}");
+                let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+                inner.transition_in_progress = false;
+                inner.startup_cancel = None;
+                inner.state.phase = "error".into();
+                inner.state.message = Some(message.clone());
+                inner.state.error = Some(message.clone());
+                self.transition_finished.notify_all();
+                message
+            })?;
+        Ok(starting)
+    }
+
+    fn finish_background_start<F>(
+        &self,
+        mode: String,
+        transcription: TranscriptionConfig,
+        secrets: CaptureSecrets,
+        resume: Option<CaptureResume>,
+        cancel: Arc<AtomicBool>,
+        on_complete: F,
+    ) where
+        F: FnOnce(CaptureState) + Send + 'static,
+    {
+        let result = self.spawn_pipeline(
+            &mode,
+            &transcription,
+            &secrets,
+            resume.as_ref(),
+            Some(cancel.as_ref()),
+        );
+        let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+        let cancelled = cancel.load(Ordering::Acquire);
+        match (cancelled, result) {
+            (true, Ok((mut children, transcript, _, _))) => {
+                inner.state.phase = "stopping".into();
+                inner.state.message = Some("Cancelling capture setup…".into());
+                drop(inner);
+                terminate_recorder_then_transcriber(&mut children, "cancelled");
+                let _ = finalize_transcript(&transcript, "cancelled");
+                let final_state = CaptureState::idle(Some("Capture cancelled".into()));
+                let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+                inner.children = None;
+                inner.transcript = None;
+                inner.state = final_state.clone();
+                inner.transition_in_progress = false;
+                inner.startup_cancel = None;
+                self.transition_finished.notify_all();
+                drop(inner);
+                on_complete(final_state);
+            }
+            (true, Err(_)) => {
+                let final_state = CaptureState::idle(Some("Capture cancelled".into()));
+                inner.children = None;
+                inner.transcript = None;
+                inner.state = final_state.clone();
+                inner.transition_in_progress = false;
+                inner.startup_cancel = None;
+                self.transition_finished.notify_all();
+                drop(inner);
+                on_complete(final_state);
+            }
+            (false, Ok((children, transcript, started_at, id))) => {
+                let final_state = CaptureState {
+                    phase: "recording".into(),
+                    active_meeting_id: Some(id),
+                    started_at: Some(started_at),
+                    message: Some("Listening to system audio and microphone".into()),
+                    mode: Some(mode),
+                    transcript_path: Some(transcript.to_string_lossy().into_owned()),
+                    error: None,
+                    transcription: Some(transcription),
+                };
+                inner.transcript = Some(transcript);
+                inner.children = Some(children);
+                inner.state = final_state.clone();
+                inner.transition_in_progress = false;
+                inner.startup_cancel = None;
+                self.transition_finished.notify_all();
+                drop(inner);
+                on_complete(final_state);
+            }
+            (false, Err(error)) => {
+                let final_state = CaptureState {
+                    phase: "error".into(),
+                    active_meeting_id: None,
+                    started_at: None,
+                    message: Some(error.clone()),
+                    mode: Some(mode),
+                    transcript_path: None,
+                    error: Some(error),
+                    transcription: Some(transcription),
+                };
+                inner.children = None;
+                inner.transcript = None;
+                inner.state = final_state.clone();
+                inner.transition_in_progress = false;
+                inner.startup_cancel = None;
+                self.transition_finished.notify_all();
+                drop(inner);
+                on_complete(final_state);
+            }
+        }
+    }
+
     fn start_internal(
         &self,
         mode: &str,
@@ -499,7 +671,7 @@ impl CaptureManager {
             transcription: Some(transcription.clone()),
         };
 
-        match self.spawn_pipeline(mode, &transcription, &secrets, resume.as_ref()) {
+        match self.spawn_pipeline(mode, &transcription, &secrets, resume.as_ref(), None) {
             Ok((children, transcript, started_at, id)) => {
                 inner.transcript = Some(transcript.clone());
                 inner.children = Some(children);
@@ -536,6 +708,20 @@ impl CaptureManager {
     pub fn stop(&self) -> Result<CaptureState, String> {
         let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
         refresh_children(&mut inner);
+        if inner.transition_in_progress {
+            if let Some(cancel) = inner.startup_cancel.as_ref() {
+                cancel.store(true, Ordering::Release);
+                inner.state.phase = "stopping".into();
+                inner.state.message = Some("Cancelling capture setup…".into());
+            }
+            while inner.transition_in_progress {
+                inner = self
+                    .transition_finished
+                    .wait(inner)
+                    .unwrap_or_else(|lock| lock.into_inner());
+            }
+            return Ok(inner.state.clone());
+        }
         let Some(mut children) = inner.children.take() else {
             inner.transcript = None;
             inner.state = CaptureState::idle(Some("No capture is running".into()));
@@ -556,8 +742,90 @@ impl CaptureManager {
         Ok(inner.state.clone())
     }
 
+    /// Moves to `stopping` immediately and performs provider finalization in
+    /// the background. If setup is still running, this only requests
+    /// cancellation; the startup completion reports the final idle state.
+    pub fn stop_in_background<F>(self: &Arc<Self>, on_complete: F) -> Result<CaptureState, String>
+    where
+        F: FnOnce(CaptureState) + Send + 'static,
+    {
+        let (mut children, transcript, stopping) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+            refresh_children(&mut inner);
+            if inner.transition_in_progress {
+                if let Some(cancel) = inner.startup_cancel.as_ref() {
+                    cancel.store(true, Ordering::Release);
+                    inner.state.phase = "stopping".into();
+                    inner.state.message = Some("Cancelling capture setup…".into());
+                    // The startup worker owns this transition and its completion callback.
+                    drop(on_complete);
+                    return Ok(inner.state.clone());
+                }
+                return Ok(inner.state.clone());
+            }
+            let Some(children) = inner.children.take() else {
+                inner.transcript = None;
+                inner.state = CaptureState::idle(Some("No capture is running".into()));
+                return Ok(inner.state.clone());
+            };
+            inner.state.phase = "stopping".into();
+            inner.state.message = Some("Finalizing transcript…".into());
+            inner.transition_in_progress = true;
+            (children, inner.transcript.take(), inner.state.clone())
+        };
+
+        let manager = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("arco-capture-stop".into())
+            .spawn(move || {
+                terminate_recorder_then_transcriber(&mut children, "stopped");
+                let final_state = match transcript
+                    .as_deref()
+                    .map(|path| finalize_transcript(path, "stopped"))
+                    .transpose()
+                {
+                    Ok(_) => {
+                        CaptureState::idle(Some("Capture stopped and transcript saved".into()))
+                    }
+                    Err(error) => CaptureState {
+                        phase: "error".into(),
+                        active_meeting_id: None,
+                        started_at: None,
+                        message: Some(error.clone()),
+                        mode: None,
+                        transcript_path: transcript
+                            .as_deref()
+                            .map(|path| path.to_string_lossy().into_owned()),
+                        error: Some(error),
+                        transcription: None,
+                    },
+                };
+                {
+                    let mut inner = manager
+                        .inner
+                        .lock()
+                        .unwrap_or_else(|lock| lock.into_inner());
+                    inner.state = final_state.clone();
+                    inner.transition_in_progress = false;
+                    manager.transition_finished.notify_all();
+                }
+                on_complete(final_state);
+            })
+            .expect("could not start capture finalization worker");
+        Ok(stopping)
+    }
+
     pub fn shutdown(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|lock| lock.into_inner());
+        if let Some(cancel) = inner.startup_cancel.as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
+        while inner.transition_in_progress {
+            inner = self
+                .transition_finished
+                .wait(inner)
+                .unwrap_or_else(|lock| lock.into_inner());
+        }
         interrupt_active_capture(&mut inner);
     }
 
@@ -567,6 +835,7 @@ impl CaptureManager {
         transcription: &TranscriptionConfig,
         secrets: &CaptureSecrets,
         resume: Option<&CaptureResume>,
+        startup_cancel: Option<&AtomicBool>,
     ) -> Result<(CaptureChildren, PathBuf, String, String), String> {
         let destination = self
             .destination
@@ -768,6 +1037,7 @@ impl CaptureManager {
                 &ready_signals.recorder,
                 &ready_signals.transcribers,
                 &ready_timeouts,
+                startup_cancel,
             ) {
                 terminate_recorder_then_transcriber(&mut children, "startup_error");
                 let _ = finalize_transcript(&transcript, "error");
@@ -1059,6 +1329,7 @@ fn wait_for_pipeline_ready(
     recorder_ready_file: &Path,
     transcriber_ready_files: &[PathBuf],
     transcriber_timeouts: &[Duration],
+    startup_cancel: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let started = Instant::now();
     let recorder_timeout = transcriber_timeouts
@@ -1068,18 +1339,8 @@ fn wait_for_pipeline_ready(
         .unwrap_or(MAX_RECORDER_READY_TIMEOUT)
         .min(MAX_RECORDER_READY_TIMEOUT);
     loop {
-        match children.recorder.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "native recorder exited before transcription readiness ({status})"
-                ))
-            }
-            Err(error) => {
-                return Err(format!(
-                    "could not inspect native recorder while starting: {error}"
-                ))
-            }
-            Ok(None) => {}
+        if startup_cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(STARTUP_CANCELLED.into());
         }
         for transcriber in &mut children.transcribers {
             match transcriber.child.try_wait() {
@@ -1097,6 +1358,22 @@ fn wait_for_pipeline_ready(
                 }
                 Ok(None) => {}
             }
+        }
+        // Inspect providers first. A provider that exits can close the audio
+        // pipe and make the recorder fail with SIGPIPE milliseconds later; the
+        // provider exit is the actionable root cause.
+        match children.recorder.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "native recorder exited before transcription readiness ({status})"
+                ))
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect native recorder while starting: {error}"
+                ))
+            }
+            Ok(None) => {}
         }
         let recorder_ready = recorder_ready_file.is_file();
         let transcribers_ready = transcriber_ready_files.iter().all(|path| path.is_file());

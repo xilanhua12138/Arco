@@ -144,6 +144,11 @@ public struct CurrentIdleView: View {
                 .frame(minWidth: 142, minHeight: 44, maxHeight: 44)
                 .fixedSize(horizontal: true, vertical: false)
 
+                if shortcut != nil {
+                    shortcutHeroHint
+                        .padding(.bottom, 1)
+                }
+
                 Button(action: onOpenAudioSettings) {
                     Label(audioLabel, systemImage: "slider.horizontal.3")
                         .font(ArcoTypography.small)
@@ -220,6 +225,42 @@ public struct CurrentIdleView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("capture.shortcutsHeading", [:]))
+    }
+
+    private var shortcutHeroHint: some View {
+        HStack(spacing: 8) {
+            Text(translate("capture.shortcutHeroHint", [:]))
+                .font(ArcoTypography.small.weight(.medium))
+                .foregroundStyle(ArcoNativeColors.inkMuted)
+            HStack(spacing: 4) {
+                ForEach(Array(listeningKeycaps.enumerated()), id: \.offset) { _, key in
+                    Text(key)
+                        .font(ArcoTypography.sans(10, weight: .semibold))
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 25, minHeight: 24)
+                        .background(
+                            ArcoNativeColors.surfaceRaised,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(ArcoNativeColors.lineStrong, lineWidth: 0.75)
+                        )
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: 32)
+        .background(
+            ArcoNativeColors.brandSoft,
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(translate("capture.shortcutHeroHint", [:])) \(shortcut?.displayValue ?? "")"
+        )
     }
 
     private func statistic(_ symbol: String, _ titleKey: String, _ value: String) -> some View {

@@ -185,10 +185,56 @@ public struct ArcoSettingsSheetView: View {
                     .padding(.top, 16)
             }
 
+            meetingPromptRow
             updateRow
         }
         .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
         .accessibilityLabel(translate("settings.generalPreferences", [:]))
+    }
+
+    private var meetingPromptRow: some View {
+        HStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(translate("settings.automaticMeetingPrompts", [:]), systemImage: "rectangle.on.rectangle.badge.person.crop")
+                    .font(ArcoTypography.sans(13, weight: .medium))
+                    .foregroundStyle(ArcoNativeColors.inkStrong)
+                Text(meetingPromptHelp)
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+            }
+            Spacer(minLength: 0)
+            if !viewModel.snapshot.meetingAccessAuthorized {
+                updateActionButton(
+                    title: translate("settings.grantMeetingAccess", [:]),
+                    prominent: false,
+                    action: viewModel.actions.onRequestMeetingAccess
+                )
+            } else if !viewModel.snapshot.automaticMeetingPromptsEnabled {
+                updateActionButton(
+                    title: translate("settings.resumeMeetingPrompts", [:]),
+                    prominent: false,
+                    action: viewModel.actions.onResumeMeetingPrompts
+                )
+            } else {
+                Label(translate("settings.meetingPromptsOn", [:]), systemImage: "checkmark")
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.success)
+            }
+        }
+        .frame(minHeight: 70)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1)
+        }
+    }
+
+    private var meetingPromptHelp: String {
+        if !viewModel.snapshot.meetingAccessAuthorized {
+            return translate("settings.meetingAccessHelp", [:])
+        }
+        if !viewModel.snapshot.automaticMeetingPromptsEnabled {
+            return translate("settings.meetingPromptsPausedHelp", [:])
+        }
+        return translate("settings.automaticMeetingPromptsHelp", [:])
     }
 
     private var updateRow: some View {

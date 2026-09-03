@@ -137,7 +137,7 @@ public final class RecordingHUDModel {
     }
 
     public var controlsLocked: Bool {
-        saving || saved || capture.phase == .starting || capture.phase == .stopping
+        saving || saved || capture.phase == .stopping
     }
 
     private func pollCapture(generation: Int) async {

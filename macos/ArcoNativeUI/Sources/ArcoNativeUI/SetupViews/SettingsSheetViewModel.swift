@@ -18,6 +18,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
     public var providerConfiguration: ProviderConfiguration
     public var generationSettings: GenerationSettings
     public var shortcutError: String?
+    public var meetingAccessAuthorized: Bool
+    public var automaticMeetingPromptsEnabled: Bool
     public var transcriptStorage: StorageSettings
     public var transcriptStorageChanging: Bool
     public var notesStorage: StorageSettings
@@ -42,6 +44,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         providerConfiguration: ProviderConfiguration = ProviderConfiguration(),
         generationSettings: GenerationSettings = .default,
         shortcutError: String? = nil,
+        meetingAccessAuthorized: Bool = false,
+        automaticMeetingPromptsEnabled: Bool = true,
         transcriptStorage: StorageSettings? = nil,
         transcriptStorageChanging: Bool = false,
         notesStorage: StorageSettings? = nil,
@@ -65,6 +69,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         self.providerConfiguration = providerConfiguration
         self.generationSettings = generationSettings
         self.shortcutError = shortcutError
+        self.meetingAccessAuthorized = meetingAccessAuthorized
+        self.automaticMeetingPromptsEnabled = automaticMeetingPromptsEnabled
         self.transcriptStorage = transcriptStorage ?? StorageSettings(
             defaultDirectory: "~/Library/Application Support/Arco/transcripts",
             selectedDirectory: "~/Library/Application Support/Arco/transcripts",
@@ -107,6 +113,8 @@ public struct SettingsSheetActions {
     public var onResetNotesDirectory: () async -> Bool
     public var onCheckForUpdates: () -> Void
     public var onInstallUpdate: () -> Void
+    public var onRequestMeetingAccess: () -> Void
+    public var onResumeMeetingPrompts: () -> Void
 
     public init(
         onClose: @escaping () -> Void,
@@ -131,7 +139,9 @@ public struct SettingsSheetActions {
         onChooseNotesDirectory: @escaping () async -> Bool = { true },
         onResetNotesDirectory: @escaping () async -> Bool = { true },
         onCheckForUpdates: @escaping () -> Void = {},
-        onInstallUpdate: @escaping () -> Void = {}
+        onInstallUpdate: @escaping () -> Void = {},
+        onRequestMeetingAccess: @escaping () -> Void = {},
+        onResumeMeetingPrompts: @escaping () -> Void = {}
     ) {
         self.onClose = onClose
         self.onChangeLocale = onChangeLocale
@@ -156,6 +166,8 @@ public struct SettingsSheetActions {
         self.onResetNotesDirectory = onResetNotesDirectory
         self.onCheckForUpdates = onCheckForUpdates
         self.onInstallUpdate = onInstallUpdate
+        self.onRequestMeetingAccess = onRequestMeetingAccess
+        self.onResumeMeetingPrompts = onResumeMeetingPrompts
     }
 }
 

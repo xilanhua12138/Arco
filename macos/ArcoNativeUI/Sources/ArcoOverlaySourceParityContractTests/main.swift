@@ -107,8 +107,8 @@ expectTrue(
     "HUD must preserve the source 700ms capture poll and 1s elapsed clock"
 )
 expectTrue(
-    hudModel.contains("saving || saved || capture.phase == .starting || capture.phase == .stopping"),
-    "HUD controls must lock for exactly the source saving, saved, starting, and stopping states"
+    hudModel.contains("saving || saved || capture.phase == .stopping"),
+    "HUD stop must remain available while the provider is starting"
 )
 expectTrue(
     !hud.contains(".task { await model.pollCapture() }")

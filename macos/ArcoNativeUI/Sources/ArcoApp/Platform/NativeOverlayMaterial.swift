@@ -4,11 +4,13 @@ import SwiftUI
 enum ArcoOverlayKind {
     case hud
     case agent
+    case meetingPrompt
 
     var cornerRadius: CGFloat {
         switch self {
         case .hud: 14
         case .agent: 16
+        case .meetingPrompt: 14
         }
     }
 }
@@ -53,6 +55,8 @@ struct SwiftUIOverlayGlassSurface<Content: View>: View {
         case .hud:
             Color(red: 244 / 255, green: 244 / 255, blue: 244 / 255)
         case .agent:
+            ArcoNativeColors.surfaceDocument
+        case .meetingPrompt:
             ArcoNativeColors.surfaceDocument
         }
     }

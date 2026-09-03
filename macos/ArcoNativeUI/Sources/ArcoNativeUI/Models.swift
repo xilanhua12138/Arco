@@ -17,8 +17,8 @@ public enum CapturePhase: String, Codable, Sendable {
     public var optimisticToggle: CapturePhase? {
         switch self {
         case .idle, .error: .starting
-        case .recording: .stopping
-        case .starting, .stopping: nil
+        case .starting, .recording: .stopping
+        case .stopping: nil
         }
     }
 }

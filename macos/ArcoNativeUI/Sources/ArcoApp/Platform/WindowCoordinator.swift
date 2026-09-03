@@ -33,15 +33,18 @@ struct WindowContentFactories {
     var main: (@MainActor () throws -> AnyView)?
     var hud: (@MainActor (HUDWindowActions) throws -> AnyView)?
     var agent: (@MainActor (Binding<Bool>, AgentWindowActions) throws -> AnyView)?
+    var meetingPrompt: (@MainActor (DetectedMeeting) throws -> AnyView)?
 
     init(
         main: (@MainActor () throws -> AnyView)? = nil,
         hud: (@MainActor (HUDWindowActions) throws -> AnyView)? = nil,
-        agent: (@MainActor (Binding<Bool>, AgentWindowActions) throws -> AnyView)? = nil
+        agent: (@MainActor (Binding<Bool>, AgentWindowActions) throws -> AnyView)? = nil,
+        meetingPrompt: (@MainActor (DetectedMeeting) throws -> AnyView)? = nil
     ) {
         self.main = main
         self.hud = hud
         self.agent = agent
+        self.meetingPrompt = meetingPrompt
     }
 }
 
@@ -55,7 +58,7 @@ private final class AgentWindowState {
     }
 }
 
-/// Owns the three native AppKit windows. Hidden capture surfaces remain
+/// Owns Arco's native AppKit windows. Hidden capture surfaces remain
 /// strongly owned and are reused for the entire process lifetime; this is the
 /// native equivalent of overlay.rs's WindowServer leak prevention.
 @MainActor
@@ -65,11 +68,13 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     private(set) var mainWindow: NSWindow?
     private(set) var hudWindow: NSPanel?
     private(set) var agentWindow: NSPanel?
+    private(set) var meetingPromptWindow: NSPanel?
 
     var canShowAgent: @MainActor () -> Bool = { false }
     var onHUDPresented: @MainActor () -> Void = {}
     var onHUDHidden: @MainActor () -> Void = {}
     var onAgentFocused: @MainActor () -> Void = {}
+    var onMainWindowHidden: @MainActor () -> Void = {}
     var onSurfaceError: @MainActor (Error) -> Void = { _ in }
 
     private var factories: WindowContentFactories
@@ -113,6 +118,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     @discardableResult
     func showMainWindow() throws -> NSWindow {
+        NSApp.setActivationPolicy(.regular)
         let window: NSWindow
         if let mainWindow {
             window = mainWindow
@@ -149,10 +155,15 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
                 blue: 250 / 255,
                 alpha: 1
             )
-            created.isReleasedWhenClosed = false
+            created.isReleasedWhenClosed = true
             created.delegate = self
             created.contentView = FirstMouseHostingView(rootView: content)
             created.center()
+            if let miniaturize = created.standardWindowButton(.miniaturizeButton) {
+                miniaturize.target = self
+                miniaturize.action = #selector(minimizeMainWindowToMenuBar(_:))
+                miniaturize.toolTip = "Keep Arco in the menu bar"
+            }
             mainWindow = created
             window = created
         }
@@ -234,6 +245,52 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         agentWindow?.orderOut(nil)
     }
 
+    // MARK: - Meeting prompt
+
+    func showMeetingPrompt(_ meeting: DetectedMeeting) throws {
+        hideMeetingPrompt()
+        guard let factory = factories.meetingPrompt else {
+            throw WindowCoordinatorError.contentNotInstalled("meeting prompt")
+        }
+        let content = try factory(meeting)
+        let meetingPrompt = OverlayPanel(
+            contentRect: CGRect(origin: .zero, size: ArcoWindowMetrics.meetingPromptSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        meetingPrompt.title = "Arco Meeting"
+        configureOverlay(meetingPrompt, kind: .meetingPrompt)
+        meetingPrompt.isMovableByWindowBackground = true
+        meetingPrompt.contentMinSize = ArcoWindowMetrics.meetingPromptSize
+        meetingPrompt.contentMaxSize = ArcoWindowMetrics.meetingPromptSize
+        meetingPrompt.contentView = FirstMouseHostingView(
+            rootView: AnyView(
+                SwiftUIOverlayGlassSurface(kind: .meetingPrompt) { content }
+            )
+        )
+        guard let screen = preferredScreen(for: meetingPrompt) else {
+            meetingPrompt.contentView = nil
+            meetingPrompt.close()
+            throw WindowCoordinatorError.noAvailableDisplay
+        }
+        meetingPrompt.setFrame(
+            ArcoWindowPlacement.meetingPromptFrame(in: ScreenWorkArea(screen)),
+            display: true
+        )
+        meetingPromptWindow = meetingPrompt
+        meetingPrompt.orderFrontRegardless()
+    }
+
+    func hideMeetingPrompt() {
+        guard let meetingPrompt = meetingPromptWindow else { return }
+        meetingPromptWindow = nil
+        meetingPrompt.delegate = nil
+        meetingPrompt.orderOut(nil)
+        meetingPrompt.contentView = nil
+        meetingPrompt.close()
+    }
+
     func setAgentTranscriptVisible(_ visible: Bool) {
         agentState.transcriptVisible = visible
         defaults.set(visible, forKey: Self.agentTranscriptVisibilityKey)
@@ -262,7 +319,22 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
             sender.orderOut(nil)
             return false
         }
+        if sender === meetingPromptWindow {
+            meetingPromptWindow = nil
+        }
         return true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === mainWindow {
+            window.contentView = nil
+            mainWindow = nil
+            onMainWindowHidden()
+            NSApp.setActivationPolicy(.accessory)
+        } else if window === meetingPromptWindow {
+            meetingPromptWindow = nil
+        }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -380,7 +452,8 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.level = NSWindow.Level(
-            rawValue: NSWindow.Level.floating.rawValue + (kind == .hud ? 1 : 0)
+            rawValue: NSWindow.Level.floating.rawValue
+                + (kind == .agent ? 0 : 1)
         )
         panel.animationBehavior = .none
     }
@@ -444,6 +517,10 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
             return nil
         }
         return event
+    }
+
+    @objc private func minimizeMainWindowToMenuBar(_ sender: Any?) {
+        mainWindow?.close()
     }
 
     /// SwiftUI's first hosting-view layout restores AppKit's default 32-point

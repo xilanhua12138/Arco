@@ -86,6 +86,7 @@ public final class ArcoStore {
     }
 
     public let isDesktop = true
+    @ObservationIgnored public var onCaptureStateChanged: (@MainActor (CaptureState) -> Void)?
 
     private let backend: any BackendDispatching
     private let captureSurfaces: any CaptureSurfaceCoordinating
@@ -102,6 +103,7 @@ public final class ArcoStore {
     private var noteQuery = ""
     private var noteRequest = 0
     private var selectionRequest = 0
+    private var captureRequest = 0
     private struct GenerationClaim {
         let id: UUID
         let task: Task<Void, Never>
@@ -178,7 +180,32 @@ public final class ArcoStore {
         disposed = true
         pollTask?.cancel()
         pollTask = nil
+        onCaptureStateChanged = nil
         backend.setEventHandler(nil)
+    }
+
+    /// Drop large review-only values when the main window is released. The
+    /// next main-window presentation runs initialize() and reloads them.
+    /// Capture and background Agent work keep their state untouched.
+    public func releaseIdlePresentationCache() {
+        guard (capture.phase == .idle || capture.phase == .error),
+              !agentRunning else { return }
+        selectionRequest += 1
+        noteRequest += 1
+        meetings.removeAll(keepingCapacity: false)
+        activeMeeting = nil
+        selectedMeetingId = nil
+        meeting = nil
+        meetingReference = nil
+        liveMeetingReference = nil
+        selectedReference = nil
+        activeCaptureReference = nil
+        agentTurnsByMeeting.removeAll(keepingCapacity: false)
+        attachmentsByMeeting.removeAll(keepingCapacity: false)
+        savedNotes.removeAll(keepingCapacity: false)
+        lastSuccessfulNotesQuery = nil
+        meetingQuery = ""
+        noteQuery = ""
     }
 
     @discardableResult
@@ -388,10 +415,12 @@ public final class ArcoStore {
         transcription: TranscriptionConfiguration? = nil,
         resumeMeetingId: String? = nil
     ) async -> CaptureState? {
-        guard capture.phase != .starting, capture.phase != .stopping else { return nil }
+        guard capture.phase != .stopping else { return nil }
+        captureRequest += 1
+        let request = captureRequest
         error = nil
-        let stopping = capture.phase == .recording
-        let stoppedMeetingId = stopping ? capture.activeMeetingId : nil
+        let stopping = capture.phase == .starting || capture.phase == .recording
+        let stoppedMeetingId = capture.phase == .recording ? capture.activeMeetingId : nil
         if !stopping { completedMeetingId = nil }
         var optimistic = capture
         optimistic.phase = stopping ? .stopping : .starting
@@ -417,7 +446,11 @@ public final class ArcoStore {
                 arguments["meetingId"] = resumeMeetingId.map(AnySendable.string) ?? .null
                 next = try await backend.call("start_capture", arguments: arguments)
             }
+            guard captureRequest == request else { return capture }
             applyCapture(next)
+            if next.phase == .starting || next.phase == .stopping {
+                return next
+            }
             await refreshMeetings(
                 "",
                 preferredActive: .explicit(stopping ? nil : next.activeMeetingId)
@@ -434,6 +467,7 @@ public final class ArcoStore {
             }
             return next
         } catch {
+            guard captureRequest == request else { return capture }
             if !stopping {
                 captureSurfaces.releaseCaptureSurfaces()
             }
@@ -974,11 +1008,17 @@ public final class ArcoStore {
     }
 
     private func applyCapture(_ next: CaptureState) {
+        // A provider can complete between the backend event and the original
+        // command response. Never let that older transitional response move a
+        // stable capture state backwards.
+        if capture.phase == .recording, next.phase == .starting { return }
+        if [.idle, .error].contains(capture.phase), next.phase == .stopping { return }
         let previousPhase = capture.phase
         let previousId = capture.activeMeetingId
         activeCaptureReference = next.activeMeetingId
         guard capture != next else { return }
         capture = next
+        onCaptureStateChanged?(next)
         if next.phase == .recording,
            let activeId = next.activeMeetingId,
            meetingReference?.summary.id == activeId {
