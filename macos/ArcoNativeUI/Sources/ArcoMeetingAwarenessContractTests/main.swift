@@ -272,11 +272,32 @@ private func testPlatformUsesEventsAndReleasesTheMainSurfaceInMenuBarMode() {
         "Accessibility inspection must stay bounded and contain no repeating timer"
     )
     expect(
-        menuBar.contains("NSStatusBar.system.statusItem")
+        menuBar.contains("NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)")
+            && menuBar.contains("ArcoStatusTemplate")
+            && menuBar.contains("NSSize(width: 18, height: 16)")
+            && menuBar.contains("statusIcon.isTemplate = true")
+            && menuBar.contains(".imagePosition = .imageOnly")
+            && !menuBar.contains("statusItem.button?.title")
+            && menuBar.contains("captureActive ? .systemRed : nil")
             && menuBar.contains("NSMenu")
             && !menuBar.contains("NSPopover"),
         true,
-        "Menu bar mode must use one native status item without retaining a popover view tree"
+        "Menu bar mode must expose the Arco template icon without retaining a popover view tree"
+    )
+    expect(
+        !menuBar.contains("let status = NSMenuItem")
+            && !menuBar.contains("status.isEnabled = false"),
+        true,
+        "The compact menu must begin with actions instead of repeating the idle status"
+    )
+    expect(
+        menuBar.contains("NSEvent.addGlobalMonitorForEvents")
+            && menuBar.contains("cancelTracking()")
+            && menuBar.contains("performSelector(")
+            && menuBar.contains("RunLoop.Mode.eventTracking.rawValue")
+            && menuBar.contains("NSEvent.removeMonitor"),
+        true,
+        "The menu must stop tracking when the user clicks another app or the desktop"
     )
     expect(
         settings.contains("settings.resumeMeetingPrompts")
@@ -293,11 +314,11 @@ private func testPlatformUsesEventsAndReleasesTheMainSurfaceInMenuBarMode() {
         "The meeting prompt must appear above the meeting without stealing its focus"
     )
     expect(
-        coordinator.contains("created.isReleasedWhenClosed = true")
+        coordinator.contains("created.isReleasedWhenClosed = false")
             && coordinator.contains("mainWindow = nil")
             && coordinator.contains("NSApp.setActivationPolicy(.accessory)"),
         true,
-        "Closing the main window must release its SwiftUI tree and leave only menu bar mode"
+        "Closing the main window must release its SwiftUI tree exactly once and leave only menu bar mode"
     )
     expect(
         prompt.contains("meetingPrompt.title")
@@ -308,10 +329,10 @@ private func testPlatformUsesEventsAndReleasesTheMainSurfaceInMenuBarMode() {
         "The prompt must use the approved natural copy and direct start button"
     )
     expect(
-        idle.contains("capture.shortcutHeroHint")
-            && idle.contains("listeningKeycaps"),
+        !idle.contains("capture.shortcutHeroHint")
+            && !idle.contains("private var shortcutHeroHint"),
         true,
-        "The idle home hero must make the configured global shortcut visible"
+        "The idle home hero must not repeat the shortcut that already lives in Settings"
     )
     expect(
         menuBar.contains("func updateShortcut(_ shortcut: ListeningShortcut?)")

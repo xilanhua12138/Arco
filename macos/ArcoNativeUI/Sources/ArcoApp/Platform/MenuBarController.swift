@@ -2,13 +2,14 @@ import AppKit
 import ArcoNativeUI
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let translate: ArcoTranslate
     private var shortcut: ListeningShortcut?
     private let onOpenArco: @MainActor () -> Void
     private let onToggleCapture: @MainActor () async -> Void
 
     private var statusItem: NSStatusItem?
+    private var outsideClickMonitor: Any?
     private var capturePhase: CapturePhase = .idle
 
     init(
@@ -27,11 +28,16 @@ final class MenuBarController: NSObject {
     func start() {
         guard statusItem == nil else { return }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem?.button?.image = Self.makeStatusIcon()
+        statusItem?.button?.imagePosition = .imageOnly
+        statusItem?.button?.setAccessibilityLabel("Arco")
         rebuildMenu()
     }
 
     func stop() {
         guard let statusItem else { return }
+        statusItem.menu?.cancelTracking()
+        removeOutsideClickMonitor()
         NSStatusBar.system.removeStatusItem(statusItem)
         self.statusItem = nil
     }
@@ -57,27 +63,12 @@ final class MenuBarController: NSObject {
         let captureActive = capturePhase == .starting
             || capturePhase == .recording
             || capturePhase == .stopping
-        let symbol = captureActive ? "record.circle.fill" : "waveform.circle"
-        statusItem.button?.image = NSImage(
-            systemSymbolName: symbol,
-            accessibilityDescription: "Arco"
-        )
-        statusItem.button?.contentTintColor = captureActive ? .systemRed : .labelColor
+        statusItem.button?.contentTintColor = captureActive ? .systemRed : nil
         statusItem.button?.toolTip = captureActive
             ? translate("menuBar.recording", [:])
             : translate("menuBar.ready", [:])
 
         let menu = NSMenu()
-        let status = NSMenuItem(
-            title: captureActive
-                ? translate("menuBar.recording", [:])
-                : translate("menuBar.ready", [:]),
-            action: nil,
-            keyEquivalent: ""
-        )
-        status.isEnabled = false
-        menu.addItem(status)
-        menu.addItem(.separator())
         menu.addItem(item(
             translate("menuBar.open", [:]),
             action: #selector(openArco)
@@ -99,7 +90,62 @@ final class MenuBarController: NSObject {
             translate("menuBar.quit", [:]),
             action: #selector(quitArco)
         ))
+        removeOutsideClickMonitor()
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        removeOutsideClickMonitor()
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            self?.performSelector(
+                onMainThread: #selector(self?.cancelMenuTrackingFromOutsideClick),
+                with: nil,
+                waitUntilDone: false,
+                modes: [
+                    RunLoop.Mode.eventTracking.rawValue,
+                    RunLoop.Mode.common.rawValue,
+                ]
+            )
+        }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        removeOutsideClickMonitor()
+    }
+
+    private func cancelMenuTracking() {
+        statusItem?.menu?.cancelTracking()
+    }
+
+    @objc private func cancelMenuTrackingFromOutsideClick() {
+        cancelMenuTracking()
+    }
+
+    private func removeOutsideClickMonitor() {
+        guard let outsideClickMonitor else { return }
+        NSEvent.removeMonitor(outsideClickMonitor)
+        self.outsideClickMonitor = nil
+    }
+
+    private static func makeStatusIcon() -> NSImage {
+        let pointSize = NSSize(width: 18, height: 16)
+        guard let resourceURL = Bundle.main.url(
+            forResource: "ArcoStatusTemplate",
+            withExtension: "png"
+        ), let statusIcon = NSImage(contentsOf: resourceURL) else {
+            let fallback = NSImage(
+                systemSymbolName: "waveform.circle",
+                accessibilityDescription: "Arco"
+            ) ?? NSImage(size: pointSize)
+            fallback.isTemplate = true
+            return fallback
+        }
+        statusIcon.size = pointSize
+        statusIcon.isTemplate = true
+        return statusIcon
     }
 
     private func item(_ title: String, action: Selector) -> NSMenuItem {
