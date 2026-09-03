@@ -155,7 +155,10 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
                 blue: 250 / 255,
                 alpha: 1
             )
-            created.isReleasedWhenClosed = true
+            // ARC owns the window through `mainWindow`. AppKit releasing the
+            // same window again on close can over-release it while the close
+            // notification's autorelease pool is draining.
+            created.isReleasedWhenClosed = false
             created.delegate = self
             created.contentView = FirstMouseHostingView(rootView: content)
             created.center()
@@ -328,7 +331,6 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === mainWindow {
-            window.contentView = nil
             mainWindow = nil
             onMainWindowHidden()
             NSApp.setActivationPolicy(.accessory)
