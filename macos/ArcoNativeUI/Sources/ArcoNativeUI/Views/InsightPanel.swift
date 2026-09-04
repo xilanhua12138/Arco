@@ -95,6 +95,8 @@ public struct InsightPanelView: View {
     public var workspace: String?
     public var attachments: [MeetingAttachment]
     public var live: Bool
+    public var gptLiveBetaEnabled: Bool
+    public var gptLiveStatus: GPTLiveSessionStatus
     public var showHeader: Bool
     public var layout: InsightPanelLayout
     public var streamingTurn: AgentStreamingTurn?
@@ -108,6 +110,7 @@ public struct InsightPanelView: View {
     public var onCopy: (String) async throws -> Void
     public var onClose: (() -> Void)?
     public var onConnectAgent: (() -> Void)?
+    public var onToggleGPTLive: (() -> Void)?
 
     private var externalQuestion: Binding<String>?
     @State private var localQuestion: String
@@ -136,6 +139,8 @@ public struct InsightPanelView: View {
         workspace: String? = nil,
         attachments: [MeetingAttachment] = [],
         live: Bool = false,
+        gptLiveBetaEnabled: Bool = false,
+        gptLiveStatus: GPTLiveSessionStatus = .idle,
         showHeader: Bool = false,
         layout: InsightPanelLayout = .main,
         streamingTurn: AgentStreamingTurn? = nil,
@@ -147,7 +152,8 @@ public struct InsightPanelView: View {
         onRemoveAttachment: @escaping (String, String) async -> Void = { _, _ in },
         onCopy: @escaping (String) async throws -> Void,
         onClose: (() -> Void)? = nil,
-        onConnectAgent: (() -> Void)? = nil
+        onConnectAgent: (() -> Void)? = nil,
+        onToggleGPTLive: (() -> Void)? = nil
     ) {
         self.meeting = meeting
         self.replies = replies
@@ -161,6 +167,8 @@ public struct InsightPanelView: View {
         self.workspace = workspace
         self.attachments = attachments
         self.live = live
+        self.gptLiveBetaEnabled = gptLiveBetaEnabled
+        self.gptLiveStatus = gptLiveStatus
         self.showHeader = showHeader
         self.layout = layout
         self.streamingTurn = streamingTurn
@@ -173,6 +181,7 @@ public struct InsightPanelView: View {
         self.onCopy = onCopy
         self.onClose = onClose
         self.onConnectAgent = onConnectAgent
+        self.onToggleGPTLive = onToggleGPTLive
     }
 
     public var body: some View {
@@ -223,6 +232,13 @@ public struct InsightPanelView: View {
                 .tracking(-0.16)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
+            if live, gptLiveBetaEnabled, let onToggleGPTLive {
+                GPTLiveBetaButton(
+                    status: gptLiveStatus,
+                    translate: translate,
+                    action: { onToggleGPTLive() }
+                )
+            }
             if live {
                 HStack(spacing: 5) {
                     Circle()

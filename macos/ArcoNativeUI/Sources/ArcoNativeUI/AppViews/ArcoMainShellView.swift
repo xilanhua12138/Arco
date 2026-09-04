@@ -519,6 +519,8 @@ public struct ArcoMainShellView: View {
             workspace: controller.agentWorkspace,
             attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
+            gptLiveBetaEnabled: controller.gptLiveBetaEnabled,
+            gptLiveStatus: controller.gptLiveSession.status,
             showHeader: true,
             streamingTurn: controller.store.agentStreamingTurn,
             translate: translate,
@@ -544,7 +546,10 @@ public struct ArcoMainShellView: View {
                 await controller.removeAttachment(attachmentID, from: meetingID)
             },
             onCopy: controller.environment.copyText,
-            onConnectAgent: controller.openProviderSetup
+            onConnectAgent: controller.openProviderSetup,
+            onToggleGPTLive: {
+                Task { @MainActor in await controller.toggleGPTLive() }
+            }
         )
         .clipShape(RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(ArcoNativeColors.lineThin))

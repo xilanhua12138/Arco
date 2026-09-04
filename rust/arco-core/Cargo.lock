@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "arco-core"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "base64",
  "chrono",
@@ -46,6 +46,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "ureq",
+ "url",
  "urlencoding",
  "uuid",
  "wait-timeout",

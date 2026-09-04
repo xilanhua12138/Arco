@@ -181,6 +181,7 @@ private final class NativeApplicationRuntime {
     private let agentOverlayModel: AgentOverlayModel
     private let meetingAwarenessController: MeetingAwarenessController
     private let menuBarController: MenuBarController
+    private let gptLiveProcessLauncher: GPTLiveProcessLauncher
     private var migrationError: String?
 
     init() throws {
@@ -208,6 +209,7 @@ private final class NativeApplicationRuntime {
         )
         let bridge = NativeApplicationBridge()
         bridge.localization = localization
+        let gptLiveProcessLauncher = GPTLiveProcessLauncher()
         let environment = ArcoAppEnvironment(
             changeListeningShortcut: { [weak bridge] shortcut in
                 await bridge?.replaceShortcut(shortcut) ?? false
@@ -217,6 +219,27 @@ private final class NativeApplicationRuntime {
             },
             cancelListeningShortcutRecording: { [weak bridge] in
                 await bridge?.cancelShortcutRecording()
+            },
+            startGPTLiveSession: { [weak gptLiveProcessLauncher] request in
+                guard let gptLiveProcessLauncher else {
+                    throw GPTLiveSessionLaunchError.unavailable
+                }
+                return try await gptLiveProcessLauncher.start(request: request)
+            },
+            stopPendingGPTLiveSession: { [weak gptLiveProcessLauncher] in
+                await gptLiveProcessLauncher?.stop()
+            },
+            loadGPTLiveCredential: { [weak gptLiveProcessLauncher] in
+                guard let gptLiveProcessLauncher else { throw GPTLiveSessionLaunchError.unavailable }
+                return try await gptLiveProcessLauncher.credentialStatus()
+            },
+            connectGPTLiveCredential: { [weak gptLiveProcessLauncher] in
+                guard let gptLiveProcessLauncher else { throw GPTLiveSessionLaunchError.unavailable }
+                return try await gptLiveProcessLauncher.login()
+            },
+            disconnectGPTLiveCredential: { [weak gptLiveProcessLauncher] in
+                guard let gptLiveProcessLauncher else { throw GPTLiveSessionLaunchError.unavailable }
+                return try await gptLiveProcessLauncher.logout()
             },
             localeChanged: { [weak bridge] locale in bridge?.setLocale(locale) },
             relaunch: { [weak bridge] in await bridge?.relaunch() },
@@ -345,6 +368,7 @@ private final class NativeApplicationRuntime {
         self.agentOverlayModel = agentOverlayModel
         self.meetingAwarenessController = meetingAwarenessController
         self.menuBarController = menuBarController
+        self.gptLiveProcessLauncher = gptLiveProcessLauncher
 
         windowCoordinator.canShowAgent = { [weak store] in
             store?.capture.phase == .recording && store?.capture.activeMeetingId != nil
@@ -371,9 +395,11 @@ private final class NativeApplicationRuntime {
                 automaticPromptsEnabled: enabled
             )
         }
-        store.onCaptureStateChanged = { [weak menuBarController, weak meetingAwarenessController] state in
+        store.onCaptureStateChanged = {
+            [weak menuBarController, weak meetingAwarenessController, weak shellController] state in
             menuBarController?.updateCapture(state.phase)
             meetingAwarenessController?.updateCapturePhase(state.phase)
+            shellController?.captureStateChanged(state)
         }
         windowCoordinator.install(WindowContentFactories(
             main: { [weak shellController] in
@@ -444,6 +470,7 @@ private final class NativeApplicationRuntime {
     }
 
     func shutdown() {
+        gptLiveProcessLauncher.stopImmediately()
         meetingAwarenessController.stop()
         menuBarController.stop()
         store.dispose()
@@ -471,8 +498,13 @@ private struct AgentOverlayHostView: View {
             transcriptCapture: store.capture,
             transcriptLoading: store.loading,
             translate: translate,
+            gptLiveBetaEnabled: shellController.gptLiveBetaEnabled,
+            gptLiveStatus: shellController.gptLiveSession.status,
             onHide: actions.hide,
             onFocusMain: actions.focusMain,
+            onToggleGPTLive: {
+                Task { @MainActor in await shellController.toggleGPTLive() }
+            },
             onError: { error in
                 shellController.presentInterfaceError(error.localizedDescription)
             }

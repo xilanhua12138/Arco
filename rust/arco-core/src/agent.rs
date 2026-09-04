@@ -12,7 +12,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -143,6 +143,28 @@ impl AgentRunner {
             .map(|output| output.reply)
     }
 
+    pub fn run_cancellable(
+        &self,
+        provider: &str,
+        question: &str,
+        meeting: &MeetingDetail,
+        context_scope: &str,
+        workspace: Option<&Path>,
+        cancellation: &AtomicBool,
+    ) -> Result<AgentReply, String> {
+        self.run_session_inner(
+            provider,
+            question,
+            meeting,
+            context_scope,
+            workspace,
+            None,
+            None,
+            Some(cancellation),
+        )
+        .map(|output| output.reply)
+    }
+
     pub fn working_directory(
         &self,
         context_scope: &str,
@@ -261,6 +283,7 @@ impl AgentRunner {
             workspace,
             resume_session_id,
             None,
+            None,
         )
     }
 
@@ -286,6 +309,7 @@ impl AgentRunner {
             workspace,
             resume_session_id,
             Some(Box::new(on_update)),
+            None,
         )
     }
 
@@ -299,6 +323,7 @@ impl AgentRunner {
         workspace: Option<&Path>,
         resume_session_id: Option<&str>,
         on_update: Option<Box<dyn FnMut(AgentStreamUpdate) + Send>>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<AgentRunOutput, String> {
         let run_started_at = Instant::now();
         validate_provider(provider)?;
@@ -381,6 +406,16 @@ impl AgentRunner {
                         on_update(update);
                     }
                 },
+            )?
+        } else if let Some(cancellation) = cancellation {
+            run_process_cancellable(
+                &binary,
+                &args,
+                Some(prompt.as_bytes()),
+                Some(&context.working_directory),
+                self.timeout,
+                codex_sandbox.as_ref(),
+                cancellation,
             )?
         } else {
             run_process(
@@ -1780,6 +1815,27 @@ fn run_process(
     )
 }
 
+fn run_process_cancellable(
+    binary: &Path,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    codex_sandbox: Option<&RestrictedCodexSandbox>,
+    cancellation: &AtomicBool,
+) -> Result<String, String> {
+    run_process_limited_cancellable(
+        binary,
+        args,
+        stdin,
+        current_dir,
+        timeout,
+        codex_sandbox,
+        ProcessOutputPolicy::strict(MAX_AGENT_OUTPUT_BYTES),
+        cancellation,
+    )
+}
+
 fn run_process_limited(
     binary: &Path,
     args: &[OsString],
@@ -1789,6 +1845,55 @@ fn run_process_limited(
     codex_sandbox: Option<&RestrictedCodexSandbox>,
     output_policy: ProcessOutputPolicy,
 ) -> Result<String, String> {
+    run_process_limited_inner(
+        binary,
+        args,
+        stdin,
+        current_dir,
+        timeout,
+        codex_sandbox,
+        output_policy,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_process_limited_cancellable(
+    binary: &Path,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    codex_sandbox: Option<&RestrictedCodexSandbox>,
+    output_policy: ProcessOutputPolicy,
+    cancellation: &AtomicBool,
+) -> Result<String, String> {
+    run_process_limited_inner(
+        binary,
+        args,
+        stdin,
+        current_dir,
+        timeout,
+        codex_sandbox,
+        output_policy,
+        Some(cancellation),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_process_limited_inner(
+    binary: &Path,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    codex_sandbox: Option<&RestrictedCodexSandbox>,
+    output_policy: ProcessOutputPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> Result<String, String> {
+    if cancellation.is_some_and(|signal| signal.load(Ordering::Acquire)) {
+        return Err("agent CLI request was cancelled".into());
+    }
     let max_output_bytes = output_policy.max_bytes;
     let mut stdout_file = NamedTempFile::new()
         .map_err(|error| format!("could not create agent output buffer: {error}"))?;
@@ -1846,6 +1951,13 @@ fn run_process_limited(
 
     let started = Instant::now();
     let status = loop {
+        if cancellation.is_some_and(|signal| signal.load(Ordering::Acquire)) {
+            terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE).map_err(|error| {
+                format!("cancelled agent CLI process group could not be terminated: {error}")
+            })?;
+            let _ = finish_stdin_writer(stdin_writer);
+            return Err("agent CLI request was cancelled".into());
+        }
         let output_size = file_size(&stdout_file)? + file_size(&stderr_file)?;
         if output_size > max_output_bytes {
             terminate_process_tree(&mut child, AGENT_TERMINATION_GRACE).map_err(|error| {
@@ -2295,6 +2407,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, r#"{"is_error":true,"result":"Not logged in"}"#);
+    }
+
+    #[test]
+    fn cancellable_agent_process_terminates_before_its_normal_timeout() {
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = Arc::clone(&cancellation);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            signal.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let args = [OsString::from("-c"), OsString::from("sleep 5")];
+
+        let error = run_process_limited_cancellable(
+            Path::new("/bin/sh"),
+            &args,
+            None,
+            None,
+            Duration::from_secs(5),
+            None,
+            ProcessOutputPolicy::strict(1_024),
+            cancellation.as_ref(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "agent CLI request was cancelled");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation must terminate the agent process tree promptly"
+        );
     }
 
     #[test]

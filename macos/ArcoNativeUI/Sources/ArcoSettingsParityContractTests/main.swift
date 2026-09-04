@@ -88,6 +88,89 @@ private func testReturningToAudioRemountsOpenDisclosure() {
 }
 
 @MainActor
+private func testGPTLiveBetaRequiresAnExplicitToggle() {
+    var changes: [Bool] = []
+    let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
+    let actions = SettingsSheetActions(
+        onClose: {},
+        onChangeGPTLiveBetaEnabled: { changes.append($0) }
+    )
+    let model = makeSettingsModel(shortcut: shortcut, actions: actions)
+
+    expect(model.snapshot.gptLiveBetaEnabled, false, "GPT Live Beta is disabled by default")
+    model.setGPTLiveBetaEnabled(true)
+    expect(model.snapshot.gptLiveBetaEnabled, true, "The settings model reflects the explicit Beta opt-in")
+    expect(changes, [true], "The Beta opt-in is persisted exactly once")
+}
+
+@MainActor
+private func testGPTLiveHasAnIndependentSettingsDestination() {
+    expect(SettingsPage.gptLive.rawValue, "gptLive", "GPT Live owns a stable Settings destination")
+    expect(
+        SettingsPage.allCases.map(\.rawValue),
+        ["general", "audio", "output", "agent", "gptLive", "privacy"],
+        "GPT Live appears as its own sidebar item between Agent runtime and Data & privacy"
+    )
+}
+
+@MainActor
+private func testGPTLiveOAuthCanConnectReconnectAndDisconnectFromSettings() async {
+    var actions: [String] = []
+    let connected = GPTLiveCredentialStatus(
+        phase: .connected,
+        identity: "member@example.com",
+        message: nil
+    )
+    let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
+    let settingsActions = SettingsSheetActions(
+        onClose: {},
+        onConnectGPTLiveCredential: {
+            actions.append("connect")
+            return connected
+        },
+        onDisconnectGPTLiveCredential: {
+            actions.append("disconnect")
+            return .missing
+        }
+    )
+    let model = makeSettingsModel(shortcut: shortcut, actions: settingsActions)
+
+    expect(model.snapshot.gptLiveCredential.phase, .missing, "GPT Live OAuth starts visibly disconnected")
+    await model.connectGPTLiveCredential()
+    expect(model.snapshot.gptLiveCredential, connected, "A successful OAuth callback exposes the connected account")
+    await model.connectGPTLiveCredential()
+    expect(actions, ["connect", "connect"], "A connected account can explicitly sign in again")
+    await model.disconnectGPTLiveCredential()
+    expect(model.snapshot.gptLiveCredential, .missing, "Disconnect removes the visible OAuth account")
+    expect(actions, ["connect", "connect", "disconnect"], "OAuth actions execute exactly once per click")
+}
+
+@MainActor
+private func testGPTLiveOAuthFailureStaysVisibleAndStatusProtocolRejectsSecrets() async {
+    let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
+    let actions = SettingsSheetActions(
+        onClose: {},
+        onConnectGPTLiveCredential: { throw ExpectedFailure.credentialRemoval }
+    )
+    let model = makeSettingsModel(shortcut: shortcut, actions: actions)
+
+    await model.connectGPTLiveCredential()
+    expect(model.snapshot.gptLiveCredential.phase, .failed, "OAuth failure remains visible in Settings")
+    expect(model.snapshot.gptLiveCredential.message, "credential removal failed", "OAuth failure keeps its actionable message")
+
+    expect(
+        GPTLiveCredentialStatus.parse(line: #"{"configured":true,"valid":true,"email":"member@example.com"}"#),
+        GPTLiveCredentialStatus(phase: .connected, identity: "member@example.com", message: nil),
+        "The bounded worker status protocol accepts public account metadata"
+    )
+    expect(
+        GPTLiveCredentialStatus.parse(line: #"{"configured":true,"valid":true,"email":"member@example.com","accessToken":"secret"}"#),
+        nil,
+        "The Settings process boundary rejects any OAuth token field"
+    )
+}
+
+@MainActor
 private func testRemovalFailureDoesNotInventInlineError() async {
     let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
     let actions = SettingsSheetActions(
@@ -110,6 +193,10 @@ private func testRemovalFailureDoesNotInventInlineError() async {
 await testLeavingGeneralUnmountsShortcutRecorder()
 testLeavingOutputDiscardsComponentLocalDraft()
 testReturningToAudioRemountsOpenDisclosure()
+testGPTLiveBetaRequiresAnExplicitToggle()
+testGPTLiveHasAnIndependentSettingsDestination()
+await testGPTLiveOAuthCanConnectReconnectAndDisconnectFromSettings()
+await testGPTLiveOAuthFailureStaysVisibleAndStatusProtocolRejectsSecrets()
 await testRemovalFailureDoesNotInventInlineError()
 
 let settingsViewURL = URL(fileURLWithPath: #filePath)
@@ -138,6 +225,29 @@ expectTrue(
 expectTrue(
     !shortcutRecorderViewSource.contains("arcoLiquidGlass"),
     "Shortcut recorder controls preserve the React filled primary and transparent secondary treatments"
+)
+expectTrue(
+    settingsViewSource.contains("settingsNavigation(.gptLive, symbol: \"waveform\", beta: true)")
+        && settingsViewSource.contains("case .gptLive: gptLivePage")
+        && settingsViewSource.contains("private var gptLivePage: some View")
+        && settingsViewSource.contains("settings.gptLiveBeta")
+        && settingsViewSource.contains("settings.betaBadge")
+        && settingsViewSource.contains("setGPTLiveBetaEnabled")
+        && settingsViewSource.contains("connectGPTLiveCredential")
+        && settingsViewSource.contains("disconnectGPTLiveCredential")
+        && settingsViewSource.contains("settings.gptLiveConnectChatGPT"),
+    "GPT Live owns a Beta-labelled sidebar destination with explicit ChatGPT OAuth controls"
+)
+let agentPageSource = settingsViewSource
+    .components(separatedBy: "private var agentPage: some View")
+    .dropFirst()
+    .first?
+    .components(separatedBy: "private var gptLivePage: some View")
+    .first ?? ""
+expectTrue(
+    !agentPageSource.contains("gptLiveBeta")
+        && !agentPageSource.contains("GPTLiveCredential"),
+    "Agent runtime no longer embeds GPT Live controls"
 )
 expectTrue(
     settingsViewSource.contains(".background(ArcoNativeColors.surfaceSettingsContent)")

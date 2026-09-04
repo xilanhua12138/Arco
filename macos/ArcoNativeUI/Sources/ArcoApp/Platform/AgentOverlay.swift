@@ -140,8 +140,11 @@ struct AgentOverlaySurfaceView: View {
     let transcriptCapture: CaptureState
     let transcriptLoading: Bool
     let translate: ArcoTranslate
+    let gptLiveBetaEnabled: Bool
+    let gptLiveStatus: GPTLiveSessionStatus
     let onHide: @MainActor () -> Void
     let onFocusMain: @MainActor () throws -> Void
+    let onToggleGPTLive: @MainActor () -> Void
     let onError: @MainActor (Error) -> Void
 
     init(
@@ -151,8 +154,11 @@ struct AgentOverlaySurfaceView: View {
         transcriptCapture: CaptureState,
         transcriptLoading: Bool,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
+        gptLiveBetaEnabled: Bool = false,
+        gptLiveStatus: GPTLiveSessionStatus = .idle,
         onHide: @escaping @MainActor () -> Void,
         onFocusMain: @escaping @MainActor () throws -> Void,
+        onToggleGPTLive: @escaping @MainActor () -> Void = {},
         onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
@@ -161,8 +167,11 @@ struct AgentOverlaySurfaceView: View {
         self.transcriptCapture = transcriptCapture
         self.transcriptLoading = transcriptLoading
         self.translate = translate
+        self.gptLiveBetaEnabled = gptLiveBetaEnabled
+        self.gptLiveStatus = gptLiveStatus
         self.onHide = onHide
         self.onFocusMain = onFocusMain
+        self.onToggleGPTLive = onToggleGPTLive
         self.onError = onError
     }
 
@@ -234,6 +243,13 @@ struct AgentOverlaySurfaceView: View {
                 .frame(height: 22, alignment: .center)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            if live, gptLiveBetaEnabled {
+                GPTLiveBetaButton(
+                    status: gptLiveStatus,
+                    translate: translate,
+                    action: { onToggleGPTLive() }
+                )
+            }
             if !transcriptVisible {
                 HStack(spacing: 6) {
                     AgentHeaderToggleButton(

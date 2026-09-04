@@ -68,6 +68,7 @@ public struct ArcoSettingsSheetView: View {
                 settingsNavigation(.audio, symbol: "mic")
                 settingsNavigation(.output, symbol: "doc.text")
                 settingsNavigation(.agent, symbol: "command")
+                settingsNavigation(.gptLive, symbol: "waveform", beta: true)
                 settingsNavigation(.privacy, symbol: "checkmark.shield")
             }
             Spacer()
@@ -78,12 +79,24 @@ public struct ArcoSettingsSheetView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func settingsNavigation(_ page: SettingsPage, symbol: String) -> some View {
+    private func settingsNavigation(
+        _ page: SettingsPage,
+        symbol: String,
+        beta: Bool = false
+    ) -> some View {
         let selected = viewModel.page == page
         return Button { viewModel.page = page } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 18)
                 Text(translate("settings.\(page.rawValue)", [:]))
+                if beta {
+                    Text(translate("settings.betaBadge", [:]))
+                        .font(ArcoTypography.sans(8, weight: .bold))
+                        .foregroundStyle(ArcoNativeColors.brand)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(ArcoNativeColors.brand.opacity(0.1), in: Capsule())
+                }
                 Spacer()
             }
             .font(ArcoTypography.body)
@@ -136,6 +149,7 @@ public struct ArcoSettingsSheetView: View {
         case .output:
             MeetingOutputSettingsView(viewModel: viewModel.outputViewModel, translate: translate)
         case .agent: agentPage
+        case .gptLive: gptLivePage
         case .privacy: privacyPage
         }
     }
@@ -1086,8 +1100,129 @@ public struct ArcoSettingsSheetView: View {
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
     }
 
+    private var gptLivePage: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(translate("settings.gptLiveBeta", [:]))
+                            .font(ArcoTypography.sans(16, weight: .semibold))
+                            .foregroundStyle(ArcoNativeColors.inkStrong)
+                        Text(translate("settings.betaBadge", [:]))
+                            .font(ArcoTypography.sans(9, weight: .bold))
+                            .foregroundStyle(ArcoNativeColors.brand)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ArcoNativeColors.brand.opacity(0.1), in: Capsule())
+                    }
+                    Text(translate("settings.gptLiveBetaHelp", [:]))
+                        .font(ArcoTypography.sans(12))
+                        .foregroundStyle(ArcoNativeColors.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 16)
+                Toggle(
+                    translate("settings.gptLiveBetaToggle", [:]),
+                    isOn: Binding(
+                        get: { viewModel.snapshot.gptLiveBetaEnabled },
+                        set: { viewModel.setGPTLiveBetaEnabled($0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .accessibilityLabel(translate("settings.gptLiveBetaToggle", [:]))
+            }
+            .padding(.vertical, 18)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1)
+            }
+
+            HStack(spacing: 10) {
+                if viewModel.gptLiveCredentialBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Circle()
+                        .fill(gptLiveCredentialColor)
+                        .frame(width: 7, height: 7)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(translate(gptLiveCredentialStatusKey, [:]))
+                        .font(ArcoTypography.bodyStrong)
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                    if let detail = viewModel.snapshot.gptLiveCredential.identity
+                        ?? viewModel.snapshot.gptLiveCredential.message
+                    {
+                        Text(detail)
+                            .font(ArcoTypography.tiny)
+                            .foregroundStyle(
+                                viewModel.snapshot.gptLiveCredential.phase == .failed
+                                    ? ArcoNativeColors.warning
+                                    : ArcoNativeColors.inkMuted
+                            )
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 12)
+                if viewModel.snapshot.gptLiveCredential.phase == .connected {
+                    Button {
+                        Task { await viewModel.disconnectGPTLiveCredential() }
+                    } label: {
+                        Text(translate("settings.gptLiveDisconnectChatGPT", [:]))
+                            .font(ArcoTypography.sans(11, weight: .medium))
+                            .padding(.horizontal, 9)
+                            .frame(minHeight: 30)
+                    }
+                    .buttonStyle(
+                        SettingsSurfaceButtonStyle(
+                            fill: .clear,
+                            hoverFill: ArcoNativeColors.surfaceHover,
+                            cornerRadius: 7
+                        )
+                    )
+                }
+                Button {
+                    Task { await viewModel.connectGPTLiveCredential() }
+                } label: {
+                    Text(translate(gptLiveCredentialActionKey, [:]))
+                        .font(ArcoTypography.sans(11, weight: .medium))
+                        .foregroundStyle(ArcoNativeColors.surfaceRaised)
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 30)
+                }
+                .buttonStyle(
+                    SettingsSurfaceButtonStyle(
+                        fill: ArcoNativeColors.inkStrong,
+                        hoverFill: ArcoNativeColors.actionHover,
+                        cornerRadius: 7
+                    )
+                )
+                .disabled(viewModel.gptLiveCredentialBusy)
+                .opacity(viewModel.gptLiveCredentialBusy ? 0.45 : 1)
+            }
+            .frame(minHeight: 72)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1)
+            }
+
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .padding(.top, 1)
+                Text(translate("settings.gptLiveBetaWarning", [:]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 16)
+        }
+    }
+
     private var agentPage: some View {
         VStack(alignment: .leading, spacing: 32) {
+
             VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -1168,6 +1303,30 @@ public struct ArcoSettingsSheetView: View {
                 }
                 .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
             }
+        }
+    }
+
+    private var gptLiveCredentialStatusKey: String {
+        switch viewModel.snapshot.gptLiveCredential.phase {
+        case .checking: "settings.gptLiveCheckingChatGPT"
+        case .missing: "settings.gptLiveChatGPTMissing"
+        case .connected: "settings.gptLiveChatGPTConnected"
+        case .connecting: "settings.gptLiveConnectingChatGPT"
+        case .failed: "settings.gptLiveChatGPTFailed"
+        }
+    }
+
+    private var gptLiveCredentialActionKey: String {
+        viewModel.snapshot.gptLiveCredential.phase == .connected
+            ? "settings.gptLiveReconnectChatGPT"
+            : "settings.gptLiveConnectChatGPT"
+    }
+
+    private var gptLiveCredentialColor: Color {
+        switch viewModel.snapshot.gptLiveCredential.phase {
+        case .connected: ArcoNativeColors.success
+        case .failed: ArcoNativeColors.warning
+        case .checking, .connecting, .missing: ArcoNativeColors.inkFaint
         }
     }
 

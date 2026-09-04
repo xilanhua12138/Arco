@@ -125,6 +125,21 @@ private enum EchoCancellationPolicy {
     }
 }
 
+private enum ParentAudioExclusionPolicy {
+    static func isRequested(environment: [String: String]) -> Bool {
+        environment["ARCO_EXCLUDE_PARENT_AUDIO"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+    }
+
+    static func parentPID(environment: [String: String]) -> pid_t? {
+        guard isRequested(environment: environment) else { return nil }
+        let rawPID = (environment["ARCO_PARENT_PID"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsedPID = Int32(rawPID), parsedPID > 1 else { return nil }
+        return pid_t(parsedPID)
+    }
+}
+
 /// Queue-confined PCM FIFO. The Rust audio runtime owns every real-time ring
 /// and resampler; this queue only smooths ordinary-worker scheduling jitter.
 private struct PCMSampleFIFO {
@@ -405,7 +420,23 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     @available(macOS 14.2, *)
     private func startCoreAudioTapCapture() {
         log("starting Core Audio system tap")
-        let tapDescription = CATapDescription(monoGlobalTapButExcludeProcesses: [])
+        let environment = ProcessInfo.processInfo.environment
+        var excludedProcesses: [AudioObjectID] = []
+        if ParentAudioExclusionPolicy.isRequested(environment: environment) {
+            guard let parentPID = ParentAudioExclusionPolicy.parentPID(
+                environment: environment
+            ) else {
+                fail("GPT Live requested parent-audio exclusion without a valid parent PID")
+            }
+            guard let processObjectID = Self.audioProcessObjectID(for: parentPID) else {
+                fail("could not resolve GPT Live playback process for audio exclusion")
+            }
+            excludedProcesses = [processObjectID]
+            log("excluding GPT Live playback process from system audio capture")
+        }
+        let tapDescription = CATapDescription(
+            monoGlobalTapButExcludeProcesses: excludedProcesses
+        )
         tapDescription.name = "Arco system audio"
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
@@ -551,9 +582,26 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             fail("no display is available (check Screen Recording permission)")
         }
 
+        let environment = ProcessInfo.processInfo.environment
+        var excludedApplications: [SCRunningApplication] = []
+        if ParentAudioExclusionPolicy.isRequested(environment: environment) {
+            guard let parentPID = ParentAudioExclusionPolicy.parentPID(
+                environment: environment
+            ) else {
+                fail("GPT Live requested parent-audio exclusion without a valid parent PID")
+            }
+            guard let parentApplication = content.applications.first(where: {
+                $0.processID == parentPID
+            }) else {
+                fail("could not resolve GPT Live playback application for audio exclusion")
+            }
+            excludedApplications = [parentApplication]
+            log("excluding GPT Live playback application from system audio capture")
+        }
+
         let filter = SCContentFilter(
             display: display,
-            excludingApplications: [],
+            excludingApplications: excludedApplications,
             exceptingWindows: []
         )
         let configuration = SCStreamConfiguration()
@@ -1045,6 +1093,32 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         return devices.first { device in
             stringProperty(kAudioDevicePropertyDeviceUID, device: device) == uid
         }
+    }
+
+    @available(macOS 14.2, *)
+    private static func audioProcessObjectID(for pid: pid_t) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var requestedPID = pid
+        var processObjectID = AudioObjectID(kAudioObjectUnknown)
+        var outputSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = withUnsafePointer(to: &requestedPID) { pidPointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                UInt32(MemoryLayout<pid_t>.size),
+                pidPointer,
+                &outputSize,
+                &processObjectID
+            )
+        }
+        guard status == noErr,
+              processObjectID != AudioObjectID(kAudioObjectUnknown)
+        else { return nil }
+        return processObjectID
     }
 
     private static func stringProperty(
@@ -1570,6 +1644,28 @@ private func exerciseRustAudioRuntime() throws {
 
 private func runRecorderSelfTests() throws {
     try exerciseRustAudioRuntime()
+
+    try selfTestRequire(
+        ParentAudioExclusionPolicy.parentPID(environment: [
+            "ARCO_EXCLUDE_PARENT_AUDIO": "1",
+            "ARCO_PARENT_PID": "4242",
+        ]) == 4_242,
+        "explicit GPT Live parent exclusion did not preserve the worker PID"
+    )
+    try selfTestRequire(
+        ParentAudioExclusionPolicy.parentPID(environment: [
+            "ARCO_EXCLUDE_PARENT_AUDIO": "0",
+            "ARCO_PARENT_PID": "4242",
+        ]) == nil,
+        "disabled parent-audio exclusion still excluded a process"
+    )
+    try selfTestRequire(
+        ParentAudioExclusionPolicy.parentPID(environment: [
+            "ARCO_EXCLUDE_PARENT_AUDIO": "1",
+            "ARCO_PARENT_PID": "not-a-pid",
+        ]) == nil,
+        "invalid parent PID was accepted for audio exclusion"
+    )
 
     var quality = AudioQualityAccumulator()
     quality.observe(samples: [0, 16_384, 32_767, -32_768], paddedFrames: 3, droppedFrames: 2)

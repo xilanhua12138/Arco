@@ -17,6 +17,7 @@ native/**/.build/
 macos/ArcoNativeUI/.build/
 rust/arco-core/target/
 rust/arco-audio-rt/target/
+rust/arco-gpt-live/target/
 /build/
 artifacts/
 .agents/

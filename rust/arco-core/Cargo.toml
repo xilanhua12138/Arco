@@ -1,6 +1,6 @@
 [package]
 name = "arco-core"
-version = "0.3.15"
+version = "0.3.16"
 description = "Framework-independent backend for the native Arco macOS app"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -47,6 +47,7 @@ tempfile = "3.15"
 tokio = { version = "1.44", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "2.12", features = ["json"] }
+url = "2.5"
 urlencoding = "2.1"
 uuid = { version = "1.23", features = ["v4"] }
 wait-timeout = "0.2"

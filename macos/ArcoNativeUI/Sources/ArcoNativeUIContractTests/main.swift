@@ -193,6 +193,61 @@ private actor FirstInitializationRequestGate {
 }
 
 @MainActor
+private final class TestGPTLiveSessionHandle: GPTLiveSessionHandle {
+    private(set) var stopCount = 0
+    private var termination: CheckedContinuation<Void, any Error>?
+    private var pendingResult: Result<Void, any Error>?
+
+    func waitUntilExit() async throws {
+        if let pendingResult {
+            return try pendingResult.get()
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            termination = continuation
+        }
+    }
+
+    func stop() async {
+        stopCount += 1
+        finish(.success(()))
+    }
+
+    func fail(_ error: any Error) {
+        finish(.failure(error))
+    }
+
+    private func finish(_ result: Result<Void, any Error>) {
+        guard let termination else {
+            pendingResult = result
+            return
+        }
+        self.termination = nil
+        termination.resume(with: result)
+    }
+}
+
+private actor GPTLiveStartGate {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func waitForRelease() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started { await Task.yield() }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+@MainActor
 private final class TestCaptureSurfaces: CaptureSurfaceCoordinating {
     var failToShow = false
     private(set) var showCount = 0
@@ -252,6 +307,18 @@ private func detail(id: String, lineCount: Int = 6, live: Bool = false) -> Meeti
             )
         },
         rawMarkdown: ""
+    )
+}
+
+private func gptLiveRequest(
+    mode: AudioMode,
+    meetingID: String = "meeting",
+    provider: ProviderID = .codex
+) -> GPTLiveSessionRequest {
+    GPTLiveSessionRequest(
+        mode: mode,
+        transcriptPath: "/tmp/\(meetingID).md",
+        provider: provider
     )
 }
 
@@ -412,6 +479,261 @@ private func testProviderRouting() {
     )
     expect(unavailable.provider, .codex, "Unavailable route keeps configured Primary identity")
     expectTrue(!unavailable.available, "Unavailable route is disabled")
+}
+
+@MainActor
+private func testGPTLiveSessionStateMachine() async {
+    let startedRequests = LockedBox<[GPTLiveSessionRequest]>([])
+    let handle = TestGPTLiveSessionHandle()
+    let model = GPTLiveSessionModel(
+        start: { request in
+            startedRequests.mutate { $0.append(request) }
+            return handle
+        },
+        stopPending: {}
+    )
+
+    await model.toggle(request: gptLiveRequest(mode: .both))
+    expect(model.status.phase, .connected, "GPT Live reaches connected after the worker is ready")
+    expect(
+        startedRequests.read { $0 },
+        [gptLiveRequest(mode: .both)],
+        "GPT Live receives the meeting audio mode, transcript, and agent provider"
+    )
+
+    await model.toggle(request: gptLiveRequest(mode: .both))
+    expect(model.status, .idle, "A second click disconnects GPT Live")
+    expect(handle.stopCount, 1, "Disconnect stops the owned GPT Live worker exactly once")
+
+    let failureModel = GPTLiveSessionModel(
+        start: { _ in throw BackendTransportError.backend("OpenAI sign-in expired") },
+        stopPending: {}
+    )
+    await failureModel.toggle(request: gptLiveRequest(mode: .mic))
+    expect(failureModel.status.phase, .failed, "A worker launch error becomes a retryable failed state")
+    expect(
+        failureModel.status.message,
+        "OpenAI sign-in expired",
+        "GPT Live preserves the actionable worker error"
+    )
+}
+
+@MainActor
+private func testGPTLiveConnectingCanBeCancelledAndLateStartsAreRejected() async {
+    let gate = GPTLiveStartGate()
+    let lateHandle = TestGPTLiveSessionHandle()
+    let pendingStopCount = LockedBox(0)
+    let model = GPTLiveSessionModel(
+        start: { _ in
+            await gate.waitForRelease()
+            return lateHandle
+        },
+        stopPending: { pendingStopCount.mutate { $0 += 1 } }
+    )
+
+    let connect = Task { @MainActor in
+        await model.toggle(request: gptLiveRequest(mode: .system))
+    }
+    await gate.waitUntilStarted()
+    expect(model.status.phase, .connecting, "The first click exposes the connecting state")
+
+    await model.toggle(request: gptLiveRequest(mode: .system))
+    expect(model.status, .idle, "Clicking while connecting cancels and returns to idle")
+    expect(pendingStopCount.read { $0 }, 1, "Cancelling asks the launcher to stop the pending worker")
+
+    await gate.release()
+    await connect.value
+    expect(model.status, .idle, "A late start completion cannot reconnect after cancellation")
+    expect(lateHandle.stopCount, 1, "A late worker handle is stopped instead of being leaked")
+}
+
+@MainActor
+private func testGPTLiveUnexpectedWorkerExitIsVisible() async {
+    let handle = TestGPTLiveSessionHandle()
+    let model = GPTLiveSessionModel(start: { _ in handle }, stopPending: {})
+
+    await model.toggle(request: gptLiveRequest(mode: .both))
+    handle.fail(BackendTransportError.backend("WebRTC connection ended"))
+    let failed = await eventually { model.status.phase == .failed }
+
+    expectTrue(failed, "An unexpected GPT Live worker exit becomes visible")
+    expect(model.status.message, "WebRTC connection ended", "Unexpected exits preserve their reason")
+}
+
+@MainActor
+private func testGPTLiveDisconnectsWhenCaptureStopsOutsideTheMainWindow() async {
+    let backend = ScriptedBackend()
+    backend.respond("list_meetings", with: [MeetingSummary]())
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: capture(phase: .idle))
+    installStorageHandlers(on: backend)
+    installSetupSuccessHandlers(on: backend)
+
+    let handle = TestGPTLiveSessionHandle()
+    let environment = ArcoAppEnvironment(
+        startGPTLiveSession: { _ in handle },
+        loadGPTLiveCredential: {
+            GPTLiveCredentialStatus(phase: .connected, identity: "member@example.com")
+        }
+    )
+    let controller = makeController(backend: backend, environment: environment)
+    await controller.initialize()
+    controller.changeGPTLiveBetaEnabled(true)
+
+    let liveSummary = summary(id: "external-stop-meeting")
+    backend.respond(
+        "start_capture",
+        with: capture(phase: .recording, meetingId: liveSummary.id, mode: .both)
+    )
+    backend.respond("list_meetings", with: [liveSummary])
+    backend.respond("read_meeting", with: detail(id: liveSummary.id))
+    backend.respond("list_agent_turns", with: [AgentTurn]())
+    backend.respond("list_attachments", with: [MeetingAttachment]())
+    await controller.toggleCapture()
+    await controller.toggleGPTLive()
+    expect(controller.gptLiveSession.status.phase, .connected, "Precondition: GPT Live is connected")
+
+    controller.captureStateChanged(capture(phase: .idle))
+    let stopped = await eventually { handle.stopCount == 1 }
+
+    expectTrue(stopped, "Any capture-stop event disconnects GPT Live without relying on the main view")
+    expect(controller.gptLiveSession.status, .idle, "External capture stop returns GPT Live to idle")
+    controller.captureStateChanged(capture(phase: .idle))
+    try? await Task.sleep(for: .milliseconds(20))
+    expect(handle.stopCount, 1, "Repeated idle capture events do not stop the same worker twice")
+    controller.store.dispose()
+}
+
+@MainActor
+private func testGPTLiveButtonPresentationCoversEveryState() {
+    expect(
+        GPTLiveButtonPresentation.labelKey(for: .idle),
+        "agent.gptLiveConnect",
+        "Idle GPT Live button offers an explicit connection"
+    )
+    expect(
+        GPTLiveButtonPresentation.labelKey(for: .connecting),
+        "agent.gptLiveCancel",
+        "The connecting button remains a useful cancel action"
+    )
+    expect(
+        GPTLiveButtonPresentation.labelKey(for: .connected),
+        "agent.gptLiveListening",
+        "Connected GPT Live shows that meeting audio is being sent"
+    )
+    expect(
+        GPTLiveButtonPresentation.labelKey(for: .disconnecting),
+        "agent.gptLiveDisconnecting",
+        "Disconnecting has an explicit busy label"
+    )
+    expect(
+        GPTLiveButtonPresentation.labelKey(for: .failed),
+        "agent.gptLiveRetry",
+        "A failed connection becomes an explicit retry action"
+    )
+    expectTrue(
+        GPTLiveButtonPresentation.isEnabled(for: .connecting),
+        "Users can cancel a slow GPT Live connection"
+    )
+    expectTrue(
+        !GPTLiveButtonPresentation.isEnabled(for: .disconnecting),
+        "Duplicate disconnect clicks are rejected"
+    )
+}
+
+@MainActor
+private func testGPTLiveWorkerStatusProtocolRejectsMalformedOutput() {
+    expect(
+        GPTLiveWorkerStatus.parse(line: #"{"type":"status","state":"connected"}"#),
+        GPTLiveWorkerStatus(state: .connected),
+        "The Swift launcher accepts the worker's exact connected event"
+    )
+    expect(
+        GPTLiveWorkerStatus.parse(
+            line: #"{"type":"status","state":"error","message":"OpenAI sign-in expired"}"#
+        ),
+        GPTLiveWorkerStatus(state: .error, message: "OpenAI sign-in expired"),
+        "The Swift launcher preserves an actionable bounded worker error"
+    )
+    expectTrue(
+        GPTLiveWorkerStatus.parse(line: #"{"type":"log","state":"connected"}"#) == nil,
+        "Non-status stderr output cannot mark GPT Live connected"
+    )
+    expectTrue(
+        GPTLiveWorkerStatus.parse(line: #"{"type":"status","state":"unknown"}"#) == nil,
+        "Unknown worker states are rejected"
+    )
+    expectTrue(
+        GPTLiveWorkerStatus.parse(line: String(repeating: "x", count: 4_097)) == nil,
+        "Oversized worker status lines are rejected before JSON parsing"
+    )
+}
+
+@MainActor
+private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
+    let backend = ScriptedBackend()
+    backend.respond("list_meetings", with: [MeetingSummary]())
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: capture(phase: .idle))
+    installStorageHandlers(on: backend)
+    installSetupSuccessHandlers(on: backend)
+
+    let startedRequests = LockedBox<[GPTLiveSessionRequest]>([])
+    let handle = TestGPTLiveSessionHandle()
+    let environment = ArcoAppEnvironment(
+        startGPTLiveSession: { request in
+            startedRequests.mutate { $0.append(request) }
+            return handle
+        },
+        loadGPTLiveCredential: {
+            GPTLiveCredentialStatus(phase: .connected, identity: "member@example.com")
+        }
+    )
+    let controller = makeController(backend: backend, environment: environment)
+    await controller.initialize()
+
+    await controller.toggleGPTLive()
+    expect(startedRequests.read { $0 }, [], "A default-off Beta never starts a voice worker")
+    expect(
+        controller.interfaceError,
+        "agent.gptLiveEnableFirst",
+        "A disabled Beta click explains how to enable it"
+    )
+
+    controller.dismissError()
+    controller.changeGPTLiveBetaEnabled(true)
+    await controller.toggleGPTLive()
+    expect(startedRequests.read { $0 }, [], "GPT Live cannot start outside an active meeting")
+    expect(
+        controller.interfaceError,
+        "agent.gptLiveMeetingRequired",
+        "An idle meeting click explains that recording is required"
+    )
+
+    let liveSummary = summary(id: "gpt-live-meeting")
+    backend.respond(
+        "start_capture",
+        with: capture(phase: .recording, meetingId: liveSummary.id, mode: .both)
+    )
+    backend.respond("list_meetings", with: [liveSummary])
+    backend.respond("read_meeting", with: detail(id: liveSummary.id))
+    backend.respond("list_agent_turns", with: [AgentTurn]())
+    backend.respond("list_attachments", with: [MeetingAttachment]())
+    await controller.toggleCapture()
+    await controller.toggleGPTLive()
+
+    expect(
+        startedRequests.read { $0 },
+        [gptLiveRequest(mode: .both, meetingID: liveSummary.id)],
+        "The active meeting starts one worker with its audio, current transcript, and Codex provider"
+    )
+    expect(controller.gptLiveSession.status.phase, .connected, "The controller exposes the connected voice state")
+
+    controller.changeGPTLiveBetaEnabled(false)
+    let stopped = await eventually { handle.stopCount == 1 }
+    expectTrue(stopped, "Turning the Beta off stops the active voice worker")
+    expect(controller.store.capture.phase, .recording, "Stopping voice never stops the meeting recording")
+    controller.store.dispose()
 }
 
 @MainActor
@@ -2097,6 +2419,13 @@ private func testLiveTranscriptEdgeTracksTentativeTextRefinements() {
 
 testNavigationAndCaptureInvariants()
 testProviderRouting()
+await testGPTLiveSessionStateMachine()
+await testGPTLiveConnectingCanBeCancelledAndLateStartsAreRejected()
+await testGPTLiveUnexpectedWorkerExitIsVisible()
+await testGPTLiveDisconnectsWhenCaptureStopsOutsideTheMainWindow()
+testGPTLiveButtonPresentationCoversEveryState()
+testGPTLiveWorkerStatusProtocolRejectsMalformedOutput()
+await testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting()
 testConfigurationContracts()
 testSourceExactLayoutContracts()
 testCurrentIdleAudioQuickControlHoverContract()

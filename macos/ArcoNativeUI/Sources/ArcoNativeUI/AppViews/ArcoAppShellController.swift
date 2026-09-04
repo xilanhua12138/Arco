@@ -18,6 +18,11 @@ public struct ArcoAppEnvironment {
     public var changeListeningShortcut: (_ shortcut: ListeningShortcut?) async -> Bool
     public var startListeningShortcutRecording: () async -> Bool
     public var cancelListeningShortcutRecording: () async -> Void
+    public var startGPTLiveSession: (_ request: GPTLiveSessionRequest) async throws -> any GPTLiveSessionHandle
+    public var stopPendingGPTLiveSession: () async -> Void
+    public var loadGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
+    public var connectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
+    public var disconnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
     public var localeChanged: (_ locale: AppLocale) -> Void
     public var relaunch: () async -> Void
     public var requestMeetingAccess: () -> Void
@@ -35,6 +40,13 @@ public struct ArcoAppEnvironment {
         changeListeningShortcut: @escaping (_ shortcut: ListeningShortcut?) async -> Bool = { _ in true },
         startListeningShortcutRecording: @escaping () async -> Bool = { true },
         cancelListeningShortcutRecording: @escaping () async -> Void = {},
+        startGPTLiveSession: @escaping (_ request: GPTLiveSessionRequest) async throws -> any GPTLiveSessionHandle = { _ in
+            throw GPTLiveSessionLaunchError.unavailable
+        },
+        stopPendingGPTLiveSession: @escaping () async -> Void = {},
+        loadGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
+        connectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
+        disconnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
         localeChanged: @escaping (_ locale: AppLocale) -> Void = { _ in },
         relaunch: @escaping () async -> Void = {},
         requestMeetingAccess: @escaping () -> Void = {},
@@ -51,6 +63,11 @@ public struct ArcoAppEnvironment {
         self.changeListeningShortcut = changeListeningShortcut
         self.startListeningShortcutRecording = startListeningShortcutRecording
         self.cancelListeningShortcutRecording = cancelListeningShortcutRecording
+        self.startGPTLiveSession = startGPTLiveSession
+        self.stopPendingGPTLiveSession = stopPendingGPTLiveSession
+        self.loadGPTLiveCredential = loadGPTLiveCredential
+        self.connectGPTLiveCredential = connectGPTLiveCredential
+        self.disconnectGPTLiveCredential = disconnectGPTLiveCredential
         self.localeChanged = localeChanged
         self.relaunch = relaunch
         self.requestMeetingAccess = requestMeetingAccess
@@ -126,11 +143,14 @@ public final class ArcoAppShellController: ObservableObject {
     @Published public private(set) var shortcutError: String?
     @Published public private(set) var meetingAccessAuthorized = false
     @Published public private(set) var automaticMeetingPromptsEnabled: Bool
+    @Published public private(set) var gptLiveBetaEnabled: Bool
+    @Published public private(set) var gptLiveCredential: GPTLiveCredentialStatus = .checking
 
     public let store: ArcoStore
     public let preferences: ArcoPreferences
     public let environment: ArcoAppEnvironment
     public let updateManager: UpdateManager
+    public let gptLiveSession: GPTLiveSessionModel
     public lazy var shortcutViewModel: ShortcutRecorderViewModel = ShortcutRecorderViewModel(
         value: listeningShortcut,
         onChange: { [weak self] shortcut in
@@ -172,6 +192,10 @@ public final class ArcoAppShellController: ObservableObject {
         self.preferences = preferences
         self.translate = translate
         self.environment = environment
+        gptLiveSession = GPTLiveSessionModel(
+            start: environment.startGPTLiveSession,
+            stopPending: environment.stopPendingGPTLiveSession
+        )
         updateManager = UpdateManager(
             currentVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
             dependencies: UpdateManager.Dependencies(
@@ -189,6 +213,7 @@ public final class ArcoAppShellController: ObservableObject {
         automaticMeetingPromptsEnabled = preferences
             .loadMeetingPromptPreference()
             .automaticPromptsEnabled
+        gptLiveBetaEnabled = preferences.loadGPTLiveBetaEnabled()
         locale = preferences.loadLocale()
         agentWorkspace = preferences.loadAgentWorkspace()
         let onboarding = preferences.loadOnboardingState()
@@ -199,6 +224,10 @@ public final class ArcoAppShellController: ObservableObject {
                 self?.objectWillChange.send()
                 self?.updateSettingsViewModel()
             }
+            .store(in: &cancellables)
+        gptLiveSession.$status
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
     }
 
@@ -242,6 +271,10 @@ public final class ArcoAppShellController: ObservableObject {
         }
         await store.initialize()
         _ = await setupTask?.value
+        gptLiveCredential = (try? await environment.loadGPTLiveCredential()) ?? GPTLiveCredentialStatus(
+            phase: .failed,
+            message: translate("settings.gptLiveStatusUnavailable", [:])
+        )
         updateDependentViewModels()
         Task { [weak self] in await self?.checkForUpdates() }
     }
@@ -337,6 +370,9 @@ public final class ArcoAppShellController: ObservableObject {
     public func toggleCapture(resumeMeetingID: String? = nil) async {
         guard !store.loading else { return }
         guard store.capture.phase != .stopping else { return }
+        if store.capture.phase == .recording {
+            await gptLiveSession.disconnect()
+        }
         if store.capture.phase == .recording, page == .current {
             topBarViewModelStorage = nil
         }
@@ -351,6 +387,7 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func captureCompletedMeetingChanged() {
+        captureStateChanged(store.capture)
         if page == .current, store.capture.phase != .recording {
             topBarViewModelStorage = nil
         }
@@ -367,6 +404,19 @@ public final class ArcoAppShellController: ObservableObject {
         dismissSettings()
         clearMeetingQuery()
         transition(to: .review)
+    }
+
+    /// Capture can stop from the main window, recording HUD, menu bar, or a
+    /// backend event. GPT Live follows the shared capture state instead of any
+    /// individual view lifecycle so none of those paths can leak a call.
+    public func captureStateChanged(_ state: CaptureState) {
+        guard state.phase != .recording,
+              gptLiveSession.status.phase != .idle,
+              gptLiveSession.status.phase != .disconnecting
+        else { return }
+        Task { @MainActor [weak self] in
+            await self?.gptLiveSession.disconnect()
+        }
     }
 
     public func openSettings(_ initialPage: SettingsPage = .general) {
@@ -472,6 +522,84 @@ public final class ArcoAppShellController: ObservableObject {
             generationSettings = settings
             updateSettingsViewModel()
         } catch { interfaceError = error.localizedDescription }
+    }
+
+    public func changeGPTLiveBetaEnabled(_ enabled: Bool) {
+        gptLiveBetaEnabled = enabled
+        preferences.saveGPTLiveBetaEnabled(enabled)
+        if !enabled, gptLiveSession.status.phase != .idle {
+            Task { @MainActor [weak self] in await self?.gptLiveSession.disconnect() }
+        }
+        updateSettingsViewModel()
+    }
+
+    public func connectGPTLiveCredential() async throws -> GPTLiveCredentialStatus {
+        if gptLiveSession.status.phase != .idle {
+            await gptLiveSession.disconnect()
+        }
+        gptLiveCredential = GPTLiveCredentialStatus(phase: .connecting)
+        updateSettingsViewModel()
+        do {
+            let status = try await environment.connectGPTLiveCredential()
+            gptLiveCredential = status
+            updateSettingsViewModel()
+            return status
+        } catch {
+            gptLiveCredential = GPTLiveCredentialStatus(
+                phase: .failed,
+                message: error.localizedDescription
+            )
+            updateSettingsViewModel()
+            throw error
+        }
+    }
+
+    public func disconnectGPTLiveCredential() async throws -> GPTLiveCredentialStatus {
+        if gptLiveSession.status.phase != .idle {
+            await gptLiveSession.disconnect()
+        }
+        gptLiveCredential = .checking
+        updateSettingsViewModel()
+        do {
+            let status = try await environment.disconnectGPTLiveCredential()
+            gptLiveCredential = status
+            updateSettingsViewModel()
+            return status
+        } catch {
+            gptLiveCredential = GPTLiveCredentialStatus(
+                phase: .failed,
+                message: error.localizedDescription
+            )
+            updateSettingsViewModel()
+            throw error
+        }
+    }
+
+    public func toggleGPTLive() async {
+        guard gptLiveBetaEnabled else {
+            interfaceError = translate("agent.gptLiveEnableFirst", [:])
+            return
+        }
+        guard gptLiveCredential.phase == .connected else {
+            interfaceError = translate("agent.gptLiveConnectAccountFirst", [:])
+            return
+        }
+        guard store.capture.phase == .recording,
+              store.capture.activeMeetingId != nil,
+              let transcriptPath = store.capture.transcriptPath ?? store.meeting?.summary.path
+        else {
+            interfaceError = translate("agent.gptLiveMeetingRequired", [:])
+            return
+        }
+        let provider = ProviderRoute.resolve(
+            config: providerConfiguration,
+            runtimes: store.runtimes
+        ).provider ?? providerConfiguration.primary ?? .codex
+        await gptLiveSession.toggle(request: GPTLiveSessionRequest(
+            mode: displayedAudioMode,
+            transcriptPath: transcriptPath,
+            provider: provider
+        ))
     }
 
     public func changeLocale(_ rawValue: String) {
@@ -694,6 +822,8 @@ public final class ArcoAppShellController: ObservableObject {
             doubaoCredentialBusy: store.doubaoCredentialBusy,
             providerConfiguration: providerConfiguration,
             generationSettings: generationSettings,
+            gptLiveBetaEnabled: gptLiveBetaEnabled,
+            gptLiveCredential: gptLiveCredential,
             shortcutError: shortcutError,
             meetingAccessAuthorized: meetingAccessAuthorized,
             automaticMeetingPromptsEnabled: automaticMeetingPromptsEnabled,
@@ -725,6 +855,15 @@ public final class ArcoAppShellController: ObservableObject {
             onOpenDoubaoConsole: { [environment] in try await environment.openURL(URL(string: "https://console.volcengine.com/speech/app")!) },
             onEditProviders: { [weak self] in self?.openProviderSetup() },
             onChangeGenerationSettings: { [weak self] in self?.changeGenerationSettings($0) },
+            onChangeGPTLiveBetaEnabled: { [weak self] in self?.changeGPTLiveBetaEnabled($0) },
+            onConnectGPTLiveCredential: { [weak self] in
+                guard let self else { return .missing }
+                return try await self.connectGPTLiveCredential()
+            },
+            onDisconnectGPTLiveCredential: { [weak self] in
+                guard let self else { return .missing }
+                return try await self.disconnectGPTLiveCredential()
+            },
             onChooseTranscriptDirectory: { [weak self] in await self?.chooseTranscriptDirectory() ?? false },
             onResetTranscriptDirectory: { [weak self] in await self?.store.setTranscriptDirectory(nil, query: self?.query ?? "") ?? false },
             onChooseNotesDirectory: { [weak self] in await self?.chooseNotesDirectory() ?? false },
