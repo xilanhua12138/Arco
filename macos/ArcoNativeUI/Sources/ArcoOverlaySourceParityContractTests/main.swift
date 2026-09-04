@@ -70,6 +70,7 @@ private let material = source("NativeOverlayMaterial.swift")
 private let coordinator = source("WindowCoordinator.swift")
 private let geometry = source("WindowGeometry.swift")
 private let application = appSource("ArcoApplication.swift")
+private let gptLiveProcess = source("GPTLiveProcess.swift")
 private let insight = nativeUISource("Views/InsightPanel.swift")
 
 expectTrue(!hud.isEmpty, "Recording HUD source contract must resolve the migrated source")
@@ -79,6 +80,7 @@ expectTrue(!material.isEmpty, "Overlay material source contract must resolve the
 expectTrue(!coordinator.isEmpty, "Window coordinator source contract must resolve the migrated source")
 expectTrue(!geometry.isEmpty, "Window geometry source contract must resolve the migrated source")
 expectTrue(!application.isEmpty, "Native application runtime source contract must resolve the migrated source")
+expectTrue(!gptLiveProcess.isEmpty, "GPT Live must have an isolated native process launcher")
 expectTrue(!insight.isEmpty, "Shared Agent interaction source contract must resolve the migrated source")
 
 expectTrue(
@@ -88,8 +90,23 @@ expectTrue(
 )
 expectTrue(
     sourceSection(application, from: "func shutdown()", until: "}\n}\n\nprivate struct AgentOverlayHostView")
-        .contains("backend.shutdown()"),
+        .contains("gptLiveProcessLauncher.stopImmediately()")
+        && sourceSection(application, from: "func shutdown()", until: "}\n}\n\nprivate struct AgentOverlayHostView")
+            .contains("backend.shutdown()"),
     "An explicit app quit must synchronously destroy the Rust runtime so an active transcript is finalized as interrupted"
+)
+expectTrue(
+    application.contains("startGPTLiveSession: { [weak gptLiveProcessLauncher] request in")
+        && application.contains("stopPendingGPTLiveSession: { [weak gptLiveProcessLauncher] in"),
+    "The app environment must route both GPT Live start and pending cancellation to one retained launcher"
+)
+expectTrue(
+    gptLiveProcess.contains("\"--mode\", request.mode.rawValue")
+        && gptLiveProcess.contains("\"--transcript\", request.transcriptPath")
+        && gptLiveProcess.contains("\"--provider\", request.provider.rawValue")
+        && gptLiveProcess.contains("try await handle.waitUntilConnected()")
+        && gptLiveProcess.contains("func stopImmediately()"),
+    "The GPT Live launcher must preserve audio mode and expose ready, graceful stop, and quit teardown paths"
 )
 
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
@@ -210,6 +227,13 @@ expectTrue(
         && collapsedAgentHeader.contains(".padding(.leading, 16)")
         && collapsedAgentHeader.contains(".padding(.trailing, 11)"),
     "Collapsed Agent chrome must preserve the source 10-point title rhythm and 16/11-point insets"
+)
+expectTrue(
+    collapsedAgentHeader.contains("if live, gptLiveBetaEnabled")
+        && collapsedAgentHeader.contains("GPTLiveBetaButton(")
+        && application.contains("gptLiveStatus: shellController.gptLiveSession.status")
+        && application.contains("await shellController.toggleGPTLive()"),
+    "The floating Ask Arco header must expose the same explicit live-only Beta connection as the docked panel"
 )
 let expandedTranscriptHeader = sourceSection(
     agent,

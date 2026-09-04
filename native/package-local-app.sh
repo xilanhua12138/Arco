@@ -37,6 +37,7 @@ trap cleanup EXIT HUP INT TERM
 cd "$ROOT"
 if [ "${ARCO_PACKAGE_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT/native/build-recorder.sh"
+  "$ROOT/native/build-gpt-live.sh"
   "$ROOT/native/build-deepgram-transcriber.sh"
   "$ROOT/native/build-elevenlabs-transcriber.sh"
   "$ROOT/native/build-doubao-transcriber.sh"
@@ -50,6 +51,10 @@ if [ ! -x "$APP/Contents/MacOS/Arco" ]; then
 fi
 if [ ! -x "$APP/Contents/Resources/native/arco-deepgram-transcriber" ]; then
   echo "Arco.app is missing the bundled Rust Deepgram runtime" >&2
+  exit 1
+fi
+if [ ! -x "$APP/Contents/Resources/native/arco-gpt-live" ]; then
+  echo "Arco.app is missing the bundled GPT Live runtime" >&2
   exit 1
 fi
 if [ ! -x "$APP/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
@@ -83,6 +88,9 @@ COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$STAGING/Arco.app"
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/recorder" \
   app.arco.desktop.recorder
+"$ROOT/native/codesign-local.sh" \
+  "$STAGING/Arco.app/Contents/Resources/native/arco-gpt-live" \
+  app.arco.desktop.gpt-live
 "$ROOT/native/codesign-local.sh" \
   "$STAGING/Arco.app/Contents/Resources/native/arco-deepgram-transcriber" \
   app.arco.desktop.deepgram-transcriber
@@ -158,6 +166,10 @@ ARCO_BOUNDARY_SKIP_CODESIGN=0 \
   "$ROOT/native/verify-native-boundaries.sh" "$MOUNT_POINT/Arco.app"
 if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
   echo "DMG is missing the bundled ElevenLabs runtime" >&2
+  exit 1
+fi
+if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-gpt-live" ]; then
+  echo "DMG is missing the bundled GPT Live runtime" >&2
   exit 1
 fi
 if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-doubao-transcriber" ]; then

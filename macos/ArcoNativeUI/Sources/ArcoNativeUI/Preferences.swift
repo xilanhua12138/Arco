@@ -43,6 +43,7 @@ public enum ArcoPreferenceKey {
     public static let audioMode = "arco.audioMode"
     public static let agentWorkspace = "arco.agentWorkspace"
     public static let agentTranscriptVisible = "arco.agentTranscriptVisible"
+    public static let gptLiveBetaEnabled = "arco.gptLiveBeta.enabled.v1"
     public static let locale = "arco.locale"
     public static let meetingPromptPreference = "arco.meetingPromptPreference.v1"
     public static let nativeMigrationMarker = "arco.nativePreferencesMigration.v1"
@@ -319,6 +320,14 @@ public final class ArcoPreferences {
             workspace.trimmingCharacters(in: .whitespacesAndNewlines),
             forKey: ArcoPreferenceKey.agentWorkspace
         )
+    }
+
+    public func loadGPTLiveBetaEnabled() -> Bool {
+        store.string(forKey: ArcoPreferenceKey.gptLiveBetaEnabled) == "true"
+    }
+
+    public func saveGPTLiveBetaEnabled(_ enabled: Bool) {
+        store.set(enabled ? "true" : "false", forKey: ArcoPreferenceKey.gptLiveBetaEnabled)
     }
 
     public func loadLocale(preferredLanguages: [String] = Locale.preferredLanguages) -> AppLocale {

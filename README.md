@@ -67,6 +67,7 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Streaming transcription | Choose Deepgram, Doubao, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
 | Multi-speaker separation | Choose Deepgram, Doubao, or a local Sortformer, Pyannote + WeSpeaker, or LS-EEND model independently from ASR. Mixed cloud/on-device pipelines remain streaming. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
 | Native local Agent | Sends questions through Codex CLI or Claude Code already installed and authenticated on the Mac. | Your meeting assistant can use the same project understanding and account you already trust. |
+| GPT Live voice questions (Beta) | After you opt in under **Settings → GPT Live** and connect ChatGPT with OAuth, use the meeting button to start or stop a live voice session. | Ask hands-free questions and hear concise answers; questions about meeting progress are delegated to the current transcript-aware Agent. |
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
 | Automatic meeting output | Generates a title after enough evidence and a summary when the meeting ends; both prompts are configurable. | Meetings become useful records without requiring a title or note-taking ritual up front. |
@@ -94,6 +95,8 @@ By default, transcripts and meeting state live at:
 - Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
+- GPT Live is an opt-in Beta and is off by default. Arco sends the active meeting audio to OpenAI only after you click the GPT Live button, and disconnects when you click again or stop the meeting.
+- ChatGPT OAuth credentials for GPT Live are stored in macOS Keychain and are managed separately from the Codex CLI login. This Beta currently depends on an undocumented ChatGPT backend interface and may stop working for some accounts or after upstream changes.
 
 ## Development
 

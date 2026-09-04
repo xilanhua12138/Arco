@@ -47,7 +47,7 @@ verify_signature() {
 
 require_executable "$MAIN"
 
-HELPERS="recorder arco-deepgram-transcriber arco-elevenlabs-transcriber arco-doubao-transcriber arco-local-transcriber"
+HELPERS="recorder arco-gpt-live arco-deepgram-transcriber arco-elevenlabs-transcriber arco-doubao-transcriber arco-local-transcriber"
 for helper in $HELPERS; do
   require_executable "$NATIVE/$helper"
 done
@@ -111,14 +111,14 @@ require_link "$LOCAL_WORKER" 'AVFAudio.framework' "The local-transcriber worker 
 reject_links "$LOCAL_WORKER" 'WebKit|JavaScriptCore|ScreenCaptureKit' "The local worker links an unrelated UI or capture framework"
 
 for binary in "$MAIN" "$NATIVE/recorder" "$NATIVE/arco-deepgram-transcriber" \
-  "$NATIVE/arco-elevenlabs-transcriber" "$NATIVE/arco-doubao-transcriber" "$LOCAL_WORKER"; do
+  "$NATIVE/arco-gpt-live" "$NATIVE/arco-elevenlabs-transcriber" "$NATIVE/arco-doubao-transcriber" "$LOCAL_WORKER"; do
   if strings "$binary" | grep -F 'FluidVoice' >/dev/null; then
     fail "FluidVoice must not be embedded in any Arco executable: $binary"
   fi
 done
 
 for binary in "$MAIN" "$NATIVE/recorder" "$NATIVE/arco-deepgram-transcriber" \
-  "$NATIVE/arco-elevenlabs-transcriber" "$NATIVE/arco-doubao-transcriber"; do
+  "$NATIVE/arco-gpt-live" "$NATIVE/arco-elevenlabs-transcriber" "$NATIVE/arco-doubao-transcriber"; do
   if strings "$binary" | grep -F 'FluidAudio' >/dev/null; then
     fail "FluidAudio escaped the isolated local-transcriber worker: $binary"
   fi
@@ -159,6 +159,7 @@ fi
 if [ "$SKIP_CODESIGN" != "1" ]; then
   verify_signature "$MAIN" app.arco.desktop
   verify_signature "$NATIVE/recorder" app.arco.desktop.recorder
+  verify_signature "$NATIVE/arco-gpt-live" app.arco.desktop.gpt-live
   verify_signature "$NATIVE/arco-deepgram-transcriber" app.arco.desktop.deepgram-transcriber
   verify_signature "$NATIVE/arco-elevenlabs-transcriber" app.arco.desktop.elevenlabs-transcriber
   verify_signature "$NATIVE/arco-doubao-transcriber" app.arco.desktop.doubao-transcriber

@@ -177,6 +177,15 @@ expectTrue(
     "Main composer must not retain the migration-only 63pt growth allowance"
 )
 expectTrue(
+    insightSource.contains("if live, gptLiveBetaEnabled, let onToggleGPTLive")
+        && insightSource.contains("GPTLiveBetaButton("),
+    "GPT Live must be an explicit active-meeting button in Ask Arco, gated by the Beta preference"
+)
+expectTrue(
+    !insightSource.contains("onAppear { onToggleGPTLive"),
+    "Opening Ask Arco must never start sending meeting audio automatically"
+)
+expectTrue(
     notesEmptySource.contains("interactive: viewModel.canCreateNote")
         && notesEmptySource.contains(".disabled(!viewModel.canCreateNote)")
         && notesEmptySource.contains(".allowsHitTesting(viewModel.canCreateNote)"),

@@ -26,6 +26,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
     case audio
     case output
     case agent
+    case gptLive
     case privacy
 
     public var id: String { rawValue }

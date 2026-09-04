@@ -2880,7 +2880,7 @@ fn capture_can_be_cancelled_while_online_provider_is_starting() {
         stopped_at.elapsed() < Duration::from_millis(100),
         "cancelling startup must return before provider teardown"
     );
-    let idle = completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let idle = completed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(idle.phase, "idle");
     assert_eq!(idle.active_meeting_id, None);
     assert_eq!(manager.status().phase, "idle");

@@ -50,6 +50,7 @@ fi
 chmod 755 "$MACOS/Arco"
 for helper in \
   recorder \
+  arco-gpt-live \
   arco-deepgram-transcriber \
   arco-elevenlabs-transcriber \
   arco-doubao-transcriber \
@@ -62,6 +63,7 @@ done
 
 if [ "${ARCO_SKIP_CODESIGN:-0}" != "1" ]; then
   [ ! -x "$RESOURCES/native/recorder" ] || "$ROOT/native/codesign-local.sh" "$RESOURCES/native/recorder" app.arco.desktop.recorder
+  [ ! -x "$RESOURCES/native/arco-gpt-live" ] || "$ROOT/native/codesign-local.sh" "$RESOURCES/native/arco-gpt-live" app.arco.desktop.gpt-live
   [ ! -x "$RESOURCES/native/arco-deepgram-transcriber" ] || "$ROOT/native/codesign-local.sh" "$RESOURCES/native/arco-deepgram-transcriber" app.arco.desktop.deepgram-transcriber
   [ ! -x "$RESOURCES/native/arco-elevenlabs-transcriber" ] || "$ROOT/native/codesign-local.sh" "$RESOURCES/native/arco-elevenlabs-transcriber" app.arco.desktop.elevenlabs-transcriber
   [ ! -x "$RESOURCES/native/arco-doubao-transcriber" ] || "$ROOT/native/codesign-local.sh" "$RESOURCES/native/arco-doubao-transcriber" app.arco.desktop.doubao-transcriber

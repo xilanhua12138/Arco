@@ -38,6 +38,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const EOF_FINALIZATION_TIMEOUT: Duration = FINAL_ACK_TIMEOUT;
 const MAX_PENDING_TRANSCRIPT_SEGMENTS: usize = 10_000;
 const WATERMARK_GAP_LOG_BUCKET_SECONDS: f64 = 30.0;
+const CROSS_CHANNEL_ECHO_MAX_START_DELTA_SECONDS: f64 = 0.75;
+const CROSS_CHANNEL_ECHO_MAX_END_DELTA_SECONDS: f64 = 1.5;
+const CROSS_CHANNEL_ECHO_MIN_TEXT_CHARACTERS: usize = 4;
+const CROSS_CHANNEL_ECHO_MIN_PARTIAL_CHARACTERS: usize = 6;
+const CROSS_CHANNEL_ECHO_MIN_LENGTH_RATIO_PERCENT: usize = 60;
+const CROSS_CHANNEL_ECHO_MAX_EDIT_PERCENT: usize = 30;
+const SAME_CHANNEL_REPLAY_MAX_TIME_DELTA_SECONDS: f64 = 0.05;
+const RECENT_WRITTEN_SEGMENT_LIMIT: usize = 64;
 const FATAL_ERROR_PREFIX: &str = "ARCO_DOUBAO_FATAL:";
 
 fn session_log_id() -> String {
@@ -386,6 +394,82 @@ struct Segment {
     end: f64,
 }
 
+fn normalized_echo_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn edit_distance(left: &[char], right: &[char]) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_character) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_character) in right.iter().enumerate() {
+            let substitution =
+                previous[right_index] + usize::from(left_character != right_character);
+            current[right_index + 1] = (current[right_index] + 1)
+                .min(previous[right_index + 1] + 1)
+                .min(substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn echo_text_matches(left: &str, right: &str, end_delta: f64) -> bool {
+    let left_count = left.chars().count();
+    let right_count = right.chars().count();
+    let shortest = left_count.min(right_count);
+    let longest = left_count.max(right_count);
+    if shortest < CROSS_CHANNEL_ECHO_MIN_TEXT_CHARACTERS {
+        return false;
+    }
+    if left == right {
+        return true;
+    }
+    if shortest >= CROSS_CHANNEL_ECHO_MIN_PARTIAL_CHARACTERS
+        && (left.contains(right) || right.contains(left))
+    {
+        return true;
+    }
+    if end_delta > CROSS_CHANNEL_ECHO_MAX_END_DELTA_SECONDS
+        || shortest * 100 < longest * CROSS_CHANNEL_ECHO_MIN_LENGTH_RATIO_PERCENT
+    {
+        return false;
+    }
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    edit_distance(&left, &right) * 100 <= longest * CROSS_CHANNEL_ECHO_MAX_EDIT_PERCENT
+}
+
+fn is_cross_channel_echo(left: &Segment, right: &Segment) -> bool {
+    if left.channel == right.channel
+        || (left.start - right.start).abs() > CROSS_CHANNEL_ECHO_MAX_START_DELTA_SECONDS
+        || left.start >= right.end
+        || right.start >= left.end
+    {
+        return false;
+    }
+    let left_text = normalized_echo_text(&left.text);
+    let right_text = normalized_echo_text(&right.text);
+    echo_text_matches(&left_text, &right_text, (left.end - right.end).abs())
+}
+
+fn is_same_channel_replay(left: &Segment, right: &Segment) -> bool {
+    if left.channel != right.channel
+        || left.speaker != right.speaker
+        || (left.start - right.start).abs() > SAME_CHANNEL_REPLAY_MAX_TIME_DELTA_SECONDS
+        || (left.end - right.end).abs() > SAME_CHANNEL_REPLAY_MAX_TIME_DELTA_SECONDS
+    {
+        return false;
+    }
+    let left_text = normalized_echo_text(&left.text);
+    let right_text = normalized_echo_text(&right.text);
+    !left_text.is_empty() && left_text == right_text
+}
+
 // Doubao restarts speaker numbering from 1 on every WebSocket session, so a
 // reconnect makes the same voice look like a new speaker. Keying labels by
 // the provider slot alone keeps one stable label per voice across reconnects;
@@ -425,7 +509,8 @@ struct TranscriptWriter {
     active_channels: [bool; 2],
     processed_until: [f64; 2],
     pending: Vec<Segment>,
-    live_lines: [Vec<LiveTranscriptLine>; 2],
+    recently_written: VecDeque<Segment>,
+    live_segments: [Vec<Segment>; 2],
     reported_watermark_gap_bucket: u64,
 }
 
@@ -454,7 +539,8 @@ impl TranscriptWriter {
             active_channels: [true, true],
             processed_until: [0.0, 0.0],
             pending: Vec::new(),
-            live_lines: [Vec::new(), Vec::new()],
+            recently_written: VecDeque::with_capacity(RECENT_WRITTEN_SEGMENT_LIMIT),
+            live_segments: [Vec::new(), Vec::new()],
             reported_watermark_gap_bucket: 0,
         })
     }
@@ -469,6 +555,26 @@ impl TranscriptWriter {
     }
 
     fn append(&mut self, segment: &Segment) -> Result<(), String> {
+        if self
+            .pending
+            .iter()
+            .chain(self.recently_written.iter())
+            .any(|candidate| is_same_channel_replay(candidate, segment))
+        {
+            return self.flush_ready();
+        }
+        if segment.channel == 1
+            && self.pending.iter().any(|candidate| {
+                candidate.channel == 0 && is_cross_channel_echo(candidate, segment)
+            })
+        {
+            return self.flush_ready();
+        }
+        if segment.channel == 0 {
+            self.pending.retain(|candidate| {
+                candidate.channel != 1 || !is_cross_channel_echo(candidate, segment)
+            });
+        }
         if self.pending.len() >= MAX_PENDING_TRANSCRIPT_SEGMENTS {
             return Err(format!(
                 "Doubao transcript reorder buffer exceeded {MAX_PENDING_TRANSCRIPT_SEGMENTS} segments"
@@ -501,29 +607,56 @@ impl TranscriptWriter {
 
     fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {
         let channel = channel.min(1);
-        self.live_lines[channel] = segments
-            .iter()
-            .map(|segment| self.live_line_for_segment(segment, "live"))
-            .collect();
+        self.live_segments[channel] = segments.to_vec();
         self.persist_live_snapshot()
     }
 
     fn clear_live_channel(&mut self, channel: usize) -> Result<(), String> {
-        self.live_lines[channel.min(1)].clear();
+        self.live_segments[channel.min(1)].clear();
         self.persist_live_snapshot()
     }
 
     fn clear_live(&mut self) -> Result<(), String> {
-        self.live_lines = [Vec::new(), Vec::new()];
+        self.live_segments = [Vec::new(), Vec::new()];
         self.persist_live_snapshot()
     }
 
     fn persist_live_snapshot(&self) -> Result<(), String> {
-        let mut lines = self
+        let mut visible = Vec::<(&Segment, &str)>::new();
+        for (segment, state) in self
             .pending
             .iter()
-            .map(|segment| self.live_line_for_segment(segment, "pending"))
-            .chain(self.live_lines.iter().flatten().cloned())
+            .map(|segment| (segment, "pending"))
+            .chain(
+                self.live_segments
+                    .iter()
+                    .flatten()
+                    .map(|segment| (segment, "live")),
+            )
+        {
+            if visible
+                .iter()
+                .any(|(candidate, _)| is_same_channel_replay(candidate, segment))
+            {
+                continue;
+            }
+            if segment.channel == 1
+                && visible.iter().any(|(candidate, _)| {
+                    candidate.channel == 0 && is_cross_channel_echo(candidate, segment)
+                })
+            {
+                continue;
+            }
+            if segment.channel == 0 {
+                visible.retain(|(candidate, _)| {
+                    candidate.channel != 1 || !is_cross_channel_echo(candidate, segment)
+                });
+            }
+            visible.push((segment, state));
+        }
+        let mut lines = visible
+            .into_iter()
+            .map(|(segment, state)| self.live_line_for_segment(segment, state))
             .collect::<Vec<_>>();
         lines.sort_by(|left, right| {
             left.timestamp
@@ -646,6 +779,10 @@ impl TranscriptWriter {
         let segments: Vec<_> = self.pending.drain(..ready).collect();
         for segment in segments {
             self.append_to_file(&segment)?;
+            if self.recently_written.len() == RECENT_WRITTEN_SEGMENT_LIMIT {
+                self.recently_written.pop_front();
+            }
+            self.recently_written.push_back(segment);
         }
         Ok(())
     }
@@ -3275,6 +3412,315 @@ mod tests {
             writer.reported_watermark_gap_bucket, 0,
             "a recovered channel resets the metric for a future incident"
         );
+    }
+
+    #[test]
+    fn simultaneous_cross_channel_echo_is_written_once_and_prefers_remote_audio() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 3,
+                label: "In room 4".into(),
+                text: "可以的，我能说中文，你想问什么？".into(),
+                start: 22.362,
+                end: 25.181,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 1,
+                label: "Remote 2".into(),
+                text: "可以的，我能说中文，你想问什么。".into(),
+                start: 22.252,
+                end: 24.902,
+            })
+            .unwrap();
+        writer.advance(0, 26.0).unwrap();
+        writer.advance(1, 26.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(content.contains("Remote 2:** 可以的，我能说中文，你想问什么。"));
+        assert!(content.contains("arco channel=0 speaker=1"));
+        assert!(!content.contains("In room 4"));
+        assert!(!content.contains("arco channel=1 speaker=3"));
+    }
+
+    #[test]
+    fn acoustically_leaked_remote_speech_is_deduplicated_despite_asr_mistakes() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "现在在做 GPT 6月2日验收，声音卡顿和重复短信已修复，正在验证并进度查询功能。"
+                    .into(),
+                start: 10.1,
+                end: 14.2,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "现在在做 GPT Live Beta 验收，声音卡顿和重复转写已修复，正在验证会议进度查询功能。".into(),
+                start: 10.0,
+                end: 14.0,
+            })
+            .unwrap();
+        writer.advance(0, 15.0).unwrap();
+        writer.advance(1, 15.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(content.contains("Remote 1"));
+        assert!(!content.contains("In room 1"));
+        assert_eq!(content.matches("正在验证").count(), 1);
+    }
+
+    #[test]
+    fn short_microphone_prefix_of_remote_speech_is_deduplicated() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "这次验收会议正在讨论。".into(),
+                start: 20.1,
+                end: 21.5,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "这次验收会议正在讨论 GPT Live Beta，现在正在验证会议进度查询。".into(),
+                start: 20.0,
+                end: 24.0,
+            })
+            .unwrap();
+        writer.advance(0, 25.0).unwrap();
+        writer.advance(1, 25.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(content.contains("Remote 1"));
+        assert!(!content.contains("In room 1"));
+        assert_eq!(content.matches("这次验收会议正在讨论").count(), 1);
+    }
+
+    #[test]
+    fn screenshot_gpt_live_echo_is_written_as_one_remote_participant_turn() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "这次验收会议正在讨论 GPT Live Data 我们已经修复了声音卡顿和重复转写，现在正在验证会议进度查询。".into(),
+                start: 30.0,
+                end: 36.0,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "这次验收会议正在讨论。".into(),
+                start: 30.2,
+                end: 32.1,
+            })
+            .unwrap();
+        writer.advance(0, 37.0).unwrap();
+        writer.advance(1, 37.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(content.contains("Remote 1"));
+        assert!(!content.contains("In room 1"));
+        assert_eq!(content.matches("这次验收会议正在讨论").count(), 1);
+    }
+
+    #[test]
+    fn repeated_final_segment_on_one_channel_is_written_once_despite_punctuation() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([false, true]);
+
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "我在看进度".into(),
+                start: 122.871,
+                end: 124.911,
+            })
+            .unwrap();
+        writer.advance(1, 125.0).unwrap();
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "我在看进度。".into(),
+                start: 122.871,
+                end: 124.911,
+            })
+            .unwrap();
+        writer.flush_all().unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert_eq!(content.matches("我在看进度").count(), 1);
+        assert_eq!(content.matches("arco channel=1 speaker=0").count(), 1);
+    }
+
+    #[test]
+    fn live_snapshot_hides_cross_channel_and_repeated_provider_echoes() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+
+        writer
+            .update_live(
+                0,
+                &[Segment {
+                    channel: 0,
+                    speaker: 0,
+                    label: "Remote 1".into(),
+                    text: "这次验收会议正在讨论 GPT Live Data，现在正在验证会议进度查询。".into(),
+                    start: 31.2,
+                    end: 44.092,
+                }],
+            )
+            .unwrap();
+        writer
+            .update_live(
+                1,
+                &[
+                    Segment {
+                        channel: 1,
+                        speaker: 0,
+                        label: "In room 1".into(),
+                        text: "这次验收会议正在讨论。".into(),
+                        start: 31.252,
+                        end: 35.512,
+                    },
+                    Segment {
+                        channel: 1,
+                        speaker: 0,
+                        label: "In room 1".into(),
+                        text: "这次验收会议正在讨论".into(),
+                        start: 31.252,
+                        end: 35.512,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let live = fs::read_to_string(crate::meetings::live_transcript_path(&transcript)).unwrap();
+        assert!(live.contains("Remote 1"));
+        assert!(!live.contains("In room 1"));
+        assert_eq!(live.matches("这次验收会议正在讨论").count(), 1);
+    }
+
+    #[test]
+    fn matching_words_at_different_times_are_not_treated_as_echo() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        for segment in [
+            Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "这个决定需要再确认。".into(),
+                start: 10.0,
+                end: 11.5,
+            },
+            Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "这个决定需要再确认。".into(),
+                start: 20.0,
+                end: 21.5,
+            },
+        ] {
+            writer.append(&segment).unwrap();
+        }
+        writer.advance(0, 22.0).unwrap();
+        writer.advance(1, 22.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert_eq!(content.matches("这个决定需要再确认。").count(), 2);
+        assert!(content.contains("Remote 1"));
+        assert!(content.contains("In room 1"));
+    }
+
+    #[test]
+    fn overlapping_different_speech_from_both_channels_is_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
+        writer.set_active_channels([true, true]);
+
+        writer
+            .append(&Segment {
+                channel: 0,
+                speaker: 0,
+                label: "Remote 1".into(),
+                text: "我建议先看用户反馈。".into(),
+                start: 10.0,
+                end: 12.0,
+            })
+            .unwrap();
+        writer
+            .append(&Segment {
+                channel: 1,
+                speaker: 0,
+                label: "In room 1".into(),
+                text: "我觉得还要核对成本。".into(),
+                start: 10.2,
+                end: 12.1,
+            })
+            .unwrap();
+        writer.advance(0, 13.0).unwrap();
+        writer.advance(1, 13.0).unwrap();
+
+        let content = fs::read_to_string(transcript).unwrap();
+        assert!(content.contains("我建议先看用户反馈。"));
+        assert!(content.contains("我觉得还要核对成本。"));
     }
 
     #[test]

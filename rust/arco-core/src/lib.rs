@@ -9,6 +9,8 @@ pub mod doubao_credentials;
 pub mod elevenlabs;
 pub mod elevenlabs_credentials;
 pub mod ffi;
+pub mod gpt_live;
+pub mod gpt_live_oauth;
 pub mod meeting_output;
 pub mod meeting_state;
 pub mod meetings;

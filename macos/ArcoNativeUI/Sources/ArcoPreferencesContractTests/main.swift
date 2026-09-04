@@ -117,6 +117,7 @@ private func testDefaultsAndRoundTrips() throws {
     try expect(preferences.loadAudioMode() == .both, "missing audio mode must use both")
     try expect(preferences.loadOnboardingState() == OnboardingState(), "missing onboarding state must be incomplete")
     try expect(preferences.loadAgentWorkspace() == nil, "missing workspace must stay nil")
+    try expect(!preferences.loadGPTLiveBetaEnabled(), "GPT-Live Beta must be disabled by default")
     try expect(preferences.loadLocale(preferredLanguages: ["zh-Hans-CN"]) == .simplifiedChinese, "Chinese system locale must map to zh-CN")
 
     let provider = ProviderConfiguration(setupComplete: true, primary: .codex, secondary: .claude)
@@ -148,6 +149,10 @@ private func testDefaultsAndRoundTrips() throws {
     try expect(preferences.loadAudioMode() == .system, "audio mode must round-trip")
     preferences.saveAgentWorkspace("  /Users/example/Arco  ")
     try expect(preferences.loadAgentWorkspace() == "/Users/example/Arco", "workspace must be trimmed and remain absolute")
+    preferences.saveGPTLiveBetaEnabled(true)
+    try expect(preferences.loadGPTLiveBetaEnabled(), "GPT-Live Beta opt-in must round-trip")
+    preferences.saveGPTLiveBetaEnabled(false)
+    try expect(!preferences.loadGPTLiveBetaEnabled(), "GPT-Live Beta opt-out must round-trip")
     preferences.saveLocale(.english)
     try expect(preferences.loadLocale(preferredLanguages: ["zh-CN"]) == .english, "saved locale must beat the system locale")
 
@@ -179,9 +184,11 @@ private func testUserDefaultsAdapter() throws {
 
     preferences.saveAudioMode(.mic)
     preferences.saveAgentWorkspace("/tmp/Arco")
+    preferences.saveGPTLiveBetaEnabled(true)
     preferences.saveLocale(.simplifiedChinese)
     try expect(preferences.loadAudioMode() == .mic, "UserDefaults adapter must persist scalar preferences")
     try expect(preferences.loadAgentWorkspace() == "/tmp/Arco", "UserDefaults adapter must persist workspace")
+    try expect(preferences.loadGPTLiveBetaEnabled(), "UserDefaults adapter must persist the GPT-Live Beta opt-in")
     try expect(preferences.loadLocale(preferredLanguages: ["en-US"]) == .simplifiedChinese, "UserDefaults adapter must persist locale")
 }
 
@@ -193,6 +200,7 @@ private func testMalformedAndInvalidStorage() throws {
         ArcoPreferenceKey.onboardingState: #"{"completed":"yes","skipped":false}"#,
         ArcoPreferenceKey.audioMode: "surround",
         ArcoPreferenceKey.agentWorkspace: "projects/Arco",
+        ArcoPreferenceKey.gptLiveBetaEnabled: "yes",
         ArcoPreferenceKey.locale: "not-a-locale",
     ])
     let preferences = ArcoPreferences(store: store)
@@ -203,6 +211,7 @@ private func testMalformedAndInvalidStorage() throws {
     try expect(preferences.loadOnboardingState() == OnboardingState(), "non-boolean onboarding fields must be rejected")
     try expect(preferences.loadAudioMode() == .both, "unknown audio mode must use both")
     try expect(preferences.loadAgentWorkspace() == nil, "relative workspace must not load")
+    try expect(!preferences.loadGPTLiveBetaEnabled(), "malformed GPT-Live Beta storage must fail closed")
     try expect(preferences.loadLocale(preferredLanguages: ["en-US"]) == .english, "malformed locale must fall back to the system locale")
 
     var valid = GenerationSettings.default

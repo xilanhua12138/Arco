@@ -66,6 +66,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 | 流式转写 | 可选择 Deepgram、豆包、ElevenLabs，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
 | 多说话人分离 | 独立选择 Deepgram、豆包，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
 | 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
+| GPT Live 语音提问（Beta） | 在**设置 → GPT Live**中主动开启并通过 OAuth 连接 ChatGPT，再用会议中的按钮连接或断开实时语音。 | 可以直接说出问题并听取简短回答；涉及会议进度的问题会交给读取当前转写的 Agent。 |
 | 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
 | 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |
 | 自动会议产出 | 内容足够后生成标题，会议结束后生成总结；两类 Prompt 都可配置。 | 无需会前命名或手动记笔记，也能得到可复用的会议记录。 |
@@ -90,6 +91,8 @@ Arco 本地优先并完全开源。默认数据位置：
 - Deepgram、豆包语音和 ElevenLabs 凭证均由 Rust 后端验证并分别保存在 macOS 钥匙串中，不会写入转写或日志。
 - Agent 问题通过所选的本地 CLI 发送；输入框会始终显示当前使用的是“仅转写”还是“转写 + 工作区”。
 - Codex 的转写与工作区模式会额外受到 macOS 只读沙箱保护。
+- GPT Live 是默认关闭、需要主动开启的 Beta 功能。只有点击会议中的 GPT Live 按钮后，Arco 才会把当前会议音频发送给 OpenAI；再次点击或停止会议会断开连接。
+- GPT Live 的 ChatGPT OAuth 凭证单独保存在 macOS 钥匙串中，不读取 Codex CLI 的登录信息。当前 Beta 依赖未公开的 ChatGPT 后端接口，部分账号可能不可用，上游改动也可能使它失效。
 
 ## 开发
 

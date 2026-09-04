@@ -17,6 +17,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
     public var doubaoCredentialBusy: Bool
     public var providerConfiguration: ProviderConfiguration
     public var generationSettings: GenerationSettings
+    public var gptLiveBetaEnabled: Bool
+    public var gptLiveCredential: GPTLiveCredentialStatus
     public var shortcutError: String?
     public var meetingAccessAuthorized: Bool
     public var automaticMeetingPromptsEnabled: Bool
@@ -43,6 +45,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         doubaoCredentialBusy: Bool = false,
         providerConfiguration: ProviderConfiguration = ProviderConfiguration(),
         generationSettings: GenerationSettings = .default,
+        gptLiveBetaEnabled: Bool = false,
+        gptLiveCredential: GPTLiveCredentialStatus = .missing,
         shortcutError: String? = nil,
         meetingAccessAuthorized: Bool = false,
         automaticMeetingPromptsEnabled: Bool = true,
@@ -68,6 +72,8 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         self.doubaoCredentialBusy = doubaoCredentialBusy
         self.providerConfiguration = providerConfiguration
         self.generationSettings = generationSettings
+        self.gptLiveBetaEnabled = gptLiveBetaEnabled
+        self.gptLiveCredential = gptLiveCredential
         self.shortcutError = shortcutError
         self.meetingAccessAuthorized = meetingAccessAuthorized
         self.automaticMeetingPromptsEnabled = automaticMeetingPromptsEnabled
@@ -107,6 +113,9 @@ public struct SettingsSheetActions {
     public var onOpenDoubaoConsole: () async throws -> Void
     public var onEditProviders: () -> Void
     public var onChangeGenerationSettings: (GenerationSettings) -> Void
+    public var onChangeGPTLiveBetaEnabled: (Bool) -> Void
+    public var onConnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
+    public var onDisconnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
     public var onChooseTranscriptDirectory: () async -> Bool
     public var onResetTranscriptDirectory: () async -> Bool
     public var onChooseNotesDirectory: () async -> Bool
@@ -134,6 +143,9 @@ public struct SettingsSheetActions {
         onOpenDoubaoConsole: @escaping () async throws -> Void = {},
         onEditProviders: @escaping () -> Void = {},
         onChangeGenerationSettings: @escaping (GenerationSettings) -> Void = { _ in },
+        onChangeGPTLiveBetaEnabled: @escaping (Bool) -> Void = { _ in },
+        onConnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
+        onDisconnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
         onChooseTranscriptDirectory: @escaping () async -> Bool = { true },
         onResetTranscriptDirectory: @escaping () async -> Bool = { true },
         onChooseNotesDirectory: @escaping () async -> Bool = { true },
@@ -160,6 +172,9 @@ public struct SettingsSheetActions {
         self.onOpenDoubaoConsole = onOpenDoubaoConsole
         self.onEditProviders = onEditProviders
         self.onChangeGenerationSettings = onChangeGenerationSettings
+        self.onChangeGPTLiveBetaEnabled = onChangeGPTLiveBetaEnabled
+        self.onConnectGPTLiveCredential = onConnectGPTLiveCredential
+        self.onDisconnectGPTLiveCredential = onDisconnectGPTLiveCredential
         self.onChooseTranscriptDirectory = onChooseTranscriptDirectory
         self.onResetTranscriptDirectory = onResetTranscriptDirectory
         self.onChooseNotesDirectory = onChooseNotesDirectory
@@ -272,6 +287,42 @@ public final class SettingsSheetViewModel: ObservableObject {
         guard !snapshot.audioModeLocked else { return }
         snapshot.audioMode = mode
         actions.onChangeAudioMode(mode)
+    }
+
+    public func setGPTLiveBetaEnabled(_ enabled: Bool) {
+        guard snapshot.gptLiveBetaEnabled != enabled else { return }
+        snapshot.gptLiveBetaEnabled = enabled
+        actions.onChangeGPTLiveBetaEnabled(enabled)
+    }
+
+    public func connectGPTLiveCredential() async {
+        guard !gptLiveCredentialBusy else { return }
+        snapshot.gptLiveCredential = GPTLiveCredentialStatus(phase: .connecting)
+        do {
+            snapshot.gptLiveCredential = try await actions.onConnectGPTLiveCredential()
+        } catch {
+            snapshot.gptLiveCredential = GPTLiveCredentialStatus(
+                phase: .failed,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    public func disconnectGPTLiveCredential() async {
+        guard !gptLiveCredentialBusy else { return }
+        snapshot.gptLiveCredential = .checking
+        do {
+            snapshot.gptLiveCredential = try await actions.onDisconnectGPTLiveCredential()
+        } catch {
+            snapshot.gptLiveCredential = GPTLiveCredentialStatus(
+                phase: .failed,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    public var gptLiveCredentialBusy: Bool {
+        [.checking, .connecting].contains(snapshot.gptLiveCredential.phase)
     }
 
     public func changeEngine(_ provider: TranscriptionProvider) {
