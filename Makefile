@@ -12,6 +12,7 @@ test:
 	cargo build --manifest-path rust/arco-core/Cargo.toml --lib
 	@set -e; for product in \
 		ArcoNativeUIContractTests \
+		ArcoProviderPresentationContractTests \
 		ArcoMarkdownContractTests \
 		ArcoTopBarContractTests \
 		ArcoContentSourceParityContractTests \

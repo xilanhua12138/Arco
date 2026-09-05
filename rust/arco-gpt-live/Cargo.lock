@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "arco-core"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "arco-gpt-live"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "arco-core",
  "async-http-proxy",
