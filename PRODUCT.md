@@ -2,7 +2,7 @@
 
 ## One sentence
 
-Arco is an Agent-first meeting workspace: it lets the user think with their own Codex or Claude CLI while a live transcript remains visible beside every answer as inspectable evidence.
+Arco is a conversation and thinking companion: it helps the user stay present, remember what was said, and explore ideas through an ongoing exchange with their own AI. Meeting transcripts remain available as inspectable evidence when they are part of the conversation.
 
 ## User and job
 
@@ -12,15 +12,25 @@ The core job is not “produce meeting notes.” It is:
 
 > Help me understand, answer, challenge, and follow through on this conversation while it is still happening, using context I already trust.
 
+## Thinking together
+
+- Brainstorming is a core interaction, not a special settings switch or a sequence of one-shot fact lookups.
+- When invited to participate, Arco can ask a useful follow-up, question an assumption, compare alternatives, and revise an idea with the user over multiple turns.
+- Low interference applies before the user invites Arco into the discussion. It must not force all invited conversations into short answers.
+- Response length follows the user's task: quick factual questions get concise answers; deliberate exploration can unfold across a longer conversation.
+- Distinguish what was said in a meeting from the Agent's own suggestions and hypotheses. Never present an invented owner, agreement, or decision as transcript evidence.
+- Preserve the discussion when the user hides the floating window or continues in the main window. Hiding a window does not end the conversation.
+- Brainstorming primarily revolves around the current meeting. Do not add a standalone general-chat homepage or require a brainstorming mode switch.
+
 ## Three layers
 
 1. **Evidence** — a timestamped, speaker-labelled transcript. This remains inspectable even if AI is disabled.
 2. **Interpretation** — optional Agent answers, generated meeting titles and end-of-meeting summaries from Codex or Claude native conversations with explicit context boundaries.
-3. **Outcomes** — only user-confirmed notes, decisions, open questions, and actions.
+3. **Reuse** — revisit the meeting and its answers, or copy an answer into the tool where the user needs it.
 
 Agent output never silently becomes a fact or task.
 
-The first implemented outcome is deliberately small: the user can save an Agent answer as a meeting note. Structured decision/action candidates remain a later step and will still require confirmation.
+There is no separate Notes feature. Answers persist with their meeting without a manual save step. Existing note files remain untouched and can be opened from Settings in Finder; they are legacy data, not a new workspace.
 
 ## Session invariants
 
@@ -46,7 +56,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 
 - First launch is a standalone product state, not a sheet over an already-running workspace. A single-purpose landing page leads into a stable setup workspace with five visible stages: choose and test a Primary with an optional Secondary CLI, choose and prepare transcription, verify the audio lanes required by the meeting type, confirm the global shortcut, then start the first meeting or enter Arco.
 - Skipping Agent setup enters a complete transcript-only product; it never traps the user behind an account-style gate.
-- Whenever capture is idle, Current keeps one focused `Start listening` surface without mounting the Agent workspace. Starting capture opens the transcript and Arco Agent together; if no CLI is connected, the Agent side offers setup without hiding the live transcript.
+- Whenever capture is idle, Current keeps one focused `Start listening` surface without mounting the Agent workspace. Starting capture opens the transcript. Ask Arco is available on demand; if no CLI is connected, the Agent side offers setup without hiding the live transcript.
 - The default global shortcut is `⌘ + ⇧ + Space`. It uses the macOS registered global-shortcut layer, starts or stops the single capture session while Arco is running, can be changed or disabled in Settings, and becomes an in-place test instead of starting an invisible recording during onboarding.
 - Existing users with a valid provider configuration are migrated past onboarding automatically.
 
@@ -65,7 +75,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 
 ### Ask during a meeting
 
-- Current opens directly into one persistent transcript workspace with the Agent docked at its right; asking and checking the evidence never require opening a drawer.
+- Current opens into one persistent transcript workspace. Ask Arco expands on demand and can be collapsed without losing the meeting thread, draft or context.
 - The global `Ask Arco` action opens the same meeting thread in a focused always-on-top window. Hiding and reopening it preserves the native meeting/session binding and draft; it does not select a recent unrelated CLI conversation.
 - Configure one Primary provider and an optional Secondary during setup. Every question uses the Primary unless that CLI runtime is unavailable before the request; normal request, authentication, or timeout errors never trigger a silent replay to the Secondary.
 - Each meeting, provider, and explicit context envelope owns a CLI-generated native session ID. Follow-up questions resume that exact ID; Arco never uses Codex `--last` or Claude `--continue`.
@@ -73,8 +83,8 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 - A user may attach reference documents (a resume, a JD, notes) to a meeting through the native file picker. Arco extracts the text itself and inlines it into the prompt as quoted reference material; the Agent never receives file-system access to the original file. Attachments appear as composer chips and in every answer's context receipts.
 - Use a quick action or ask a custom question.
 - Show the context actually sent with the answer. These receipts are context disclosure, not fabricated model citations.
-- Treat the provider session as conversation truth. Arco keeps only the meeting binding, a display cache, and saved-note metadata. A failed request preserves the draft for retry and never silently replaces a missing native session.
-- Let the user explicitly save or unsave an answer as a durable meeting note.
+- Treat the provider session as conversation truth. Arco keeps only the meeting binding, a display cache, and legacy note metadata for compatibility. A failed request preserves the draft for retry and never silently replaces a missing native session.
+- Persist answers with the meeting automatically. Offer Copy and context disclosure; do not ask the user to save an answer into a separate Notes feature.
 
 ### Revisit history
 
@@ -82,7 +92,7 @@ The first implemented outcome is deliberately small: the user can save an Agent 
 - Search titles and transcript text.
 - Group results by Today, This week, and Earlier.
 - Opening a result shows its transcript and Agent thread as a History review; it never changes the meaning or selection state of Current.
-- Preserve native-session bindings, cached answer cards, and user-confirmed saved notes beside the meeting evidence without modifying legacy transcript files.
+- Preserve native-session bindings, cached answer cards, and existing legacy note references without modifying legacy transcript files.
 - Show a generated summary as a quiet review section when one exists. Pending or failed generation does not add empty cards or technical status noise to the transcript.
 
 ## Nudge policy
@@ -111,7 +121,7 @@ No generic encouragement, constant summaries, invisible recording, or undisclose
 - A first-time user can start a meeting in under 30 seconds after permissions and the selected transcription provider are ready; model download time is excluded from this measure.
 - Live lines appear shortly after utterance finalization and survive an app refresh.
 - Every Agent answer exposes its context boundary and the context receipts actually sent. Exact line-level model citations remain a later capability.
-- Native Codex/Claude session bindings, cached answer cards, and saved-note state survive closing and reopening the app; a follow-up resumes the same provider ID.
+- Native Codex/Claude session bindings, and cached answer cards survive closing and reopening the app; a follow-up resumes the same provider ID.
 - Generated titles and summaries survive closing and reopening the app in the meeting sidecar; generating a summary resumes the title-generation session when the provider is unchanged.
 - The user can stop capture without leaving recorder/transcriber processes behind.
 - The user can stop or open Ask Arco from any Space without returning to the main window; the HUD does not steal focus when it appears.

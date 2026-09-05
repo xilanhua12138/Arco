@@ -200,12 +200,6 @@ public final class SettingsSheetViewModel: ObservableObject {
             if oldValue == .general {
                 Task { await shortcutViewModel.teardown() }
             }
-            if oldValue == .output {
-                outputViewModel.teardown()
-            }
-            if oldValue == .audio || page == .audio {
-                recognitionExpanded = true
-            }
         }
     }
     @Published public private(set) var snapshot: SettingsSheetSnapshot
@@ -216,7 +210,6 @@ public final class SettingsSheetViewModel: ObservableObject {
     @Published public private(set) var deepgramError: String?
     @Published public private(set) var elevenLabsError: String?
     @Published public private(set) var doubaoError: String?
-    @Published public var recognitionExpanded = true
 
     public let shortcutViewModel: ShortcutRecorderViewModel
     public let outputViewModel: MeetingOutputSettingsViewModel
@@ -241,6 +234,14 @@ public final class SettingsSheetViewModel: ObservableObject {
     public func updateExternalSnapshot(_ snapshot: SettingsSheetSnapshot) {
         self.snapshot = snapshot
         outputViewModel.updateExternalSettings(snapshot.generationSettings)
+    }
+
+    public func goBack() {
+        if page == .output, outputViewModel.detail != nil {
+            outputViewModel.suspend()
+        } else if let parent = page.parent {
+            page = parent
+        }
     }
 
     public var selectedASRModel: LocalModelDescriptor? {

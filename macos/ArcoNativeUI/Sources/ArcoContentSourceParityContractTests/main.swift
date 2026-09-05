@@ -43,34 +43,20 @@ private let insightSource = (try? String(
     contentsOf: sourcesRoot.appendingPathComponent("InsightPanel.swift"),
     encoding: .utf8
 )) ?? ""
-private let notesSource = (try? String(
-    contentsOf: sourcesRoot
-        .deletingLastPathComponent()
-        .appendingPathComponent("SetupViews/NotesPageView.swift"),
-    encoding: .utf8
-)) ?? ""
-private let notesEmptySource = notesSource
-    .components(separatedBy: "private var editorEmpty: some View {")
-    .dropFirst()
-    .first?
-    .components(separatedBy: "private var confirmationIsDelete")
-    .first ?? ""
-
 expectTrue(!transcriptSource.isEmpty, "Transcript source contract must resolve the migrated source")
 expectTrue(!insightSource.isEmpty, "Insight source contract must resolve the migrated source")
-expectTrue(!notesEmptySource.isEmpty, "Notes empty-state source contract must resolve the migrated source")
 
 expectClose(
     ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 68),
-    631.04,
+    664.0625,
     tolerance: 0.05,
-    "Transcript summary must preserve the source 68ch column at the inherited 16pt font"
+    "Transcript summary must preserve the source 68ch column at the native system 16pt font"
 )
 expectClose(
     ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 70),
-    649.60,
+    683.59375,
     tolerance: 0.05,
-    "Agent turns must preserve the source 70ch column at the inherited 16pt font"
+    "Agent turns must preserve the source 70ch column at the native system 16pt font"
 )
 expect(
     ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: -1),
@@ -107,8 +93,8 @@ expect(
     2,
     "Completed and pending Agent turns must both use the source 70ch cap"
 )
-expect(InsightSourceLayout.composerHeight(for: .main), 42, "Main composer must remain exactly two 21pt rows")
-expect(InsightSourceLayout.composerHeight(for: .agentOverlay), 40, "Agent overlay keeps its explicit source 40pt height")
+expect(InsightSourceLayout.composerHeight(for: .main), 36, "Main composer keeps two compact 18pt text rows")
+expect(InsightSourceLayout.composerHeight(for: .agentOverlay), 36, "Agent overlay uses the same compact editor height as the main window")
 expectTrue(
     insightSource.contains(".frame(height: InsightSourceLayout.composerHeight(for: layout))"),
     "Composer must use the fixed source height rather than growing to a third line"
@@ -163,8 +149,8 @@ expectTrue(
     "The composer must use the marked-text-aware native editor and track focus for its placeholder"
 )
 expectTrue(
-    insightSource.contains(".background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)"),
-    "Agent-overlay composer must inherit the stable workspace surface instead of drawing an opaque rectangle"
+    insightSource.contains("layout == .agentOverlay ? ArcoNativeColors.surfaceSubtle : ArcoNativeColors.surfaceDocument"),
+    "The floating composer is subtly tinted while the main composer stays white"
 )
 expectTrue(
     insightSource.contains(".foregroundStyle(sendButtonForeground)")
@@ -184,18 +170,6 @@ expectTrue(
 expectTrue(
     !insightSource.contains("onAppear { onToggleGPTLive"),
     "Opening Ask Arco must never start sending meeting audio automatically"
-)
-expectTrue(
-    notesEmptySource.contains("interactive: viewModel.canCreateNote")
-        && notesEmptySource.contains(".disabled(!viewModel.canCreateNote)")
-        && notesEmptySource.contains(".allowsHitTesting(viewModel.canCreateNote)"),
-    "Notes empty-state action must use the shared native regular-glass surface only when a meeting can own the note"
-)
-expectTrue(
-    !notesEmptySource.contains("ArcoNativeColors.action")
-        && notesEmptySource.contains(".padding(32)")
-        && notesEmptySource.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"),
-    "Notes empty state must stay centered without restoring the old solid action fill"
 )
 
 if failures.isEmpty {

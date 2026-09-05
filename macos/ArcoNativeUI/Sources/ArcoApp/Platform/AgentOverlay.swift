@@ -42,7 +42,6 @@ final class AgentOverlayModel {
 
     private let loadActiveSnapshot: () async throws -> AgentOverlaySnapshot
     private let runAsk: (InsightAskRequest) async throws -> Bool
-    private let toggleSaved: (String, String, Bool) async -> Bool
     private let chooseWorkspaceAction: () async -> String?
     private let attachDocumentAction: (String) async -> Bool
     private let removeAttachmentAction: (String, String) async -> Void
@@ -52,7 +51,6 @@ final class AgentOverlayModel {
         snapshot: AgentOverlaySnapshot = .empty,
         loadActiveSnapshot: @escaping () async throws -> AgentOverlaySnapshot,
         runAsk: @escaping (InsightAskRequest) async throws -> Bool,
-        toggleSaved: @escaping (String, String, Bool) async -> Bool,
         chooseWorkspace: @escaping () async -> String?,
         attachDocument: @escaping (String) async -> Bool = { _ in false },
         removeAttachment: @escaping (String, String) async -> Void = { _, _ in }
@@ -60,7 +58,6 @@ final class AgentOverlayModel {
         self.snapshot = snapshot
         self.loadActiveSnapshot = loadActiveSnapshot
         self.runAsk = runAsk
-        self.toggleSaved = toggleSaved
         self.chooseWorkspaceAction = chooseWorkspace
         self.attachDocumentAction = attachDocument
         self.removeAttachmentAction = removeAttachment
@@ -101,18 +98,6 @@ final class AgentOverlayModel {
         let succeeded = try await runAsk(request)
         if succeeded { await refresh() }
         return succeeded
-    }
-
-    func setSaved(meetingID: String, turnID: String, saved: Bool) async -> Bool {
-        let succeeded = await toggleSaved(meetingID, turnID, saved)
-        guard succeeded else { return false }
-        snapshot.replies = snapshot.replies.map { turn in
-            guard turn.id == turnID else { return turn }
-            var next = turn
-            next.savedAsNote = saved
-            return next
-        }
-        return true
     }
 
     func chooseWorkspace() async -> String? {
@@ -234,11 +219,13 @@ struct AgentOverlaySurfaceView: View {
     }
 
     private var agentHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable().scaledToFit().frame(width: 16, height: 16)
+                .accessibilityHidden(true)
             Text(translate("agent.askArco", [:]))
-                .font(ArcoTypography.sans(15, weight: .semibold))
+                .font(ArcoTypography.floatingHeading)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
-                .tracking(-0.15)
                 .lineLimit(1)
                 .frame(height: 22, alignment: .center)
                 .accessibilityAddTraits(.isHeader)
@@ -270,9 +257,8 @@ struct AgentOverlaySurfaceView: View {
     private var transcriptHeader: some View {
         HStack(spacing: 10) {
             Text(translate("transcript.heading", [:]))
-                .font(ArcoTypography.sans(13, weight: .medium))
+                .font(ArcoTypography.floatingHeading)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
-                .tracking(-0.13)
                 .lineLimit(1)
                 .frame(height: 22, alignment: .center)
                 .accessibilityAddTraits(.isHeader)
@@ -335,14 +321,14 @@ struct AgentOverlaySurfaceView: View {
                         translate: translate
                     )
                     .frame(width: geometry.size.width * 2 / 5)
-                    .background(Color.white.opacity(0.18))
+                    .background(ArcoNativeColors.surfaceDocument)
                     .overlay(alignment: .leading) {
                         ArcoNativeColors.line.frame(width: 0.5)
                     }
                 }
             }
         }
-        .background(ArcoNativeColors.surfaceDocument.opacity(0.92))
+        .background(ArcoNativeColors.surfaceDocument)
     }
 
     @ViewBuilder
@@ -366,16 +352,7 @@ struct AgentOverlaySurfaceView: View {
                 onAsk: { request in
                     try await model.ask(request)
                 },
-                onToggleSaved: { meetingID, turnID, saved in
-                    await model.setSaved(
-                        meetingID: meetingID,
-                        turnID: turnID,
-                        saved: saved
-                    )
-                },
-                onChooseWorkspace: {
-                    await model.chooseWorkspace()
-                },
+                onChooseWorkspace: { await model.chooseWorkspace() },
                 onAttachDocument: { meetingID in
                     await model.attachDocument(to: meetingID)
                 },
@@ -459,7 +436,7 @@ private struct AgentHeaderCloseButton: View {
             Image(systemName: symbol)
                 .font(.system(size: symbolSize, weight: symbolWeight))
                 .frame(width: 30, height: 30)
-                .contentShape(Circle())
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(AgentHeaderCloseButtonStyle())
         .accessibilityLabel(label)
@@ -503,18 +480,16 @@ private struct AgentHeaderCloseButtonBody: View {
     @State private var hovering = false
 
     var body: some View {
-        let shape = Circle()
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         configuration.label
             .foregroundStyle(hovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
             .contentShape(shape)
             .background(
                 hovering || configuration.isPressed
-                    ? Color.white.opacity(0.56)
-                    : Color.white.opacity(0.36),
+                    ? ArcoNativeColors.surfaceHover
+                    : Color.clear,
                 in: shape
             )
-            .overlay(shape.strokeBorder(ArcoNativeColors.line, lineWidth: 0.75))
-            .shadow(color: Color.black.opacity(0.06), radius: 1, y: 1)
             .onHover { hovering = $0 }
     }
 }

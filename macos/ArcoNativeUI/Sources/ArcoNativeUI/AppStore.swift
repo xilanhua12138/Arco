@@ -1108,7 +1108,6 @@ public final class ArcoStore {
         case "arco:agent-thread-changed":
             if let id = try? event.decode(String.self) {
                 _ = await refreshAgentTurns(id)
-                _ = await refreshSavedNotes(noteQuery)
             }
         case "arco:agent-attachments-changed":
             if let id = try? event.decode(String.self) { _ = await refreshAttachments(id) }
@@ -1117,7 +1116,7 @@ public final class ArcoStore {
         case "arco:meeting-output-changed":
             if let id = try? event.decode(String.self) { await refreshMeetingOutput(id) }
         case "arco:notes-changed":
-            _ = await refreshSavedNotes(noteQuery)
+            break
         case "arco:agent-stream":
             guard let stream = try? event.decode(AgentStreamEvent.self),
                   agentStreamingTurn?.requestId == stream.requestId,

@@ -7,7 +7,6 @@ SOURCES="$ROOT/macos/ArcoNativeUI/Sources"
 PRODUCT_SOURCES="$SOURCES/ArcoNativeUI $SOURCES/ArcoApp"
 OVERLAY="$PLATFORM/NativeOverlayMaterial.swift"
 THEME="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/Views/Theme.swift"
-NOTES_VIEW="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/SetupViews/NotesPageView.swift"
 MAIN_SHELL="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoMainShellView.swift"
 SETTINGS_SHEET="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoSettingsSheetView.swift"
 WINDOW_COORDINATOR="$PLATFORM/WindowCoordinator.swift"
@@ -36,14 +35,11 @@ if grep -E '\.glassEffect\(|GlassEffectContainer' "$HUD" "$AGENT" >/dev/null; th
   exit 1
 fi
 
-grep -q '\.onChange(of: viewModel.draft)' "$NOTES_VIEW" || {
-  echo "Notes must observe newly mounted draft state for title focus" >&2
+if grep -q 'navigationButton(.notes' "$MAIN_SHELL" ||
+   grep -q 'translate("agent.saveAsNote"' "$SOURCES/ArcoNativeUI/Views/InsightPanel.swift"; then
+  echo "Removed Notes navigation and save action must not return" >&2
   exit 1
-}
-grep -q 'titleFieldFocused = true' "$NOTES_VIEW" || {
-  echo "A new Notes draft must focus its title like the source input" >&2
-  exit 1
-}
+fi
 
 if awk '
   /if controller\.settingsOpen \{/ { candidate = NR }
