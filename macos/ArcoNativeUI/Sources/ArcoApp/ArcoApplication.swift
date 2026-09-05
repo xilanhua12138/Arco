@@ -340,13 +340,6 @@ private final class NativeApplicationRuntime {
                     contextScope: request.contextScope.rawValue
                 ))
             },
-            toggleSaved: { meetingID, turnID, saved in
-                await store.setAgentTurnSaved(
-                    meetingId: meetingID,
-                    turnId: turnID,
-                    saved: saved
-                )
-            },
             chooseWorkspace: { await shellController.chooseWorkspace() },
             attachDocument: { meetingID in
                 await shellController.attachDocument(to: meetingID)

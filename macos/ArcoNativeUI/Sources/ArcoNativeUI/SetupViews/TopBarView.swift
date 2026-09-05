@@ -494,7 +494,7 @@ public struct TopBarView: View {
     }
 
     private var currentTitleFont: Font {
-        ArcoTypography.sans(28, weight: .semibold)
+        ArcoTypography.meetingTitle
     }
 
     private var transcriptionProvider: String? {

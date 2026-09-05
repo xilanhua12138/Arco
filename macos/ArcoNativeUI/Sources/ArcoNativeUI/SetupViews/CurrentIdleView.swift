@@ -92,7 +92,7 @@ public struct CurrentIdleView: View {
                     } else {
                         HStack(alignment: .top, spacing: 14) {
                             statistics
-                            shortcuts.frame(width: 280)
+                            shortcuts.frame(width: 330)
                         }
                     }
                 }
@@ -109,7 +109,7 @@ public struct CurrentIdleView: View {
 
     private var hero: some View {
         let compact = viewportWidth <= ArcoLayoutMetrics.idleStackedViewportBreakpoint
-        let titleSize: CGFloat = compact ? 30 : 36
+        let titleSize: CGFloat = compact ? 28 : 32
         return VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 4) {
                 ForEach(Array([10, 20, 30, 38, 30, 20, 10].enumerated()), id: \.offset) { _, height in
@@ -125,7 +125,7 @@ public struct CurrentIdleView: View {
             Text(translate("capture.homeTitle", [:]))
                 .font(.system(size: titleSize, weight: .semibold, design: .default))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
-                .tracking(compact ? -0.60 : -0.90)
+                .tracking(-0.4)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -141,7 +141,7 @@ public struct CurrentIdleView: View {
                     enabled: !initializing && !busy,
                     action: onStart
                 )
-                .frame(minWidth: 142, minHeight: 44, maxHeight: 44)
+                .frame(width: 148, height: 44)
                 .fixedSize(horizontal: true, vertical: false)
 
                 Button(action: onOpenAudioSettings) {
@@ -168,7 +168,7 @@ public struct CurrentIdleView: View {
 
             Label(translate("capture.idleSavedToHistory", [:]), systemImage: "lock")
                 .font(ArcoTypography.tiny)
-                .foregroundStyle(ArcoNativeColors.inkFaint)
+                .foregroundStyle(ArcoNativeColors.inkMuted)
                 .labelStyle(ArcoTightLabelStyle(spacing: 5, iconSize: 12))
                 .padding(.top, 14)
         }
@@ -177,7 +177,7 @@ public struct CurrentIdleView: View {
 
     private var statistics: some View {
         let stats = CurrentMeetingStatistics.summarize(meetings)
-        return ArcoGlassSurface(cornerRadius: 18, tone: .neutral) {
+        return VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
                 Text(translate("capture.statsHeading", [:]))
                     .font(ArcoTypography.sans(12, weight: .medium))
@@ -201,10 +201,11 @@ public struct CurrentIdleView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("capture.statsHeading", [:]))
+        .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var shortcuts: some View {
-        ArcoGlassSurface(cornerRadius: 18, tone: .elevated) {
+        VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
                 Text(translate("capture.shortcutsHeading", [:]))
                     .font(ArcoTypography.sans(12, weight: .medium))
@@ -220,13 +221,14 @@ public struct CurrentIdleView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("capture.shortcutsHeading", [:]))
+        .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func statistic(_ symbol: String, _ titleKey: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Label(translate(titleKey, [:]), systemImage: symbol)
                 .font(ArcoTypography.tiny)
-                .foregroundStyle(ArcoNativeColors.inkFaint)
+                .foregroundStyle(ArcoNativeColors.inkMuted)
                 .labelStyle(ArcoTightLabelStyle(spacing: 6, iconSize: 15))
                 .frame(height: 15, alignment: .leading)
             Text(value)
@@ -244,7 +246,7 @@ public struct CurrentIdleView: View {
         HStack(spacing: 12) {
             Label(translate(titleKey, [:]), systemImage: symbol)
                 .font(ArcoTypography.tiny)
-                .foregroundStyle(ArcoNativeColors.inkFaint)
+                .foregroundStyle(ArcoNativeColors.inkMuted)
                 .labelStyle(ArcoTightLabelStyle(spacing: 7, iconSize: 14))
                 .frame(height: 28)
             Spacer(minLength: 0)

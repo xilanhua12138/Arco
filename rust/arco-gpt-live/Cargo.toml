@@ -1,6 +1,6 @@
 [package]
 name = "arco-gpt-live"
-version = "0.3.16"
+version = "0.3.17"
 description = "Beta GPT-Live WebRTC worker and transport probe for Arco"
 authors = ["Arco contributors"]
 license = "MIT"

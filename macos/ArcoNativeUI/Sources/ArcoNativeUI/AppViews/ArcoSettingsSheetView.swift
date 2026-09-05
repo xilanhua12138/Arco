@@ -1,22 +1,26 @@
 import SwiftUI
 
 public struct ArcoSettingsSheetView: View {
+    @Environment(\.openURL) private var openURL
     @ObservedObject private var viewModel: SettingsSheetViewModel
     private let translate: ArcoTranslate
+    private let providerViewModel: ProviderSetupViewModel?
 
 
     public init(
         viewModel: SettingsSheetViewModel,
+        providerViewModel: ProviderSetupViewModel? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english
     ) {
         self.viewModel = viewModel
+        self.providerViewModel = providerViewModel
         self.translate = translate
     }
 
     public var body: some View {
         GeometryReader { geometry in
         ZStack {
-            Color.black.opacity(0.36).ignoresSafeArea()
+            Color.black.opacity(0.28).ignoresSafeArea()
                 .onTapGesture { viewModel.actions.onClose() }
 
             HStack(spacing: 0) {
@@ -30,6 +34,16 @@ public struct ArcoSettingsSheetView: View {
                             .padding(.horizontal, 36)
                             .padding(.top, 12)
                             .padding(.bottom, 24)
+                    }
+                    if viewModel.page == .agentConnection, let providerViewModel {
+                        ProviderSetupView(viewModel: providerViewModel,
+                            shortcutViewModel: viewModel.shortcutViewModel,
+                            locale: .constant(viewModel.snapshot.locale), translate: translate, embeddedInSettings: true)
+                            .connectionSaveButton
+                            .padding(.horizontal, 36)
+                            .padding(.vertical, 16)
+                            .background(ArcoNativeColors.surfaceSettingsContent)
+                            .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
                     }
                 }
                 .background(ArcoNativeColors.surfaceSettingsContent)
@@ -47,8 +61,7 @@ public struct ArcoSettingsSheetView: View {
                     .frame(height: 1)
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-            .shadow(color: .black.opacity(0.28), radius: 22, y: 20)
+            .shadow(color: .black.opacity(0.16), radius: 20, y: 10)
         }
         }
         .accessibilityElement(children: .contain)
@@ -66,9 +79,7 @@ public struct ArcoSettingsSheetView: View {
             VStack(spacing: 2) {
                 settingsNavigation(.general, symbol: "slider.horizontal.3")
                 settingsNavigation(.audio, symbol: "mic")
-                settingsNavigation(.output, symbol: "doc.text")
-                settingsNavigation(.agent, symbol: "command")
-                settingsNavigation(.gptLive, symbol: "waveform", beta: true)
+                settingsNavigation(.agent, symbol: "bubble.left.and.bubble.right")
                 settingsNavigation(.privacy, symbol: "checkmark.shield")
             }
             Spacer()
@@ -84,22 +95,19 @@ public struct ArcoSettingsSheetView: View {
         symbol: String,
         beta: Bool = false
     ) -> some View {
-        let selected = viewModel.page == page
+        let selected = viewModel.page.section == page
         return Button { viewModel.page = page } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 18)
                 Text(translate("settings.\(page.rawValue)", [:]))
                 if beta {
                     Text(translate("settings.betaBadge", [:]))
-                        .font(ArcoTypography.sans(8, weight: .bold))
-                        .foregroundStyle(ArcoNativeColors.brand)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(ArcoNativeColors.brand.opacity(0.1), in: Capsule())
+                        .font(ArcoTypography.sans(11))
+                        .foregroundStyle(ArcoNativeColors.inkMuted)
                 }
                 Spacer()
             }
-            .font(ArcoTypography.body)
+            .font(ArcoTypography.sans(13))
             .foregroundStyle(selected ? ArcoNativeColors.inkStrong : ArcoNativeColors.ink)
             .padding(10)
             .frame(maxWidth: .infinity, minHeight: 40)
@@ -119,9 +127,19 @@ public struct ArcoSettingsSheetView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                if viewModel.page.parent != nil {
+                    Button { viewModel.goBack() } label: {
+                        Label(translate("common.back", [:]), systemImage: "chevron.left")
+                            .font(ArcoTypography.sans(12))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .accessibilityLabel(translate("common.back", [:]))
+                    .padding(.bottom, 4)
+                }
                 Text(translate("settings.\(viewModel.page.rawValue)", [:]))
-                    .font(ArcoTypography.sans(24, weight: .semibold))
+                    .font(ArcoTypography.sans(20, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
                 Text(translate("settings.\(viewModel.page.rawValue)Description", [:]))
                     .font(ArcoTypography.sans(13))
@@ -130,7 +148,7 @@ public struct ArcoSettingsSheetView: View {
             Spacer()
             Button(action: viewModel.actions.onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 19))
+                    .font(.system(size: 14))
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(SettingsCloseButtonStyle())
@@ -148,7 +166,17 @@ public struct ArcoSettingsSheetView: View {
         case .audio: audioPage
         case .output:
             MeetingOutputSettingsView(viewModel: viewModel.outputViewModel, translate: translate)
-        case .agent: agentPage
+        case .agent: conversationPage
+        case .recognition: recognitionSettings
+        case .agentConnection:
+            if let providerViewModel {
+                ProviderSetupView(viewModel: providerViewModel,
+                    shortcutViewModel: viewModel.shortcutViewModel,
+                    locale: .constant(viewModel.snapshot.locale), translate: translate, embeddedInSettings: true)
+                    .connectionSettings
+            } else {
+                agentPage
+            }
         case .gptLive: gptLivePage
         case .privacy: privacyPage
         }
@@ -159,7 +187,7 @@ public struct ArcoSettingsSheetView: View {
             SettingsControlRow {
                 VStack(alignment: .leading, spacing: 1) {
                     Label(translate("settings.appLanguage", [:]), systemImage: "globe")
-                        .font(ArcoTypography.sans(12, weight: .medium))
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     Text(translate("settings.appLanguageHelp", [:]))
                         .font(ArcoTypography.tiny)
@@ -351,7 +379,7 @@ public struct ArcoSettingsSheetView: View {
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(translate("settings.meetingType", [:]))
-                        .font(ArcoTypography.bodyStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                 HStack(spacing: 8) {
                     audioScenario(.both)
@@ -362,18 +390,11 @@ public struct ArcoSettingsSheetView: View {
             }
 
             VStack(spacing: 0) {
-                Button { viewModel.recognitionExpanded.toggle() } label: {
-                    disclosureLabel("settings.recognition", summary: "\(recognitionSummary) · \(diarizationSummary)")
-                }
-                .buttonStyle(.plain)
-                if viewModel.recognitionExpanded {
-                    recognitionSettings
-                        .padding(.top, 2)
-                        .padding(.bottom, 16)
-                }
+                settingsDetailRow(.recognition, help: "settings.recognitionHelp", value: recognitionSummary,
+                    status: recognitionStatus)
+                settingsDetailRow(.output, help: "settings.outputHelp", value: translate("settings.outputSummary", [:]))
             }
-            .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-            .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
+
         }
     }
 
@@ -387,7 +408,7 @@ public struct ArcoSettingsSheetView: View {
                     .foregroundStyle(ArcoNativeColors.inkMuted)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(audioScenarioTitle(viewModel.snapshot.audioMode))
-                        .font(ArcoTypography.bodyStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     Text(audioScenarioDescription(viewModel.snapshot.audioMode))
                         .font(ArcoTypography.sans(12))
@@ -419,7 +440,7 @@ public struct ArcoSettingsSheetView: View {
                 audioModeIcon(mode)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(audioScenarioTitle(mode))
-                        .font(ArcoTypography.bodyStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     Text(audioScenarioDescription(mode))
                         .font(ArcoTypography.small)
@@ -531,7 +552,7 @@ public struct ArcoSettingsSheetView: View {
     private var cloudASRSettings: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(translate("settings.asrProvider", [:]))
-                .font(ArcoTypography.sans(12, weight: .medium))
+                .font(ArcoTypography.sans(13, weight: .medium))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .padding(.bottom, 8)
             HStack(spacing: 8) {
@@ -580,7 +601,7 @@ public struct ArcoSettingsSheetView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsControlRow {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(translate("settings.model", [:])).font(ArcoTypography.sans(12, weight: .medium))
+                    Text(translate("settings.model", [:])).font(ArcoTypography.sans(13, weight: .medium))
                     Text(viewModel.selectedASRModel.map { translate($0.detailKey, [:]) } ?? "")
                         .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
@@ -602,7 +623,7 @@ public struct ArcoSettingsSheetView: View {
 
             SettingsControlRow {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(translate("settings.language", [:])).font(ArcoTypography.sans(12, weight: .medium))
+                    Text(translate("settings.language", [:])).font(ArcoTypography.sans(13, weight: .medium))
                     Text(translate("settings.recognitionLanguageHelp", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
@@ -654,7 +675,7 @@ public struct ArcoSettingsSheetView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.warning)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(translate("settings.elevenLabsBuiltIn", [:])).font(ArcoTypography.sans(12, weight: .medium))
+                        Text(translate("settings.elevenLabsBuiltIn", [:])).font(ArcoTypography.sans(13, weight: .medium))
                         Text(translate("settings.elevenLabsDiarizationTiming", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                     }
                 }
@@ -690,7 +711,7 @@ public struct ArcoSettingsSheetView: View {
             case .deepgram, .doubao:
                 VStack(spacing: 0) {
                     Text(translate("settings.diarizationProvider", [:]))
-                        .font(ArcoTypography.sans(12, weight: .medium))
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, 8)
@@ -703,7 +724,7 @@ public struct ArcoSettingsSheetView: View {
             case .local:
                 VStack(alignment: .leading, spacing: 0) {
                     Text(translate("settings.localDiarizationModel", [:]))
-                        .font(ArcoTypography.sans(12, weight: .medium))
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .padding(.bottom, 6)
                     ForEach(arcoLocalDiarizationModels) { model in
                         diarizationModelRow(model)
@@ -726,7 +747,7 @@ public struct ArcoSettingsSheetView: View {
                                 ? "settings.deepgramBuiltIn" : "settings.deepgramAsr",
                             [:]
                         ))
-                        .font(ArcoTypography.sans(12, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
                         Text(translate(
                             viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram
                                 ? "settings.deepgramNoLocalModel" : "settings.deepgramAsrHelp",
@@ -797,7 +818,7 @@ public struct ArcoSettingsSheetView: View {
 
             Button { viewModel.setDiarizationModel(model.id) } label: {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.label).font(ArcoTypography.sans(12, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
+                    Text(model.label).font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
                     Text(translate(model.detailKey, [:]) + (status?.error.map { " · \($0)" } ?? ""))
                         .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted).lineLimit(1)
                 }
@@ -874,7 +895,7 @@ public struct ArcoSettingsSheetView: View {
                         Image(systemName: "checkmark").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.success)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(translate("settings.\(prefix)Ready", [:]))
-                                .font(ArcoTypography.sans(12, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
+                                .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
                             Text(translate("settings.\(prefix)Keychain", [:]))
                                 .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                         }
@@ -894,7 +915,7 @@ public struct ArcoSettingsSheetView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(translate("settings.\(prefix)PasteKey", [:]))
-                            .font(ArcoTypography.sans(12, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
+                            .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
                         Text(translate("settings.\(prefix)PasteKeyHelp", [:]))
                             .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                     }
@@ -951,7 +972,7 @@ public struct ArcoSettingsSheetView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.success)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(translate("settings.doubaoReady", [:])).font(ArcoTypography.sans(12, weight: .medium))
+                            Text(translate("settings.doubaoReady", [:])).font(ArcoTypography.sans(13, weight: .medium))
                             Text(translate("settings.doubaoKeychain", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                         }
                     }
@@ -966,7 +987,7 @@ public struct ArcoSettingsSheetView: View {
             } else {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(translate("settings.doubaoPasteCredentials", [:])).font(ArcoTypography.sans(12, weight: .medium))
+                        Text(translate("settings.doubaoPasteCredentials", [:])).font(ArcoTypography.sans(13, weight: .medium))
                         Text(translate("settings.doubaoPasteCredentialsHelp", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                     }
                     Spacer(minLength: 0)
@@ -1052,7 +1073,7 @@ public struct ArcoSettingsSheetView: View {
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(status?.installed == true ? translate("settings.modelReady", [:]) : translate("settings.modelRequired", [:]))
-                    .font(ArcoTypography.sans(12, weight: .medium))
+                    .font(ArcoTypography.sans(13, weight: .medium))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
                 Text((model.downloadSize ?? "") + (status?.error.map { " · \($0)" } ?? ""))
                     .font(ArcoTypography.tiny)
@@ -1106,7 +1127,7 @@ public struct ArcoSettingsSheetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 7) {
                         Text(translate("settings.gptLiveBeta", [:]))
-                            .font(ArcoTypography.sans(16, weight: .semibold))
+                            .font(ArcoTypography.sans(14, weight: .semibold))
                             .foregroundStyle(ArcoNativeColors.inkStrong)
                         Text(translate("settings.betaBadge", [:]))
                             .font(ArcoTypography.sans(9, weight: .bold))
@@ -1149,7 +1170,7 @@ public struct ArcoSettingsSheetView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(translate(gptLiveCredentialStatusKey, [:]))
-                        .font(ArcoTypography.bodyStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     if let detail = viewModel.snapshot.gptLiveCredential.identity
                         ?? viewModel.snapshot.gptLiveCredential.message
@@ -1220,6 +1241,55 @@ public struct ArcoSettingsSheetView: View {
         }
     }
 
+    private var conversationPage: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(spacing: 0) {
+                settingsDetailRow(.agentConnection, help: "settings.textConnectionHelp",
+                    value: viewModel.snapshot.providerConfiguration.primary?.displayName ?? translate("common.notConfigured", [:]),
+                    status: translate(viewModel.snapshot.runtimes.contains { $0.provider == viewModel.snapshot.providerConfiguration.primary && $0.available }
+                        ? "settings.runtimeDetected" : "settings.runtimeMissing", [:]))
+                settingsDetailRow(.gptLive, help: "settings.voiceConnectionHelp",
+                    value: translate(viewModel.snapshot.gptLiveBetaEnabled ? "settings.voiceEnabled" : "settings.voiceDisabled", [:]),
+                    status: translate(gptLiveCredentialStatusKey, [:]))
+            }
+            Text(translate("settings.meetingDiscussionHelp", [:]))
+                .font(ArcoTypography.sans(12))
+                .foregroundStyle(ArcoNativeColors.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func settingsDetailRow(_ destination: SettingsPage, help: String, value: String, status: String? = nil) -> some View {
+        Button { viewModel.page = destination } label: {
+            HStack(spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(translate("settings.\(destination.rawValue)", [:]))
+                        .font(ArcoTypography.sans(13, weight: .medium))
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                    Text(translate(help, [:]))
+                        .font(ArcoTypography.sans(12))
+                        .foregroundStyle(ArcoNativeColors.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(value).font(ArcoTypography.sans(13))
+                    if let status { Text(status).font(ArcoTypography.sans(11)).foregroundStyle(ArcoNativeColors.inkMuted) }
+                }
+                .foregroundStyle(ArcoNativeColors.ink)
+                .frame(maxWidth: 190, alignment: .trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12)).foregroundStyle(ArcoNativeColors.inkMuted)
+            }
+            .padding(.vertical, 22)
+            .frame(maxWidth: .infinity, minHeight: 88)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SettingsSurfaceButtonStyle(fill: .clear, hoverFill: ArcoNativeColors.surfaceHover, cornerRadius: 8))
+        .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
+    }
+
     private var agentPage: some View {
         VStack(alignment: .leading, spacing: 32) {
 
@@ -1227,7 +1297,7 @@ public struct ArcoSettingsSheetView: View {
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(translate("settings.currentConfiguration", [:]))
-                        .font(ArcoTypography.sans(16, weight: .semibold))
+                        .font(ArcoTypography.sans(14, weight: .semibold))
                     Text(translate("settings.configurationHelp", [:]))
                         .font(ArcoTypography.sans(12))
                         .foregroundStyle(ArcoNativeColors.inkMuted)
@@ -1235,7 +1305,7 @@ public struct ArcoSettingsSheetView: View {
                 Spacer()
                 Button(action: viewModel.actions.onEditProviders) {
                     Text(translate(viewModel.snapshot.providerConfiguration.setupComplete ? "common.editConfiguration" : "settings.setUpAgent", [:]))
-                        .font(ArcoTypography.sans(12, weight: .medium))
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -1269,7 +1339,7 @@ public struct ArcoSettingsSheetView: View {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(translate("settings.onThisMacHeading", [:]))
-                        .font(ArcoTypography.sans(16, weight: .semibold))
+                        .font(ArcoTypography.sans(14, weight: .semibold))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     Text(translate("settings.detectedCli", [:]))
                         .font(ArcoTypography.sans(12))
@@ -1280,7 +1350,7 @@ public struct ArcoSettingsSheetView: View {
                         HStack(spacing: 24) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(runtime.provider == .codex ? "Codex CLI" : "Claude Code")
-                                    .font(ArcoTypography.bodyStrong)
+                                    .font(ArcoTypography.sans(13, weight: .medium))
                                     .foregroundStyle(ArcoNativeColors.inkStrong)
                                 Text(runtime.version ?? translate("common.notDetected", [:]))
                                     .font(ArcoTypography.small)
@@ -1335,7 +1405,7 @@ public struct ArcoSettingsSheetView: View {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.shield").font(.system(size: 18))
                 Text(translate("settings.storageIntro", [:]))
-                    .font(ArcoTypography.body)
+                    .font(ArcoTypography.sans(13))
                     .foregroundStyle(ArcoNativeColors.ink)
             }
             .padding(.bottom, 16)
@@ -1351,16 +1421,25 @@ public struct ArcoSettingsSheetView: View {
                 choose: { await viewModel.chooseTranscriptDirectory() },
                 reset: { await viewModel.resetTranscriptDirectory() }
             )
-            storageRow(
-                symbol: "doc.text",
-                title: "settings.notes",
-                accessibilityTitle: "settings.notesStorage",
-                settings: viewModel.snapshot.notesStorage,
-                busy: viewModel.snapshot.notesStorageChanging,
-                locked: false,
-                choose: { await viewModel.chooseNotesDirectory() },
-                reset: { await viewModel.resetNotesDirectory() }
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(translate("settings.notes", [:]), systemImage: "folder")
+                        .font(ArcoTypography.sans(13, weight: .medium))
+                    Spacer()
+                    Button(translate("settings.openNotesFolder", [:])) {
+                        openURL(URL(fileURLWithPath: viewModel.snapshot.notesStorage.selectedDirectory, isDirectory: true))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ArcoNativeColors.action)
+                    .disabled(!FileManager.default.fileExists(atPath: viewModel.snapshot.notesStorage.selectedDirectory))
+                }
+                Text(translate("settings.previousNotesHelp", [:]))
+                    .font(ArcoTypography.metadata).foregroundStyle(ArcoNativeColors.inkMuted)
+                Text(viewModel.snapshot.notesStorage.selectedDirectory)
+                    .font(ArcoTypography.mono(11)).foregroundStyle(ArcoNativeColors.inkMuted)
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 12)
 
             VStack(spacing: 0) {
                 privacyRow("folder", "settings.legacyImport", "settings.legacyImportValue")
@@ -1385,7 +1464,7 @@ public struct ArcoSettingsSheetView: View {
             Button { Task { await choose() } } label: {
                 HStack(spacing: 14) {
                     Label(translate(title, [:]), systemImage: symbol)
-                        .font(ArcoTypography.bodyStrong)
+                        .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                     Spacer(minLength: 0)
                     HStack(spacing: 8) {
@@ -1478,39 +1557,11 @@ public struct ArcoSettingsSheetView: View {
         )
     }
 
-    private func disclosureLabel(_ title: String, summary: String) -> some View {
-        HStack(spacing: 14) {
-            Text(translate(title, [:]))
-                .font(ArcoTypography.bodyStrong)
-                .foregroundStyle(ArcoNativeColors.inkStrong)
-            Spacer(minLength: 0)
-            HStack(spacing: 7) {
-            if viewModel.localSetupIncomplete {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(ArcoNativeColors.record)
-                    .accessibilityLabel(translate("settings.localModelsMissing", [:]))
-            }
-                Text(summary)
-                    .font(ArcoTypography.sans(13))
-                    .foregroundStyle(ArcoNativeColors.ink)
-                    .lineLimit(1)
-            }
-            Image(systemName: "chevron.right")
-                .font(.system(size: 15))
-                .foregroundStyle(ArcoNativeColors.inkMuted)
-                .rotationEffect(viewModel.recognitionExpanded ? .degrees(90) : .zero)
-                .frame(width: 18)
-        }
-        .frame(minHeight: 54)
-        .contentShape(Rectangle())
-    }
-
     private func providerConfigurationRow(_ title: String, value: String, muted: Bool) -> some View {
         HStack {
-            Text(translate(title, [:])).font(ArcoTypography.bodyStrong).foregroundStyle(ArcoNativeColors.inkStrong)
+            Text(translate(title, [:])).font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
             Spacer()
-            Text(value).font(ArcoTypography.body).foregroundStyle(muted ? ArcoNativeColors.inkMuted : ArcoNativeColors.ink)
+            Text(value).font(ArcoTypography.sans(13)).foregroundStyle(muted ? ArcoNativeColors.inkMuted : ArcoNativeColors.ink)
         }
         .frame(minHeight: 48)
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
@@ -1520,11 +1571,11 @@ public struct ArcoSettingsSheetView: View {
         HStack(alignment: .center, spacing: 16) {
             HStack(spacing: 6) {
                 Image(systemName: symbol).font(.system(size: 14)).frame(width: 14)
-                Text(translate(title, [:])).font(ArcoTypography.bodyStrong).foregroundStyle(ArcoNativeColors.inkStrong)
+                Text(translate(title, [:])).font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
             }
             Spacer()
             Text(translate(value, [:]))
-                .font(ArcoTypography.body)
+                .font(ArcoTypography.sans(13))
                 .foregroundStyle(ArcoNativeColors.ink)
                 .multilineTextAlignment(.trailing)
         }
@@ -1538,6 +1589,22 @@ public struct ArcoSettingsSheetView: View {
 
     private func audioScenarioDescription(_ mode: AudioMode) -> String {
         translate("settings.scenario.\(mode == .both ? "hybrid" : mode == .system ? "online" : "room").description", [:])
+    }
+
+    private var recognitionStatus: String {
+        if viewModel.localSetupIncomplete { return translate("settings.localModelsMissing", [:]) }
+        let config = viewModel.snapshot.transcriptionConfiguration
+        let verified: Bool
+        switch config.asr.provider {
+        case .deepgram: verified = viewModel.snapshot.deepgramCredential.verified
+        case .elevenlabs: verified = viewModel.snapshot.elevenLabsCredential.verified
+        case .doubao: verified = viewModel.snapshot.doubaoCredential.verified
+        case .local: verified = true
+        }
+        if !verified || (config.diarization.provider == .doubao && !viewModel.snapshot.doubaoCredential.verified) {
+            return translate("settings.connectionNeedsCheck", [:])
+        }
+        return diarizationSummary
     }
 
     private var recognitionSummary: String {
@@ -1613,20 +1680,20 @@ private struct SettingsControlRow<LabelContent: View, ControlContent: View>: Vie
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let trackWidth = max(0, geometry.size.width - 16)
-            let labelWidth = max(160, trackWidth / 1.9)
-            let controlWidth = max(200, trackWidth * 0.9 / 1.9)
-
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 16) {
                 label
-                    .frame(width: labelWidth, alignment: .leading)
-                control
-                    .frame(width: controlWidth)
+                    .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                control.frame(width: 200)
             }
-            .frame(maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 12) {
+                label.fixedSize(horizontal: false, vertical: true)
+                control.frame(maxWidth: .infinity)
+            }
         }
-        .frame(height: 58)
+        .padding(.vertical, 12)
+        .frame(minHeight: 58)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(ArcoNativeColors.lineThin)
@@ -1670,7 +1737,7 @@ private struct SettingsSelectMenu: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkMuted)
             }
-            .font(ArcoTypography.sans(11))
+            .font(ArcoTypography.sans(13))
             .foregroundStyle(ArcoNativeColors.inkStrong)
             .padding(.leading, 9)
             .padding(.trailing, 8)

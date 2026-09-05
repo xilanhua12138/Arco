@@ -3,7 +3,6 @@ import Foundation
 public enum AppRoute: String, Codable, CaseIterable, Sendable {
     case current
     case history
-    case notes
     case review
 }
 

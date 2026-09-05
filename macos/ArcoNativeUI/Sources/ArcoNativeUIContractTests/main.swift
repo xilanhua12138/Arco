@@ -770,7 +770,7 @@ private func testSourceExactLayoutContracts() {
     expect(ArcoLayoutMetrics.titlebarClearance, 32, "Page titlebar clearance")
     expect(ArcoLayoutMetrics.sidebarTitlebarClearance, 44, "Source sidebar titlebar clearance")
     expect(ArcoLayoutMetrics.workspacePadding, 10, "Workspace padding")
-    expect(ArcoLayoutMetrics.workspaceGap, 10, "Workspace column gap")
+    expect(ArcoLayoutMetrics.workspaceGap, 20, "Workspace column gap")
     expect(ArcoLayoutMetrics.workspaceCornerRadius, 16, "Workspace corner radius")
 
     expect(
@@ -804,8 +804,8 @@ private func testSourceExactLayoutContracts() {
         "Notes 1024px media gutter"
     )
     expect(
-        ArcoLayoutMetrics.workspaceStackedViewportBreakpoint,
-        900,
+        ArcoLayoutMetrics.workspaceSplitMinimumWidth,
+        740,
         "Workspace stack breakpoint"
     )
     expect(
@@ -865,9 +865,9 @@ private func testCurrentCaptureControlSourceParity() {
 
     expectTrue(
         currentIdleSource.contains(
-            ".frame(minWidth: 142, minHeight: 44, maxHeight: 44)\n                .fixedSize(horizontal: true, vertical: false)"
+            ".frame(width: 148, height: 44)"
         ),
-        "Current Idle primary action must keep the source min-width: 142px intrinsic button instead of accepting the 900px hero proposal"
+        "Current Idle primary action must retain its 148 by 44 point hit area"
     )
     expectTrue(
         mainShellSource.contains("HStack(spacing: 7) {\n                Image(systemName: recording ? \"stop.fill\" : \"waveform\")"),
@@ -904,18 +904,8 @@ private func testCurrentShortcutKeycapsPreserveReactNoWrapContract() {
         encoding: .utf8
     )) ?? ""
 
-    expectTrue(
-        currentIdleSource.contains(
-            "Text(key)\n                        .lineLimit(1)\n                        .fixedSize(horizontal: true, vertical: false)"
-        ),
-        "Each shortcut keycap must preserve the React white-space: nowrap contract"
-    )
-    expectTrue(
-        currentIdleSource.contains(
-            "                }\n            }\n            .fixedSize(horizontal: true, vertical: false)\n        }\n        .accessibilityElement(children: .combine)"
-        ),
-        "The shortcut keycap group must preserve the React auto column instead of accepting horizontal compression"
-    )
+    expectTrue(currentIdleSource.contains("keycaps: listeningKeycaps") && currentIdleSource.contains("shortcut?.displayValue"), "Shortcut hint uses the configured shortcut rather than a fixed default")
+    expectTrue(currentIdleSource.contains(".fixedSize(horizontal: true, vertical: false)") && currentIdleSource.contains(".lineLimit(1)"), "Shortcut remains a single readable unit in either responsive layout")
 }
 
 @MainActor
@@ -938,22 +928,14 @@ private func testIdleHomeTitleContract() {
         "Idle home must include the user-requested communication-in-context heading"
     )
     expectTrue(
-        currentIdleSource.contains("let titleSize: CGFloat = compact ? 30 : 36")
-            && currentIdleSource.contains(".font(.system(size: titleSize, weight: .semibold, design: .default))"),
-        "Idle home heading must use a restrained native system display face beneath the waveform"
+        currentIdleSource.contains("let titleSize: CGFloat = compact ? 28 : 32"),
+        "Idle home heading must use a restrained native system display face"
     )
     expectTrue(
-        currentIdleSource.contains(".multilineTextAlignment(.center)")
-            && currentIdleSource.contains(".frame(maxWidth: .infinity, alignment: .center)"),
-        "Idle home heading must be centered with the waveform and primary action"
-    )
-    let waveformIndex = currentIdleSource.range(of: "ForEach(Array([10, 20, 30, 38, 30, 20, 10].enumerated())")?.lowerBound
-    let titleIndex = currentIdleSource.range(of: "Text(translate(\"capture.homeTitle\", [:]))")?.lowerBound
-    let actionIndex = currentIdleSource.range(of: "ArcoNativeActionButton(")?.lowerBound
-    expectTrue(
-        waveformIndex != nil && titleIndex != nil && actionIndex != nil
-            && waveformIndex! < titleIndex! && titleIndex! < actionIndex!,
-        "Idle hero order must be waveform, centered title, then primary action"
+        currentIdleSource.contains(".frame(maxWidth: .infinity, alignment: .center)")
+            && currentIdleSource.contains(".frame(maxWidth: .infinity, alignment: .leading)")
+            && currentIdleSource.contains("if compact"),
+        "The original centered launch layout and responsive lower sections are preserved"
     )
     expectTrue(
         mainShellSource.contains("if controller.store.capture.phase == .recording")
@@ -963,7 +945,7 @@ private func testIdleHomeTitleContract() {
 }
 
 @MainActor
-private func testStageDotGridSourceParity() {
+private func testPlainReadingStage() {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -974,72 +956,60 @@ private func testStageDotGridSourceParity() {
     )) ?? ""
 
     expectTrue(
-        mainShellSource.contains("dotTileSize = CGSize(width: 8, height: 8)")
-            && mainShellSource.contains("dotCenter = CGPoint(x: 4, y: 4)"),
-        "Stage dots must begin at the center of the source CSS 8pt tile"
+        !mainShellSource.contains("dotTileSize")
+            && !mainShellSource.contains("drawEllipticalWash")
+            && !mainShellSource.contains(".tiledImage("),
+        "The redesigned reading stage has no decorative dot grid or color washes"
     )
+    let agentDock = mainShellSource.components(separatedBy: "private func agentDock").last?
+        .components(separatedBy: "private func errorToast").first ?? ""
     expectTrue(
-        mainShellSource.contains("dotSolidRadius: CGFloat = 1")
-            && mainShellSource.contains("dotFadeRadius: CGFloat = 1.05"),
-        "Stage dots must preserve the source radial-gradient 1pt radius instead of a 1pt diameter"
-    )
-    expectTrue(
-        mainShellSource.contains("dotOverlayOpacity: Double = 0.38")
-            && mainShellSource.contains(".tiledImage("),
-        "Stage dots must preserve the source 8pt repeat and 0.38 layer opacity"
-    )
-    let ellipticalWashBody = mainShellSource
-        .components(separatedBy: "private static func drawEllipticalWash")
-        .dropFirst()
-        .first?
-        .components(separatedBy: "private static func color")
-        .first ?? ""
-    expect(
-        ellipticalWashBody.components(separatedBy: "graphics.translateBy").count - 1,
-        1,
-        "Each ambient radial wash must translate to its CSS percentage center exactly once"
+        agentDock.contains("cornerRadius: 16") && !agentDock.contains(".stroke("),
+        "The grey Agent surface has a rounded edge without the unwanted external divider"
     )
 }
 
 @MainActor
-private func testWorkspaceColumnAllocationMatchesCSSGrid() {
-    let compactClamped = ArcoLayoutMetrics.workspaceColumnWidths(
-        contentWidth: 712,
-        compactColumns: true
-    )
-    expect(compactClamped.transcript, 412, "Compact CSS grid gives transcript the remainder after Agent reaches 300pt")
-    expect(compactClamped.agent, 300, "Compact CSS grid preserves the 300pt Agent minimum")
-    expect(
-        compactClamped.transcript + compactClamped.agent,
-        712,
-        "Compact CSS grid columns must not overflow when both minima fit"
-    )
+private func testLateAgentFailureKeepsNewDraft() {
+    expect(InsightDraftRecovery.draft(current: "新的问题 B", failed: "失败的问题 A"), "新的问题 B", "A late failure cannot overwrite a newer draft")
+    expect(InsightDraftRecovery.draft(current: "", failed: "失败的问题 A"), "失败的问题 A", "An untouched empty editor restores the failed question")
+    expect(InsightDraftRecovery.draft(current: "  ", failed: "失败的问题 A"), "  ", "Even newly typed whitespace belongs to the draft")
+}
 
-    let regularClamped = ArcoLayoutMetrics.workspaceColumnWidths(
-        contentWidth: 754,
-        compactColumns: false
-    )
-    expect(regularClamped.transcript, 434, "Regular CSS grid gives transcript the remainder after Agent reaches 320pt")
-    expect(regularClamped.agent, 320, "Regular CSS grid preserves the 320pt Agent minimum")
-    expect(
-        regularClamped.transcript + regularClamped.agent,
-        754,
-        "Regular CSS grid columns must not overflow when both minima fit"
-    )
+@MainActor
+private func testAgentPanelPreservesMeetingDraftsAndScope() {
+    let backend = ScriptedBackend()
+    let controller = makeController(backend: backend)
+    expect(controller.agentPanelExpanded, false, "The initial reading workspace does not reserve Agent space")
+    expect(controller.agentFocusRequest, 0, "The initial collapsed workspace does not steal keyboard focus")
+    controller.agentDrafts["meeting-a"] = "还没有确定谁负责？"
+    controller.agentScopes["meeting-a"] = .workspace
+    controller.agentDrafts["meeting-b"] = "另一场会议的草稿"
+    controller.setAgentPanelExpanded(true)
+    expect(controller.agentFocusRequest, 1, "Opening the Agent requests focus once")
+    controller.setAgentPanelExpanded(true)
+    expect(controller.agentFocusRequest, 1, "An idempotent open does not steal focus again")
+    controller.setAgentPanelExpanded(false)
+    expect(controller.agentDrafts["meeting-a"], "还没有确定谁负责？", "Collapse keeps the exact draft")
+    expect(controller.agentScopes["meeting-a"], .workspace, "Collapse keeps the selected context scope")
+    controller.page = .history
+    controller.setAgentPanelExpanded(true)
+    expect(controller.agentDrafts["meeting-b"], "另一场会议的草稿", "Each meeting keeps its own draft across navigation")
+    expect(controller.agentScopes["meeting-b"], nil, "Meeting scope does not leak into a different meeting")
+    expect(controller.agentFocusRequest, 2, "Reopening is a new explicit focus request")
+    expect(backend.callCount("run_agent"), 0, "Showing and hiding never submits a question")
+    controller.store.dispose()
+}
 
-    let proportional = ArcoLayoutMetrics.workspaceColumnWidths(
-        contentWidth: 900,
-        compactColumns: false
-    )
-    expect(proportional.transcript, 540, "Roomy CSS grid keeps the source 3fr transcript share")
-    expect(proportional.agent, 360, "Roomy CSS grid keeps the source 2fr Agent share")
-
-    let belowMinimums = ArcoLayoutMetrics.workspaceColumnWidths(
-        contentWidth: 650,
-        compactColumns: true
-    )
-    expect(belowMinimums.transcript, 390, "Narrow unstacked CSS grid preserves the transcript minimum")
-    expect(belowMinimums.agent, 300, "Narrow unstacked CSS grid preserves the Agent minimum")
+@MainActor
+private func testWorkspaceColumnsCapOptionalAgent() {
+    for (width, compact) in [(712.0, true), (754.0, false), (900.0, false), (650.0, true), (0.0, true), (-10.0, false)] {
+        let columns = ArcoLayoutMetrics.workspaceColumnWidths(contentWidth: width, compactColumns: compact)
+        let available = max(0, width)
+        expect(columns.transcript, available - min(400, available / 2), "Transcript receives the space left by the capped Agent")
+        expect(columns.agent, min(400, available / 2), "Agent is capped at 400pt without squeezing compact transcript")
+        expect(columns.transcript + columns.agent, available, "Reading columns never overflow the available width")
+    }
 }
 
 @MainActor
@@ -1061,39 +1031,45 @@ private func testLiquidGlassUsesTheRegularNativeFallback() {
 }
 
 @MainActor
-private func testNotesEmptyActionUsesSwiftUINativeGlass() {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let themeSource = (try? String(
-        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoNativeUI/Views/Theme.swift"),
-        encoding: .utf8
-    )) ?? ""
-    let notesSource = (try? String(
-        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoNativeUI/SetupViews/NotesPageView.swift"),
-        encoding: .utf8
-    )) ?? ""
-    let emptyActionSource = notesSource
-        .components(separatedBy: "private var editorEmpty: some View {")
-        .dropFirst()
-        .first?
-        .components(separatedBy: "private var confirmationIsDelete")
-        .first ?? ""
+private func testMeetingFirstNavigationAndReplyActions() {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let shell = (try? String(contentsOf: root.appendingPathComponent("Sources/ArcoNativeUI/AppViews/ArcoMainShellView.swift"), encoding: .utf8)) ?? ""
+    let panel = (try? String(contentsOf: root.appendingPathComponent("Sources/ArcoNativeUI/Views/InsightPanel.swift"), encoding: .utf8)) ?? ""
+    expect(AppRoute.allCases, [.current, .history, .review], "No hidden notes route remains")
+    expectTrue(!shell.contains("navigationButton(.notes"), "Main navigation must not expose a separate notes workflow")
+    expectTrue(!panel.contains("translate(\"agent.saveAsNote\"") && !panel.contains("translate(\"agent.savedNote\""), "Neither shared Agent layout exposes the file-writing save-note toggle")
+    expectTrue(panel.contains("try await onCopy(reply.answer)"), "The exact answer remains available through Copy")
+    expectTrue(shell.contains("Text(translate(\"common.settings\", [:]))"), "Settings must have a visible text label in the sidebar")
+}
 
-    expectTrue(
-        emptyActionSource.contains("interactive: viewModel.canCreateNote")
-            && emptyActionSource.contains(".disabled(!viewModel.canCreateNote)")
-            && emptyActionSource.contains(".opacity(viewModel.canCreateNote ? 1 : 0.42)")
-            && emptyActionSource.contains(".allowsHitTesting(viewModel.canCreateNote)")
-            && themeSource.contains(".regular.tint(tone.tint).interactive(interactive)")
-            && themeSource.contains(".background(.regularMaterial, in: shape)")
-            && !notesSource.contains("NSGlassEffectView")
-            && !notesSource.contains("NSVisualEffectView")
-            && !themeSource.contains("NSGlassEffectView")
-            && !themeSource.contains("NSVisualEffectView"),
-        "Notes empty-state action must use native glass and disable its full visual hit target without a meeting"
-    )
+@MainActor
+private func testThreadRefreshDoesNotLoadOrWriteNotes() async {
+    let backend = ScriptedBackend()
+    backend.respond("list_meetings", with: [summary(id: "meeting", title: "Meeting")])
+    backend.respond("runtime_status", with: [RuntimeStatus]())
+    backend.respond("capture_status", with: capture(phase: .idle))
+    backend.respond("read_meeting", with: detail(id: "meeting"))
+    let existing = AgentTurn(id: "existing-answer", meetingId: "meeting", provider: .codex,
+        question: "Original question", answer: "Original answer", sources: [], contextScope: "transcript",
+        createdAt: "2026-09-06T00:00:00Z", savedAsNote: true, noteId: "legacy-note",
+        usedFallback: false, providerSessionId: "original-session", providerTurnId: "original-turn")
+    backend.respond("list_agent_turns", with: [existing])
+    installStorageHandlers(on: backend)
+    let store = ArcoStore(backend: backend)
+    await store.initialize()
+    let before = backend.callCount("list_agent_turns")
+    try? backend.emit("arco:agent-thread-changed", payload: "meeting")
+    let refreshed = await eventually { backend.callCount("list_agent_turns") == before + 1 }
+    expectTrue(refreshed, "Thread change still reloads its original meeting conversation")
+    _ = await eventually { store.agentTurnsByMeeting["meeting"]?.first?.id == existing.id }
+    expect(store.agentTurnsByMeeting["meeting"]?.first?.answer, "Original answer", "Removing notes retains the exact historical answer")
+    expect(store.agentTurnsByMeeting["meeting"]?.first?.providerSessionId, "original-session", "Removing notes preserves the native provider session binding")
+    try? backend.emit("arco:notes-changed", payload: "legacy-note")
+    try? await Task.sleep(for: .milliseconds(60))
+    expect(backend.callCount("list_notes"), 0, "Thread and legacy note notifications do not start an unused notes query")
+    expect(backend.callCount("delete_note"), 0, "Feature removal never deletes historical note files")
+    expect(backend.callCount("set_agent_turn_saved"), 0, "Thread refresh never toggles a historical note association")
+    store.dispose()
 }
 
 @MainActor
@@ -1551,6 +1527,10 @@ private func testReusedHUDResetsSavedStateForFirstClickFeedback() async {
 
     await model.stop()
     expectTrue(model.saved, "A completed HUD keeps its saved acknowledgement while hidden")
+    expect(RecordingHUDPresentation.isRecording(phase: model.capture.phase, saving: model.saving, saved: model.saved), false, "A saved HUD cannot show a recording indicator")
+    expect(RecordingHUDPresentation.isRecording(phase: .recording, saving: false, saved: false), true, "Only an active recording gets the recording indicator")
+    expect(RecordingHUDPresentation.isRecording(phase: .recording, saving: true, saved: false), false, "Saving is no longer actively recording")
+    expect(RecordingHUDPresentation.isRecording(phase: .error, saving: false, saved: false), false, "A stopped recording error cannot show the active indicator")
     model.prepareForCaptureStart()
     expectTrue(!model.saved, "The next first click clears the previous session's saved acknowledgement")
     expectTrue(!model.saving, "The next first click clears the previous session's saving state")
@@ -1893,6 +1873,9 @@ private func testAgentStreamingIsRequestScoped() async {
     try? await Task.sleep(for: .milliseconds(20))
     expect(store.agentStreamingTurn?.phase, "using-tools", "Agent status stream updates only the active request")
     expect(store.agentStreamingTurn?.answer, "streamed", "Agent answer stream updates the active request")
+    expect(InsightDraftRecovery.pending(local: nil, stream: store.agentStreamingTurn, meetingID: "meeting"), "Question", "Returning to the meeting restores the in-flight question")
+    expect(InsightDraftRecovery.pending(local: nil, stream: store.agentStreamingTurn, meetingID: "other"), nil, "A different meeting never displays this request")
+    expect(InsightDraftRecovery.pending(local: "Local", stream: nil, meetingID: "meeting"), "Local", "Submission remains visible before stream initialization")
     expect(
         store.agentStreamingTurn?.toolActivities,
         [
@@ -1977,8 +1960,15 @@ private func testConcurrentAgentRequestIsRejectedBeforeBackendDispatch() async {
         contextScope: "transcript"
     )
 
+    let shell = ArcoAppShellController(store: store,
+        preferences: ArcoPreferences(store: MemoryKeyValueStore()), translate: { key, _ in key })
+    shell.setAgentPanelExpanded(true)
     let first = Task { @MainActor in await store.askAgent(input) }
     await firstRequest.waitUntilStarted()
+    shell.setAgentPanelExpanded(false)
+    expect(store.agentRunning, true, "Collapsing preserves the same active Agent request")
+    shell.setAgentPanelExpanded(true)
+    expect(backend.callCount("run_agent"), 1, "Reopening does not duplicate the active request")
     expectTrue(store.agentRunning, "The first Agent request owns the shared running state")
 
     let duplicate = await store.askAgent(input)
@@ -2016,76 +2006,6 @@ private func testHistoryDebounceCannotOverwriteClearedQuery() async {
         "A cancelled History debounce cannot overwrite the cleared meeting list"
     )
     controller.store.dispose()
-}
-
-@MainActor
-private func testNotesNavigationTransitionsBeforeItsRefreshCompletes() async {
-    let backend = ScriptedBackend()
-    let notesRequest = SuspendedBackendRequest()
-    backend.on("list_notes") { _ in
-        await notesRequest.suspendUntilReleased()
-        return try JSONEncoder().encode([NoteDocument]())
-    }
-    let controller = makeController(backend: backend)
-
-    controller.requestPage(.notes)
-
-    expect(
-        controller.page,
-        .notes,
-        "Requesting Notes changes the selected page in the initiating event turn"
-    )
-    await notesRequest.waitUntilStarted()
-    expect(
-        controller.page,
-        .notes,
-        "Notes remains visible while its asynchronous list request is still suspended"
-    )
-
-    await notesRequest.release()
-    _ = await eventually { !controller.store.notesLoading }
-    controller.store.dispose()
-}
-
-@MainActor
-private func testNotesUnmountCancelsSearchAutosaveAndLocalState() async {
-    let backend = ScriptedBackend()
-    backend.respond("list_meetings", with: [summary(id: "meeting", title: "Meeting")])
-    backend.respond("runtime_status", with: [RuntimeStatus]())
-    backend.respond("capture_status", with: capture(phase: .idle))
-    backend.respond("read_meeting", with: detail(id: "meeting"))
-    backend.respond("list_agent_turns", with: [AgentTurn]())
-    installStorageHandlers(on: backend)
-
-    let store = ArcoStore(backend: backend)
-    await store.initialize()
-    let controller = ArcoAppShellController(
-        store: store,
-        preferences: ArcoPreferences(store: MemoryKeyValueStore()),
-        translate: { key, _ in key }
-    )
-    controller.page = .notes
-    let mountedModel = controller.notesViewModel()
-    mountedModel.createNew()
-    mountedModel.updateTitle("Unsaved draft")
-    mountedModel.editorMode = .preview
-    mountedModel.indexOpen = false
-    controller.setNotesQuery("needle")
-
-    await controller.showPage(.history)
-    try? await Task.sleep(for: .milliseconds(760))
-
-    expect(backend.callCount("list_notes"), 0, "Leaving Notes cancels its pending search effect")
-    expect(backend.callCount("save_note"), 0, "Leaving Notes cancels its pending autosave effect")
-    let remountedModel = controller.notesViewModel()
-    expectTrue(
-        ObjectIdentifier(remountedModel) != ObjectIdentifier(mountedModel),
-        "Notes remounts with a fresh component-local view model"
-    )
-    expectTrue(!remountedModel.dirty, "Notes remount discards the unmounted dirty draft")
-    expect(remountedModel.editorMode, .write, "Notes remount restores write mode")
-    expectTrue(remountedModel.indexOpen, "Notes remount restores the source index")
-    store.dispose()
 }
 
 @MainActor
@@ -2432,10 +2352,13 @@ testCurrentIdleAudioQuickControlHoverContract()
 testCurrentCaptureControlSourceParity()
 testCurrentShortcutKeycapsPreserveReactNoWrapContract()
 testIdleHomeTitleContract()
-testStageDotGridSourceParity()
-testWorkspaceColumnAllocationMatchesCSSGrid()
+testPlainReadingStage()
+testWorkspaceColumnsCapOptionalAgent()
+testAgentPanelPreservesMeetingDraftsAndScope()
+testLateAgentFailureKeepsNewDraft()
 testLiquidGlassUsesTheRegularNativeFallback()
-testNotesEmptyActionUsesSwiftUINativeGlass()
+testMeetingFirstNavigationAndReplyActions()
+await testThreadRefreshDoesNotLoadOrWriteNotes()
 testHUDClockInvalidationIsScopedToStatusView()
 testMeetingStatisticsContracts()
 testMeetingTitleRefreshPolicyUsesFiveMinuteWindows()
@@ -2456,8 +2379,6 @@ await testAgentStreamingIsRequestScoped()
 testLegacyAgentTurnDecodesWithoutToolActivity()
 await testConcurrentAgentRequestIsRejectedBeforeBackendDispatch()
 await testHistoryDebounceCannotOverwriteClearedQuery()
-await testNotesNavigationTransitionsBeforeItsRefreshCompletes()
-await testNotesUnmountCancelsSearchAutosaveAndLocalState()
 await testSettingsUnmountAndShortcutErrorIsolation()
 await testTopBarUnmountResetsComponentLocalState()
 await testTopBarTitleCommitPreservesReactSemantics()

@@ -27,8 +27,8 @@ private struct ArcoLocalizationContractTests {
 
         let englishKeys = Set(ArcoTranslations.englishMessages.keys)
         let chineseKeys = Set(ArcoTranslations.simplifiedChineseMessages.keys)
-        try expect(englishKeys.count == 643, "English must include all current product copy")
-        try expect(chineseKeys.count == 643, "zh-CN must include all current product copy")
+        try expect(englishKeys.count == 669, "English must include all current product copy")
+        try expect(chineseKeys.count == 669, "zh-CN must include all current product copy")
         try expect(englishKeys == chineseKeys, "en and zh-CN key sets must be identical")
 
         try expect(
@@ -36,16 +36,16 @@ private struct ArcoLocalizationContractTests {
             "English resources must preserve literal source copy"
         )
         try expect(
-            ArcoTranslations.simplifiedChinese("nav.history", [:]) == "历史",
-            "zh-CN resources must preserve literal source copy"
+            ArcoTranslations.simplifiedChinese("nav.history", [:]) == "会议记录",
+            "History navigation uses the meeting-records label"
         )
         try expect(
-            ArcoTranslations.english("capture.homeTitle", [:]) == "Put communication into context",
-            "English must carry the requested home-title meaning"
+            ArcoTranslations.english("capture.homeTitle", [:]) == "Stay with the conversation",
+            "English uses the concise Home title"
         )
         try expect(
-            ArcoTranslations.simplifiedChinese("capture.homeTitle", [:]) == "把沟通放进上下文",
-            "Chinese home title must preserve the user-provided copy exactly"
+            ArcoTranslations.simplifiedChinese("capture.homeTitle", [:]) == "把注意力留给对话",
+            "Chinese uses the concise Home title"
         )
         try expect(
             ArcoTranslations.simplifiedChinese(

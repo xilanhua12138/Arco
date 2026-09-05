@@ -25,6 +25,7 @@ public final class ProviderSetupViewModel: ObservableObject {
     private let refreshRuntimes: (() async throws -> [RuntimeStatus]?)?
     private let testProvider: (ProviderID) async throws -> ProviderConnectionTest
     private let complete: (ProviderConfiguration) -> Void
+    private var testGeneration = 0
 
     public init(
         mode: ProviderSetupMode = .provider,
@@ -105,15 +106,19 @@ public final class ProviderSetupViewModel: ObservableObject {
 
     public func runPrimaryTest() async {
         guard let primary, primaryAvailable, testState != .working else { return }
+        testGeneration += 1
+        let generation = testGeneration
         testState = .working
         testedProvider = primary
         testError = nil
         configurationErrorKey = nil
         do {
             let result = try await testProvider(primary)
+            guard generation == testGeneration, self.primary == primary else { return }
             testState = result.ok ? .passed : .failed
             testError = result.ok ? nil : result.message.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         } catch {
+            guard generation == testGeneration, self.primary == primary else { return }
             testState = .failed
             testError = error.localizedDescription
         }
@@ -155,6 +160,7 @@ public final class ProviderSetupViewModel: ObservableObject {
     }
 
     private func resetTest() {
+        testGeneration += 1
         testState = .idle
         testedProvider = nil
         testError = nil
@@ -185,6 +191,7 @@ public struct ProviderSetupView: View {
     private let translate: ArcoTranslate
     private let onCancel: (() -> Void)?
     private let onSkip: (() -> Void)?
+    private let embeddedInSettings: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     public init(
@@ -193,7 +200,8 @@ public struct ProviderSetupView: View {
         locale: Binding<String>,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onCancel: (() -> Void)? = nil,
-        onSkip: (() -> Void)? = nil
+        onSkip: (() -> Void)? = nil,
+        embeddedInSettings: Bool = false
     ) {
         self.viewModel = viewModel
         self.shortcutViewModel = shortcutViewModel
@@ -201,6 +209,7 @@ public struct ProviderSetupView: View {
         self.translate = translate
         self.onCancel = onCancel
         self.onSkip = onSkip
+        self.embeddedInSettings = embeddedInSettings
     }
 
     public var body: some View {
@@ -254,6 +263,25 @@ public struct ProviderSetupView: View {
         .accessibilityLabel(translate(viewModel.mode == .onboarding ? "onboarding.welcome" : "onboarding.connect", [:]))
     }
 
+    /// Reuse the validated connection flow within Settings, without onboarding navigation.
+    public var connectionSettings: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            providers
+            test
+        }
+    }
+
+    public var connectionSaveButton: some View {
+        HStack {
+            Spacer()
+            setupFooterButton(translate("onboarding.saveConfiguration", [:]), symbol: "checkmark", prominent: true) {
+                viewModel.finish()
+            }
+            .disabled(!viewModel.primaryTestPassed || !viewModel.primaryAvailable)
+            .opacity(viewModel.primaryTestPassed && viewModel.primaryAvailable ? 1 : 0.4)
+        }
+    }
+
     private var steps: [String] {
         [
             "onboarding.step.welcome",
@@ -276,7 +304,7 @@ public struct ProviderSetupView: View {
                     .tracking(-0.24)
             }
                 .padding(.horizontal, 8)
-                .padding(.top, 28)
+                .padding(.top, embeddedInSettings ? 16 : 28)
                 .padding(.bottom, 32)
             VStack(spacing: 4) {
                 ForEach(Array(steps.enumerated()), id: \.offset) { index, key in
@@ -377,10 +405,10 @@ public struct ProviderSetupView: View {
                 .foregroundStyle(ArcoNativeColors.inkMuted)
                 .padding(.bottom, 24)
             Text(translate("onboarding.stayInConversation", [:]))
-                .font(ArcoTypography.sans(22, weight: .semibold))
+                .font(ArcoTypography.sans(embeddedInSettings ? 14 : 22, weight: .semibold))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
             Text(translate("onboarding.intro", [:]))
-                .font(ArcoTypography.body)
+                .font(embeddedInSettings ? ArcoTypography.sans(12) : ArcoTypography.body)
                 .foregroundStyle(ArcoNativeColors.ink)
                 .padding(.top, 8)
             HStack(spacing: 10) {
@@ -428,8 +456,12 @@ public struct ProviderSetupView: View {
                             .frame(width: 28, height: 28)
                             .background(Color(red: 231 / 255, green: 235 / 255, blue: 238 / 255), in: RoundedRectangle(cornerRadius: 8))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.runtimeName).font(ArcoTypography.bodyStrong)
-                            Text(runtime?.version ?? translate("common.notDetected", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
+                            Text(provider.runtimeName).font(embeddedInSettings ? ArcoTypography.sans(13, weight: .medium) : ArcoTypography.bodyStrong)
+                            if let version = runtime?.version {
+                                Text(version).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
+                            } else if runtime?.available != true {
+                                Text(translate("common.notDetected", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
+                            }
                         }
                         Spacer()
                         Text(translate(runtime?.available == true ? "common.installed" : "common.missing", [:]))
@@ -440,8 +472,8 @@ public struct ProviderSetupView: View {
                     if provider != ProviderID.allCases.last { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
                 }
             }
-            .padding(.top, 28)
-            .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1).offset(y: 28) }
+            .padding(.top, embeddedInSettings ? 16 : 28)
+            .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1).offset(y: embeddedInSettings ? 16 : 28) }
             .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
 
             HStack(alignment: .top, spacing: 20) {
@@ -452,7 +484,7 @@ public struct ProviderSetupView: View {
                     viewModel.changeSecondary($0)
                 }
             }
-            .padding(.top, 28)
+            .padding(.top, embeddedInSettings ? 16 : 28)
 
             if !viewModel.primaryAvailable {
                 errorText(translate("onboarding.installCli", [:])).padding(.top, 18)
@@ -485,7 +517,7 @@ public struct ProviderSetupView: View {
             .padding(.horizontal, 16)
             .frame(minHeight: 42)
             .background(ArcoNativeColors.action, in: RoundedRectangle(cornerRadius: 9))
-            .padding(.top, 28)
+            .padding(.top, embeddedInSettings ? 16 : 28)
             .disabled(!viewModel.primaryAvailable || viewModel.testState == .working)
             .opacity(!viewModel.primaryAvailable || viewModel.testState == .working ? 0.5 : 1)
 
@@ -534,13 +566,13 @@ public struct ProviderSetupView: View {
                 .background(ArcoNativeColors.action, in: Circle())
                 .padding(.bottom, 24)
             Text(translate("onboarding.youAreReady", [:]))
-                .font(ArcoTypography.sans(22, weight: .semibold))
+                .font(ArcoTypography.sans(embeddedInSettings ? 14 : 22, weight: .semibold))
             VStack(spacing: 0) {
                 summaryRow("onboarding.primary", viewModel.primary?.displayName ?? translate("common.notSet", [:]))
                 summaryRow("onboarding.secondary", viewModel.effectiveSecondary?.displayName ?? translate("common.none", [:]))
                 summaryRow("onboarding.startListening", shortcutViewModel.value?.displayValue ?? translate("shortcut.off", [:]))
             }
-            .padding(.top, 28)
+            .padding(.top, embeddedInSettings ? 16 : 28)
             .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
             .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
         }
@@ -618,10 +650,10 @@ public struct ProviderSetupView: View {
     private func heading(_ titleKey: String, help helpKey: String, parameters: [String: String] = [:]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(translate(titleKey, parameters))
-                .font(ArcoTypography.sans(22, weight: .semibold))
+                .font(ArcoTypography.sans(embeddedInSettings ? 14 : 22, weight: .semibold))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
             Text(translate(helpKey, parameters))
-                .font(ArcoTypography.body)
+                .font(embeddedInSettings ? ArcoTypography.sans(12) : ArcoTypography.body)
                 .foregroundStyle(ArcoNativeColors.ink)
                 .padding(.top, 8)
         }

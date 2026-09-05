@@ -32,7 +32,7 @@
 
 从 [GitHub Releases](https://github.com/xilanhua12138/Arco/releases) 下载最新 Apple Silicon `.dmg`，打开后把 `Arco.app` 拖到“应用程序”文件夹。Arco 需要 macOS 14 或更高版本。
 
-当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含录音器、云转写 helper 和本地转写 worker；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 音频与说话人 → 识别**并主动选择后下载。
+当前预览版使用 ad-hoc 签名，尚未经过 Apple 公证。第一次启动时，请按住 Control 点击 `Arco.app`，选择**打开**并确认一次。安装包已经包含录音器、云转写 helper 和本地转写 worker；Whisper、Nemotron 和说话人分离模型只会在你进入**设置 → 聆听与记录 → 识别**并主动选择后下载。
 
 ## 实时上下文，而不是另一个会议仪表盘
 
@@ -52,7 +52,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 
 ## 真正有用的本地会议历史
 
-会议可以先以未命名状态开始，随时手动改名，也可以由 Agent 在内容足够时生成标题，并在结束后自动生成总结。每场会议还能拥有多条手写或由 Agent 回答保存而来的 Markdown 笔记。历史与笔记都支持搜索，并保存在可读的本地文件中。
+会议可以先以未命名状态开始，随时手动改名，也可以由 Agent 在内容足够时生成标题，并在结束后自动生成总结。文字问答自动随会议保留。会议历史支持搜索并保存在本地。独立笔记功能已移除，已有笔记文件仍可从数据与隐私设置中打开。
 
 <p align="center">
   <img src="docs/images/arco-history.png" alt="Arco 本地会议历史" width="1000">
@@ -66,11 +66,11 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 | 流式转写 | 可选择 Deepgram、豆包、ElevenLabs，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
 | 多说话人分离 | 独立选择 Deepgram、豆包，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
 | 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
-| GPT Live 语音提问（Beta） | 在**设置 → GPT Live**中主动开启并通过 OAuth 连接 ChatGPT，再用会议中的按钮连接或断开实时语音。 | 可以直接说出问题并听取简短回答；涉及会议进度的问题会交给读取当前转写的 Agent。 |
+| GPT Live 语音提问（Beta） | 在**设置 → 与 Arco 对话 → 语音对话**中主动开启并通过 OAuth 连接 ChatGPT，再用会议中的按钮连接或断开实时语音。 | 可以直接说出问题并听取简短回答；涉及会议进度的问题会交给读取当前转写的 Agent。 |
 | 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
 | 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |
 | 自动会议产出 | 内容足够后生成标题，会议结束后生成总结；两类 Prompt 都可配置。 | 无需会前命名或手动记笔记，也能得到可复用的会议记录。 |
-| 会议绑定笔记 | 同一场会议可创建多条 Markdown 笔记，也能把 Agent 回答保存为笔记；需要时可单独选择笔记目录。 | 手动思考与 AI 产出都保持可编辑、可迁移，并与转写证据相连。 |
+| 围绕会议讨论 | 随来源会议回看文字问答，也可复制回答到其他工具。 | 继续推敲想法，无需单独保存。 |
 | 本地历史 | 以 Markdown 转写和本地 sidecar 存储，位置可自定义。 | 记录可迁移、可搜索，并始终由用户控制。 |
 
 ## 隐私
@@ -82,7 +82,7 @@ Arco 本地优先并完全开源。默认数据位置：
 ```
 
 - 可随时自定义转写保存位置，旧位置仍会保留在历史记录中。
-- 笔记可使用单独的自定义目录；每条笔记都是绑定来源会议的独立 Markdown 文件。
+- 历史笔记文件会保留，可从数据与隐私设置打开原目录。
 - Arco 会流式处理音频，但不会保存原始 PCM 录音。
 - 使用本地转写和说话人分离时，语音处理留在 Mac 上。
 - 使用 Deepgram 时，音频会发送给 Deepgram 完成转写。
@@ -125,7 +125,7 @@ open build/Arco.app
 
 安装镜像与校验文件位于 `artifacts/Arco-macos-<arch>.dmg` 和 `artifacts/Arco-macos-<arch>.dmg.sha256`。未来面向普通用户的正式版本会补充 Developer ID 签名与 Apple 公证。
 
-使用 Deepgram 时，只需进入**设置 → 音频与说话人 → 识别**，粘贴 Key 并点击**验证并保存**。Arco 会通过 Deepgram 的[官方认证接口](https://developers.deepgram.com/guides/fundamentals/authenticating)完成验证，再保存到 macOS 钥匙串。本地模型保存在 `~/Library/Application Support/Arco/models/`。
+使用 Deepgram 时，只需进入**设置 → 聆听与记录 → 识别**，粘贴 Key 并点击**验证并保存**。Arco 会通过 Deepgram 的[官方认证接口](https://developers.deepgram.com/guides/fundamentals/authenticating)完成验证，再保存到 macOS 钥匙串。本地模型保存在 `~/Library/Application Support/Arco/models/`。
 
 ## 原来的 Agent Skill 仍然保留
 
@@ -164,7 +164,7 @@ ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
 - **SwiftUI**：呈现主工作区、历史、设置、Onboarding、录音 HUD、全局 Agent 窗口以及全部 Liquid Glass 表面和控件。AppKit 只负责原生窗口/面板生命周期、全局快捷键和系统选择器。
 - **Rust staticlib + C ABI**：在 Arco 主进程内负责存储、采集编排、凭证、Provider 路由、Agent 生命周期与原生 session 绑定。
 - **受管 worker 进程**：录音器、云转写 helper、FluidAudio/SwiftWhisper/Nemotron 本地链路与主 UI 进程隔离，避免模型崩溃或内存峰值直接带崩界面。Codex 与 Claude 仍是外部 CLI 进程。
-- **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答、用户保存的笔记分开存储。
+- **Markdown + 原子 JSON sidecar**：将转写证据与 Agent 回答分开存储。问答随会议保留；历史笔记文件仍可在设置中打开。
 
 详细约束见 [PRODUCT.md](./PRODUCT.md)、[DESIGN.md](./DESIGN.md)、[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) 与 [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md)。
 

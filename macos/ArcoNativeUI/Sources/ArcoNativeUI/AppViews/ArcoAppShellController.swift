@@ -124,8 +124,19 @@ public struct ArcoAppEnvironment {
 @MainActor
 public final class ArcoAppShellController: ObservableObject {
     @Published public var page: AppRoute = .current
+    @Published public private(set) var agentPanelExpanded = false
+    @Published public private(set) var agentFocusRequest = 0
+    @Published public var agentDrafts: [String: String] = [:]
+    @Published public var agentRequestErrors: [String: Bool] = [:]
+    @Published public var agentScopes: [String: InsightContextScope] = [:]
+
+    public func setAgentPanelExpanded(_ expanded: Bool) {
+        guard expanded != agentPanelExpanded else { return }
+        agentPanelExpanded = expanded
+        if expanded { agentFocusRequest += 1 }
+    }
+
     @Published public private(set) var query = ""
-    @Published public private(set) var notesQuery = ""
     @Published public private(set) var audioMode: AudioMode
     @Published public private(set) var providerConfiguration: ProviderConfiguration
     @Published public private(set) var generationSettings: GenerationSettings
@@ -170,12 +181,8 @@ public final class ArcoAppShellController: ObservableObject {
 
     private let translate: ArcoTranslate
     private var meetingSearchTask: Task<Void, Never>?
-    private var notesSearchTask: Task<Void, Never>?
-    private var notesLoadTask: Task<Void, Never>?
-    private var pendingNotesQuery: String?
     private var openedCompletedMeetingID: String?
     private var topBarViewModelStorage: TopBarViewModel?
-    private var notesViewModelStorage: NotesPageViewModel?
     private var settingsViewModelStorage: SettingsSheetViewModel?
     private var providerViewModelStorage: ProviderSetupViewModel?
     private var onboardingViewModelStorage: OnboardingViewModel?
@@ -233,8 +240,6 @@ public final class ArcoAppShellController: ObservableObject {
 
     deinit {
         meetingSearchTask?.cancel()
-        notesSearchTask?.cancel()
-        notesLoadTask?.cancel()
     }
 
     public var audioModeLocked: Bool {
@@ -301,38 +306,12 @@ public final class ArcoAppShellController: ObservableObject {
         }
     }
 
-    public func setNotesQuery(_ value: String) {
-        notesQuery = value
-        notesViewModelStorage?.update(
-            notes: store.savedNotes,
-            meetings: store.meetings,
-            query: value,
-            loading: store.notesLoading
-        )
-        guard page == .notes else { return }
-        notesLoadTask?.cancel()
-        notesLoadTask = nil
-        pendingNotesQuery = nil
-        notesSearchTask?.cancel()
-        notesSearchTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled,
-                  let self,
-                  self.page == .notes,
-                  self.notesQuery == value
-            else { return }
-            _ = await self.store.refreshSavedNotes(value)
-        }
-    }
+
 
     /// Mirrors React navigation: commit the route in the initiating event turn,
     /// then let route-owned data refresh without delaying click feedback.
     public func requestPage(_ next: AppRoute) {
         switch next {
-        case .notes:
-            dismissSettings()
-            transition(to: .notes)
-            startNotesRefreshIfNeeded()
         case .history, .review:
             dismissSettings()
             transition(to: next)
@@ -343,12 +322,6 @@ public final class ArcoAppShellController: ObservableObject {
 
     public func showPage(_ next: AppRoute) async {
         dismissSettings()
-        if next == .notes {
-            transition(to: .notes)
-            startNotesRefreshIfNeeded()
-            await notesLoadTask?.value
-            return
-        }
         if next == .current,
            store.capture.phase == .recording,
            let activeID = store.capture.activeMeetingId,
@@ -420,10 +393,10 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func openSettings(_ initialPage: SettingsPage = .general) {
-        notesViewModelStorage?.formatOpen = false
         settingsGeneration += 1
         let generation = settingsGeneration
         settingsPage = initialPage
+        if !settingsOpen { providerViewModelStorage = nil }
         settingsOpen = true
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -446,13 +419,6 @@ public final class ArcoAppShellController: ObservableObject {
     public func enterMenuBarMode() {
         meetingSearchTask?.cancel()
         meetingSearchTask = nil
-        notesSearchTask?.cancel()
-        notesSearchTask = nil
-        notesLoadTask?.cancel()
-        notesLoadTask = nil
-        pendingNotesQuery = nil
-        notesViewModelStorage?.teardown()
-        notesViewModelStorage = nil
         topBarViewModelStorage = nil
         settingsViewModelStorage = nil
         providerViewModelStorage = nil
@@ -471,7 +437,6 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func openProviderSetup() {
-        notesViewModelStorage?.formatOpen = false
         dismissSettings()
         editingProviders = true
         providerSetupOpen = true
@@ -662,12 +627,6 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func updateDependentViewModels() {
-        notesViewModelStorage?.update(
-            notes: store.savedNotes,
-            meetings: store.meetings,
-            query: notesQuery,
-            loading: store.notesLoading
-        )
         onboardingViewModelStorage?.updateExternalSetupStatus(
             runtimes: store.runtimes,
             models: store.transcriptionModels,
@@ -678,31 +637,7 @@ public final class ArcoAppShellController: ObservableObject {
         updateSettingsViewModel()
     }
 
-    public func notesViewModel() -> NotesPageViewModel {
-        if let notesViewModelStorage { return notesViewModelStorage }
-        let model = NotesPageViewModel(
-            notes: store.savedNotes,
-            meetings: store.meetings,
-            query: notesQuery,
-            loading: store.notesLoading,
-            onQueryChange: { [weak self] in self?.setNotesQuery($0) },
-            onOpenMeeting: { [weak self] id in
-                Task { @MainActor in await self?.selectMeeting(id) }
-            },
-            onSaveNote: { [weak store] draft in
-                guard let meetingID = draft.meetingId else { return nil }
-                return await store?.saveNote(SaveNoteInput(
-                    id: draft.id,
-                    meetingId: meetingID,
-                    title: draft.title,
-                    body: draft.body
-                ))
-            },
-            onDeleteNote: { [weak store] id in await store?.deleteNote(id) ?? false }
-        )
-        notesViewModelStorage = model
-        return model
-    }
+
 
     public func settingsViewModel() -> SettingsSheetViewModel {
         if let settingsViewModelStorage {
@@ -734,6 +669,7 @@ public final class ArcoAppShellController: ObservableObject {
             onComplete: { [weak self] configuration in
                 Task { await self?.shortcutViewModel.teardown() }
                 self?.saveProviderConfiguration(configuration)
+                if self?.settingsOpen == true { self?.settingsViewModel().page = .agent }
                 self?.providerSetupOpen = false
                 self?.editingProviders = false
             }
@@ -866,8 +802,8 @@ public final class ArcoAppShellController: ObservableObject {
             },
             onChooseTranscriptDirectory: { [weak self] in await self?.chooseTranscriptDirectory() ?? false },
             onResetTranscriptDirectory: { [weak self] in await self?.store.setTranscriptDirectory(nil, query: self?.query ?? "") ?? false },
-            onChooseNotesDirectory: { [weak self] in await self?.chooseNotesDirectory() ?? false },
-            onResetNotesDirectory: { [weak self] in await self?.store.setNotesDirectory(nil, query: self?.notesQuery ?? "") ?? false },
+            onChooseNotesDirectory: { false },
+            onResetNotesDirectory: { false },
             onCheckForUpdates: { [weak self] in Task { await self?.checkForUpdates() } },
             onInstallUpdate: { [weak self] in Task { await self?.installUpdate() } },
             onRequestMeetingAccess: { [environment] in environment.requestMeetingAccess() },
@@ -885,33 +821,9 @@ public final class ArcoAppShellController: ObservableObject {
         query = ""
     }
 
-    private func startNotesRefreshIfNeeded() {
-        let requestedQuery = notesQuery
-        guard store.lastSuccessfulNotesQuery != requestedQuery,
-              pendingNotesQuery != requestedQuery
-        else { return }
 
-        notesLoadTask?.cancel()
-        pendingNotesQuery = requestedQuery
-        notesLoadTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            _ = await self.store.refreshSavedNotes(requestedQuery)
-            guard self.pendingNotesQuery == requestedQuery else { return }
-            self.pendingNotesQuery = nil
-            self.notesLoadTask = nil
-        }
-    }
 
     private func transition(to next: AppRoute) {
-        if page == .notes, next != .notes {
-            notesSearchTask?.cancel()
-            notesSearchTask = nil
-            notesLoadTask?.cancel()
-            notesLoadTask = nil
-            pendingNotesQuery = nil
-            notesViewModelStorage?.teardown()
-            notesViewModelStorage = nil
-        }
         let meetingPages: Set<AppRoute> = [.current, .review]
         if meetingPages.contains(page), !meetingPages.contains(next) {
             topBarViewModelStorage = nil
@@ -924,6 +836,7 @@ public final class ArcoAppShellController: ObservableObject {
         settingsGeneration += 1
         settingsOpen = false
         settingsViewModelStorage = nil
+        providerViewModelStorage = nil
         if restoringTriggerFocus {
             objectWillChange.send()
             settingsFocusRestoreGeneration += 1
@@ -988,10 +901,5 @@ public final class ArcoAppShellController: ObservableObject {
         return await store.setTranscriptDirectory(directory, query: query)
     }
 
-    private func chooseNotesDirectory() async -> Bool {
-        guard let directory = await environment.chooseDirectory(translate("settings.chooseNotesFolderDialogTitle", [:])) else {
-            return false
-        }
-        return await store.setNotesDirectory(directory, query: notesQuery)
-    }
+
 }

@@ -182,3 +182,7 @@ public final class RecordingHUDModel {
         }
     }
 }
+
+public enum RecordingHUDPresentation {
+    public static func isRecording(phase: CapturePhase, saving: Bool, saved: Bool) -> Bool { phase == .recording && !saving && !saved }
+}
