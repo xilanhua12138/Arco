@@ -265,13 +265,16 @@ public struct ProviderSetupView: View {
 
     /// Reuse the validated connection flow within Settings, without onboarding navigation.
     public var connectionSettings: some View {
+        ProviderSettingsObservation(model: viewModel) {
         VStack(alignment: .leading, spacing: 22) {
             providers
             test
         }
+        }
     }
 
     public var connectionSaveButton: some View {
+        ProviderSettingsObservation(model: viewModel) {
         HStack {
             Spacer()
             setupFooterButton(translate("onboarding.saveConfiguration", [:]), symbol: "checkmark", prominent: true) {
@@ -279,6 +282,7 @@ public struct ProviderSetupView: View {
             }
             .disabled(!viewModel.primaryTestPassed || !viewModel.primaryAvailable)
             .opacity(viewModel.primaryTestPassed && viewModel.primaryAvailable ? 1 : 0.4)
+        }
         }
     }
 
@@ -750,4 +754,12 @@ public struct ProviderSetupView: View {
     private func errorText(_ text: String) -> some View {
         Text(text).font(ArcoTypography.metadata).foregroundStyle(ArcoNativeColors.warning).accessibilityAddTraits(.isStaticText)
     }
+}
+
+/// Computed subviews are mounted independently of the onboarding View's body.
+/// Each needs its own subscription to connection-test and selection changes.
+private struct ProviderSettingsObservation<Content: View>: View {
+    @ObservedObject var model: ProviderSetupViewModel
+    @ViewBuilder var content: () -> Content
+    var body: some View { content() }
 }
