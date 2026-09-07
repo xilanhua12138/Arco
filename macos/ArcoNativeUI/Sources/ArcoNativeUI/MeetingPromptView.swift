@@ -23,40 +23,39 @@ public struct MeetingPromptView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .center, spacing: 11) {
-                Image(systemName: "waveform.badge.mic")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(ArcoNativeColors.brand)
-                    .frame(width: 32, height: 32)
-                    .background(ArcoNativeColors.brandSoft, in: Circle())
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(translate("meetingPrompt.title", [:]))
-                        .font(ArcoTypography.sans(15, weight: .semibold))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(promptContext)
-                        .font(ArcoTypography.metadata)
-                        .foregroundStyle(
-                            startFailed ? ArcoNativeColors.record : ArcoNativeColors.inkMuted
-                        )
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(translate(startFailed ? "meetingPrompt.startFailed" : "meetingPrompt.title", [:]))
+                .font(ArcoTypography.sans(14, weight: .semibold))
+                .foregroundStyle(startFailed ? ArcoNativeColors.record : ArcoNativeColors.inkStrong)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .padding(.horizontal, 28)
+                .frame(maxWidth: .infinity, minHeight: 22)
+                .overlay(alignment: .leading) {
+                    Image(systemName: "waveform.badge.mic")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ArcoNativeColors.brand)
+                        .frame(width: 22, height: 22)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 0)
-            }
+                .overlay {
+                    ArcoWindowDragRegion()
+                        .accessibilityHidden(true)
+                }
 
             HStack(spacing: 10) {
-                Button(translate("meetingPrompt.notThisTime", [:]), action: onDismiss)
-                    .buttonStyle(.plain)
-                    .font(ArcoTypography.metadata.weight(.medium))
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .disabled(starting)
-
-                Spacer(minLength: 8)
+                Button(action: onDismiss) {
+                    Text(translate("meetingPrompt.notThisTime", [:]))
+                        .font(ArcoTypography.sans(13, weight: .semibold))
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                        .background(ArcoNativeColors.surfaceRaised, in: Capsule())
+                        .overlay(Capsule().strokeBorder(ArcoNativeColors.inkStrong.opacity(0.22), lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(ArcoPressFeedbackButtonStyle())
+                .disabled(starting)
 
                 ArcoNativeActionButton(
                     title: translate(
@@ -68,12 +67,13 @@ public struct MeetingPromptView: View {
                     enabled: !starting,
                     action: beginCapture
                 )
-                .frame(width: 132, height: 36)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .frame(width: 372, height: 140)
+        .frame(width: 320, height: 112)
         .animation(accessibilityReduceMotion ? nil : ArcoMotion.state, value: startFailed)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
