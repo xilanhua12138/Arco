@@ -299,7 +299,7 @@ expectTrue(
 )
 expectTrue(
     settingsViewSource.contains("fill: selected ? ArcoNativeColors.surfaceSelected : .clear")
-        && settingsViewSource.contains("fill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle"),
+        && settingsViewSource.contains("hoverFill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceHover"),
     "Settings keeps explicit selected and default fills instead of material-driven state"
 )
 expectTrue(
@@ -337,7 +337,7 @@ expectTrue(
     "Settings must not leak SwiftUI's default Picker surface into the React-parity rows"
 )
 expectTrue(
-    settingsViewSource.contains("private struct SettingsSelectMenu")
+    settingsViewSource.contains("struct SettingsSelectMenu")
         && settingsViewSource.contains(".frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)")
         && settingsViewSource.contains("RoundedRectangle(cornerRadius: 7")
         && settingsViewSource.contains(".fill(ArcoNativeColors.surfaceRaised)")
@@ -345,7 +345,7 @@ expectTrue(
     "Settings select menus preserve the React full-track width, fixed 32px height, 7px radius, raised fill, and thin border"
 )
 expectTrue(
-    settingsViewSource.contains("private struct SettingsControlRow")
+    settingsViewSource.contains("struct SettingsControlRow")
         && settingsViewSource.contains("ViewThatFits(in: .horizontal)")
         && settingsViewSource.contains("control.frame(width: 200)")
         && settingsViewSource.contains(".frame(minHeight: 58)"),
@@ -369,17 +369,21 @@ expectTrue(
     "The app-language select preserves the React source's literal option labels"
 )
 expectTrue(
-    settingsViewSource.components(separatedBy: "SettingsSelectMenu(").count - 1 == 3,
-    "General language, local model, and recognition language share the same React-parity select component"
+    settingsViewSource.components(separatedBy: "SettingsSelectMenu(").count - 1 == 6,
+    "Language, meeting source, recognition, speaker separation and local model controls share one menu component"
+)
+let storageRowSource = (try? String(contentsOf: meetingOutputViewURL.deletingLastPathComponent()
+    .appendingPathComponent("SettingsStorageLocationRow.swift"), encoding: .utf8)) ?? ""
+expectTrue(
+    settingsViewSource.contains("SettingsStorageLocationRow(title: translate(\"settings.meetingTranscripts\"")
+        && settingsViewSource.contains("await viewModel.chooseTranscriptDirectory()")
+        && settingsViewSource.contains("await viewModel.resetTranscriptDirectory()")
+        && storageRowSource.contains("openURL(URL(fileURLWithPath: directory"),
+    "Storage rows retain open, choose and reset actions after consolidating their presentation"
 )
 expectTrue(
-    settingsViewSource.contains("accessibilityTitle: \"settings.transcriptStorage\"")
-        && settingsViewSource.contains("translate(\"settings.openNotesFolder\", [:])"),
-    "Transcript storage remains configurable and historical note files have an explicit Finder action"
-)
-expectTrue(
-    settingsViewSource.contains(".help(settings.selectedDirectory)"),
-    "A truncated storage path preserves the source title tooltip"
+    storageRowSource.contains(".help(directory)") && storageRowSource.contains("Text(directory)"),
+    "The full storage path is available from the folder tooltip and location menu"
 )
 
 if failures.isEmpty {

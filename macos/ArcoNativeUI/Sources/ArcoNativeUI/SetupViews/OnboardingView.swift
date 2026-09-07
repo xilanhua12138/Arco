@@ -818,8 +818,7 @@ public struct OnboardingView: View {
                 .scaledToFit()
                 .frame(width: 28, height: 28)
             Text("Arco")
-                .font(ArcoTypography.sans(17, weight: .bold))
-                .tracking(-0.34)
+                .font(ArcoTypography.wordmark(17))
                 .foregroundStyle(Color(red: 21 / 255, green: 23 / 255, blue: 25 / 255))
         }
     }
