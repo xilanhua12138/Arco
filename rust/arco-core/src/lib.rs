@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod audio_archive;
 pub mod audio_setup;
 pub mod capture;
 pub mod controller;

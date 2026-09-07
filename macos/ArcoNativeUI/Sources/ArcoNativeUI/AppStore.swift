@@ -51,6 +51,9 @@ public final class ArcoStore {
     public private(set) var agentStreamingTurn: AgentStreamingTurn?
     public private(set) var error: String?
 
+    public private(set) var audioArchiveSettings: AudioArchiveSettings?
+    public private(set) var audioArchiveChanging = false
+    public private(set) var audioArchiveError: String?
     public private(set) var storageSettings: StorageSettings?
     public private(set) var notesStorageSettings: StorageSettings?
     public private(set) var storageChanging = false
@@ -174,6 +177,7 @@ public final class ArcoStore {
             self.error = errorMessage(error, fallbackKey: "error.startArco")
         }
         await loadStorageSettings()
+        await refreshAudioArchiveSettings()
     }
 
     public func dispose() {
@@ -652,6 +656,26 @@ public final class ArcoStore {
             storageError = error.localizedDescription
             return false
         }
+    }
+
+    public func refreshAudioArchiveSettings() async {
+        do {
+            audioArchiveSettings = try await backend.call("audio_archive_settings")
+            audioArchiveError = nil
+        } catch { audioArchiveError = error.localizedDescription }
+    }
+
+    public func setAudioArchiveSettings(enabled: Bool, directory: String?, maxBytes: UInt64) async {
+        guard !audioArchiveChanging else { return }
+        audioArchiveChanging = true
+        defer { audioArchiveChanging = false }
+        do {
+            audioArchiveSettings = try await backend.call("set_audio_archive_settings", arguments: [
+                "enabled": .bool(enabled), "directory": directory.map(AnySendable.string) ?? .null,
+                "maxBytes": .number(Double(maxBytes)),
+            ])
+            audioArchiveError = nil
+        } catch { audioArchiveError = error.localizedDescription }
     }
 
     public func testProvider(_ provider: ProviderID) async throws -> ProviderConnectionTest {

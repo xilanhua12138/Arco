@@ -33,7 +33,10 @@ if [ ! -f "$AUDIO_RUNTIME_HEADER" ]; then
   exit 1
 fi
 
-swiftc -O "$NATIVE_DIR/recorder.swift" \
+COMBINED_SOURCE=$(mktemp "${TMPDIR:-/tmp}/arco-recorder.XXXXXX.swift")
+trap 'rm -f "$COMBINED_SOURCE"' EXIT HUP INT TERM
+cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" > "$COMBINED_SOURCE"
+swiftc -O "$COMBINED_SOURCE" \
   -import-objc-header "$AUDIO_RUNTIME_HEADER" \
   "$AUDIO_RUNTIME_ARCHIVE" \
   -o "$OUTPUT" \
@@ -56,6 +59,7 @@ if [ "$OUTPUT" = "$NATIVE_DIR/recorder" ]; then
   RUNTIME_DIR="$NATIVE_DIR/runtime"
   mkdir -p "$RUNTIME_DIR"
   cp "$OUTPUT" "$RUNTIME_DIR/recorder"
+  cp "$NATIVE_DIR/AudioArchive.swift" "$RUNTIME_DIR/AudioArchive.swift"
   cp "$NATIVE_DIR/recorder.swift" "$RUNTIME_DIR/recorder.swift"
   cp "$NATIVE_DIR/recorder-Info.plist" "$RUNTIME_DIR/recorder-Info.plist"
   # The archive and header are build inputs, never runtime dependencies.
