@@ -22,6 +22,9 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
     public var shortcutError: String?
     public var meetingAccessAuthorized: Bool
     public var automaticMeetingPromptsEnabled: Bool
+    public var audioArchive: AudioArchiveSettings?
+    public var audioArchiveBusy: Bool
+    public var audioArchiveError: String?
     public var transcriptStorage: StorageSettings
     public var transcriptStorageChanging: Bool
     public var notesStorage: StorageSettings
@@ -50,6 +53,9 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         shortcutError: String? = nil,
         meetingAccessAuthorized: Bool = false,
         automaticMeetingPromptsEnabled: Bool = true,
+        audioArchive: AudioArchiveSettings? = nil,
+        audioArchiveBusy: Bool = false,
+        audioArchiveError: String? = nil,
         transcriptStorage: StorageSettings? = nil,
         transcriptStorageChanging: Bool = false,
         notesStorage: StorageSettings? = nil,
@@ -77,6 +83,9 @@ public struct SettingsSheetSnapshot: Equatable, Sendable {
         self.shortcutError = shortcutError
         self.meetingAccessAuthorized = meetingAccessAuthorized
         self.automaticMeetingPromptsEnabled = automaticMeetingPromptsEnabled
+        self.audioArchive = audioArchive
+        self.audioArchiveBusy = audioArchiveBusy
+        self.audioArchiveError = audioArchiveError
         self.transcriptStorage = transcriptStorage ?? StorageSettings(
             defaultDirectory: "~/Library/Application Support/Arco/transcripts",
             selectedDirectory: "~/Library/Application Support/Arco/transcripts",
@@ -116,6 +125,9 @@ public struct SettingsSheetActions {
     public var onChangeGPTLiveBetaEnabled: (Bool) -> Void
     public var onConnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
     public var onDisconnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
+    public var onChangeAudioArchive: (Bool, String?, UInt64) async -> Void
+    public var onChooseAudioArchiveDirectory: () async -> Void
+    public var onRefreshAudioArchive: () async -> Void
     public var onChooseTranscriptDirectory: () async -> Bool
     public var onResetTranscriptDirectory: () async -> Bool
     public var onChooseNotesDirectory: () async -> Bool
@@ -146,6 +158,9 @@ public struct SettingsSheetActions {
         onChangeGPTLiveBetaEnabled: @escaping (Bool) -> Void = { _ in },
         onConnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
         onDisconnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
+        onChangeAudioArchive: @escaping (Bool, String?, UInt64) async -> Void = { _, _, _ in },
+        onChooseAudioArchiveDirectory: @escaping () async -> Void = {},
+        onRefreshAudioArchive: @escaping () async -> Void = {},
         onChooseTranscriptDirectory: @escaping () async -> Bool = { true },
         onResetTranscriptDirectory: @escaping () async -> Bool = { true },
         onChooseNotesDirectory: @escaping () async -> Bool = { true },
@@ -175,6 +190,9 @@ public struct SettingsSheetActions {
         self.onChangeGPTLiveBetaEnabled = onChangeGPTLiveBetaEnabled
         self.onConnectGPTLiveCredential = onConnectGPTLiveCredential
         self.onDisconnectGPTLiveCredential = onDisconnectGPTLiveCredential
+        self.onChangeAudioArchive = onChangeAudioArchive
+        self.onChooseAudioArchiveDirectory = onChooseAudioArchiveDirectory
+        self.onRefreshAudioArchive = onRefreshAudioArchive
         self.onChooseTranscriptDirectory = onChooseTranscriptDirectory
         self.onResetTranscriptDirectory = onResetTranscriptDirectory
         self.onChooseNotesDirectory = onChooseNotesDirectory

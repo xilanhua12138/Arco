@@ -77,6 +77,7 @@ pub struct Controller {
     agent: AgentRunner,
     agent_run_lock: Mutex<()>,
     output_run_lock: Mutex<()>,
+    audio_archive: crate::audio_archive::AudioArchiveStorage,
     storage: TranscriptStorage,
     storage_change_lock: Mutex<()>,
     notes: NoteStore,
@@ -113,6 +114,10 @@ impl Controller {
             agent: AgentRunner::new(agent_workspace),
             agent_run_lock: Mutex::new(()),
             output_run_lock: Mutex::new(()),
+            audio_archive: crate::audio_archive::AudioArchiveStorage::new(
+                paths.app_data.clone(),
+                &paths.home,
+            ),
             storage,
             storage_change_lock: Mutex::new(()),
             notes,
@@ -126,6 +131,25 @@ impl Controller {
 
     pub fn dispatch(&self, command: &str, params: Value) -> Result<Value, String> {
         match command {
+            "audio_archive_settings" => value(self.audio_archive.settings()?),
+            "set_audio_archive_settings" => {
+                let _guard = self
+                    .storage_change_lock
+                    .lock()
+                    .map_err(|_| "Storage settings unavailable")?;
+                if matches!(
+                    self.capture.status().phase.as_str(),
+                    "starting" | "recording" | "stopping"
+                ) {
+                    return Err("Stop the current recording before changing audio storage".into());
+                }
+                let directory = optional::<String>(&params, "directory")?;
+                value(self.audio_archive.update(
+                    required(&params, "enabled")?,
+                    directory.as_deref().map(Path::new),
+                    required(&params, "maxBytes")?,
+                )?)
+            }
             "storage_settings" => value(self.storage.settings()),
             "set_transcript_directory" => {
                 let directory = optional::<String>(&params, "directory")?;

@@ -763,6 +763,9 @@ public final class ArcoAppShellController: ObservableObject {
             shortcutError: shortcutError,
             meetingAccessAuthorized: meetingAccessAuthorized,
             automaticMeetingPromptsEnabled: automaticMeetingPromptsEnabled,
+            audioArchive: store.audioArchiveSettings,
+            audioArchiveBusy: store.audioArchiveChanging,
+            audioArchiveError: store.audioArchiveError,
             transcriptStorage: store.storageSettings,
             transcriptStorageChanging: store.storageChanging,
             notesStorage: store.notesStorageSettings,
@@ -799,6 +802,21 @@ public final class ArcoAppShellController: ObservableObject {
             onDisconnectGPTLiveCredential: { [weak self] in
                 guard let self else { return .missing }
                 return try await self.disconnectGPTLiveCredential()
+            },
+            onChangeAudioArchive: { [weak self] enabled, directory, maxBytes in
+                guard let self else { return }
+                await self.store.setAudioArchiveSettings(enabled: enabled, directory: directory, maxBytes: maxBytes)
+                self.updateSettingsViewModel()
+            },
+            onChooseAudioArchiveDirectory: { [weak self] in
+                guard let self, let settings = self.store.audioArchiveSettings,
+                      let directory = await self.environment.chooseDirectory(self.translate("settings.chooseFolderDialogTitle", [:])) else { return }
+                await self.store.setAudioArchiveSettings(enabled: settings.enabled, directory: directory, maxBytes: settings.maxBytes)
+                self.updateSettingsViewModel()
+            },
+            onRefreshAudioArchive: { [weak self] in
+                await self?.store.refreshAudioArchiveSettings()
+                self?.updateSettingsViewModel()
             },
             onChooseTranscriptDirectory: { [weak self] in await self?.chooseTranscriptDirectory() ?? false },
             onResetTranscriptDirectory: { [weak self] in await self?.store.setTranscriptDirectory(nil, query: self?.query ?? "") ?? false },

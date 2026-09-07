@@ -12,6 +12,7 @@ test:
 	cargo build --manifest-path rust/arco-core/Cargo.toml --lib
 	@set -e; for product in \
 		ArcoNativeUIContractTests \
+		ArcoAudioArchiveContractTests \
 		ArcoProviderPresentationContractTests \
 		ArcoMarkdownContractTests \
 		ArcoTopBarContractTests \
@@ -28,6 +29,7 @@ test:
 	done
 	./native/build-recorder.sh
 	./native/recorder --self-test
+	./native/test-audio-archive.sh
 	swift run --package-path native/local-transcriber arco-transcription-selftest
 
 helpers:

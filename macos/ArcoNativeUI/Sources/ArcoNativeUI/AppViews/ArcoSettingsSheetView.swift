@@ -1411,6 +1411,8 @@ public struct ArcoSettingsSheetView: View {
             .padding(.bottom, 16)
             .overlay(alignment: .bottom) { Rectangle().fill(Color.black.opacity(0.05)).frame(height: 1) }
 
+            AudioArchiveSettingsView(viewModel: viewModel, translate: translate)
+
             storageRow(
                 symbol: "internaldrive",
                 title: "settings.meetingTranscripts",
