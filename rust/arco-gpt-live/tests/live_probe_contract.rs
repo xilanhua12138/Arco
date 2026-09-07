@@ -257,9 +257,9 @@ fn sideband_request_accepts_only_the_fixed_openai_target_and_exact_auth_headers(
         ("session-id".into(), "session-123".into()),
         ("thread-id".into(), "thread-123".into()),
         ("x-session-id".into(), "realtime-123".into()),
-        ("User-Agent".into(), "arco/0.3.20".into()),
+        ("User-Agent".into(), "arco/0.3.21".into()),
         ("originator".into(), "arco".into()),
-        ("version".into(), "0.3.20".into()),
+        ("version".into(), "0.3.21".into()),
     ]);
 
     let request =

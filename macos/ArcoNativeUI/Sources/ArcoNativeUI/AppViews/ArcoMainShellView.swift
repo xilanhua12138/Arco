@@ -159,7 +159,7 @@ public struct ArcoMainShellView: View {
                     .frame(width: 32, height: 32)
                     .accessibilityHidden(true)
                 Text("Arco")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(ArcoTypography.wordmark(24))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)

@@ -125,6 +125,10 @@ public struct ArcoSettingsSheetView: View {
         .accessibilityRemoveTraits(selected ? [] : .isSelected)
     }
 
+    private var settingsPageTitle: String {
+        return translate("settings.\(viewModel.page.rawValue)", [:])
+    }
+
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
@@ -138,12 +142,9 @@ public struct ArcoSettingsSheetView: View {
                     .accessibilityLabel(translate("common.back", [:]))
                     .padding(.bottom, 4)
                 }
-                Text(translate("settings.\(viewModel.page.rawValue)", [:]))
+                Text(settingsPageTitle)
                     .font(ArcoTypography.sans(20, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
-                Text(translate("settings.\(viewModel.page.rawValue)Description", [:]))
-                    .font(ArcoTypography.sans(13))
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
             }
             Spacer()
             Button(action: viewModel.actions.onClose) {
@@ -157,7 +158,7 @@ public struct ArcoSettingsSheetView: View {
         .padding(.horizontal, 36)
         .padding(.top, 24)
         .padding(.bottom, 12)
-        .frame(minHeight: 88)
+        .frame(minHeight: 72)
     }
 
     @ViewBuilder private var page: some View {
@@ -186,12 +187,9 @@ public struct ArcoSettingsSheetView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsControlRow {
                 VStack(alignment: .leading, spacing: 1) {
-                    Label(translate("settings.appLanguage", [:]), systemImage: "globe")
+                    Text(translate("settings.appLanguage", [:]))
                         .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(translate("settings.appLanguageHelp", [:]))
-                        .font(ArcoTypography.tiny)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
                 SettingsSelectMenu(
@@ -207,12 +205,9 @@ public struct ArcoSettingsSheetView: View {
 
             HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Label(translate("settings.startStopListening", [:]), systemImage: "keyboard")
+                    Text(translate("settings.startStopListening", [:]))
                         .font(ArcoTypography.sans(13, weight: .medium))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(translate("settings.startStopListeningHelp", [:]))
-                        .font(ArcoTypography.small)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
                 }
                 Spacer(minLength: 0)
                 ShortcutRecorderView(viewModel: viewModel.shortcutViewModel, translate: translate)
@@ -237,7 +232,7 @@ public struct ArcoSettingsSheetView: View {
     private var meetingPromptRow: some View {
         HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 2) {
-                Label(translate("settings.automaticMeetingPrompts", [:]), systemImage: "rectangle.on.rectangle.badge.person.crop")
+                Text(translate("settings.automaticMeetingPrompts", [:]))
                     .font(ArcoTypography.sans(13, weight: .medium))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
                 Text(meetingPromptHelp)
@@ -282,7 +277,7 @@ public struct ArcoSettingsSheetView: View {
     private var updateRow: some View {
         HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 2) {
-                Label(translate("settings.softwareUpdate", [:]), systemImage: "arrow.triangle.2.circlepath")
+                Text(translate("settings.softwareUpdate", [:]))
                     .font(ArcoTypography.sans(13, weight: .medium))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
                 Text(translate("settings.currentVersion", ["version": viewModel.snapshot.currentVersion]))
@@ -373,228 +368,60 @@ public struct ArcoSettingsSheetView: View {
     }
 
     private var audioPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if viewModel.snapshot.audioModeLocked {
-                currentAudioCard
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsControlRow {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(translate("settings.meetingType", [:]))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                HStack(spacing: 8) {
-                    audioScenario(.both)
-                    audioScenario(.system)
-                    audioScenario(.mic)
+                        .font(ArcoTypography.bodyStrong)
+                    Text(translate(viewModel.snapshot.audioModeLocked ? "settings.lockedUntilEnd" : audioScenarioDescriptionKey, [:]))
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
-                }
+            } control: {
+                SettingsSelectMenu(title: translate("settings.meetingType", [:]),
+                    selection: viewModel.snapshot.audioMode.rawValue,
+                    options: [AudioMode.both, .system, .mic].map {
+                        SettingsSelectOption(id: $0.rawValue, label: audioScenarioTitle($0))
+                    }, onSelect: { if let mode = AudioMode(rawValue: $0) { viewModel.setAudioMode(mode) } })
+                    .disabled(viewModel.snapshot.audioModeLocked)
             }
-
-            VStack(spacing: 0) {
-                settingsDetailRow(.recognition, help: "settings.recognitionHelp", value: recognitionSummary,
-                    status: recognitionStatus)
-                settingsDetailRow(.output, help: "settings.outputHelp", value: translate("settings.outputSummary", [:]))
-            }
-
+            settingsDetailRow(.recognition, help: "settings.recognitionHelp", value: recognitionSummary, status: recognitionStatus)
+            settingsDetailRow(.output, help: "settings.outputHelp", value: "")
         }
     }
 
-    private var currentAudioCard: some View {
-        HStack(spacing: 12) {
-            audioModeIcon(viewModel.snapshot.audioMode)
-                .frame(width: 36, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(translate("common.currentMeeting", [:]))
-                    .font(ArcoTypography.tiny)
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(audioScenarioTitle(viewModel.snapshot.audioMode))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(audioScenarioDescription(viewModel.snapshot.audioMode))
-                        .font(ArcoTypography.sans(12))
-                        .foregroundStyle(ArcoNativeColors.ink)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            if viewModel.snapshot.audioModeLocked {
-                Text(translate("settings.lockedUntilEnd", [:]))
-                    .font(ArcoTypography.small)
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-                    .frame(maxWidth: 132, alignment: .trailing)
-                    .multilineTextAlignment(.trailing)
-            }
+    private var audioScenarioDescriptionKey: String {
+        switch viewModel.snapshot.audioMode {
+        case .both: "settings.scenario.hybrid.description"
+        case .system: "settings.scenario.online.description"
+        case .mic: "settings.scenario.room.description"
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ArcoNativeColors.lineThin))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(translate("settings.currentMeetingAudio", [:]))
-    }
-
-    private func audioScenario(_ mode: AudioMode) -> some View {
-        let selected = viewModel.snapshot.audioMode == mode
-        return Button { viewModel.setAudioMode(mode) } label: {
-            HStack(alignment: .top, spacing: 8) {
-                audioModeIcon(mode)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(audioScenarioTitle(mode))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(audioScenarioDescription(mode))
-                        .font(ArcoTypography.small)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                ZStack {
-                    Circle().fill(selected ? ArcoNativeColors.inkStrong : Color.clear)
-                    if selected {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(ArcoNativeColors.surfaceRaised)
-                    }
-                }
-                .frame(width: 20, height: 20)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? ArcoNativeColors.lineStrong : Color.clear))
-        }
-        .buttonStyle(
-            SettingsSurfaceButtonStyle(
-                fill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
-                hoverFill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceHover,
-                cornerRadius: 10
-            )
-        )
-        .disabled(viewModel.snapshot.audioModeLocked)
-    }
-
-    private func audioModeIcon(_ mode: AudioMode) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            switch mode {
-            case .both:
-                Image(systemName: "headphones")
-                    .font(.system(size: 16))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Image(systemName: "mic")
-                    .font(.system(size: 12))
-                    .padding(.trailing, 1)
-                    .padding(.bottom, 1)
-            case .system:
-                Image(systemName: "headphones")
-                    .font(.system(size: 17))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .mic:
-                Image(systemName: "mic")
-                    .font(.system(size: 17))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .foregroundStyle(ArcoNativeColors.ink)
-        .frame(width: 32, height: 32)
-        .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var recognitionSettings: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                Text(translate("settings.speechRecognition", [:]))
-                    .font(ArcoTypography.sans(13, weight: .semibold))
-                    .foregroundStyle(ArcoNativeColors.inkStrong)
-                Spacer(minLength: 0)
-                Text(recognitionSummary)
-                    .font(ArcoTypography.small)
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-                    .lineLimit(1)
+            SettingsControlRow {
+                Text(translate("settings.speechRecognition", [:])).font(ArcoTypography.bodyStrong)
+            } control: {
+                SettingsSelectMenu(title: translate("settings.asrProvider", [:]),
+                    selection: viewModel.snapshot.transcriptionConfiguration.asr.provider.rawValue,
+                    options: [TranscriptionProvider.doubao, .deepgram, .elevenlabs, .local].map {
+                        SettingsSelectOption(id: $0.rawValue, label: providerName($0))
+                    }, onSelect: { if let provider = TranscriptionProvider(rawValue: $0) { viewModel.changeEngine(provider) } })
+                    .disabled(viewModel.snapshot.audioModeLocked)
             }
-            .padding(.bottom, 12)
-
-            HStack(spacing: 8) {
-                    selectionButton(
-                        selected: viewModel.snapshot.transcriptionConfiguration.asr.provider != .local,
-                        symbol: "cloud",
-                        title: "settings.cloud",
-                        detail: "settings.cloudDescription"
-                    ) {
-                        let current = viewModel.snapshot.transcriptionConfiguration.asr.provider
-                        viewModel.changeEngine(current == .local ? .deepgram : current)
-                    }
-                    selectionButton(
-                        selected: viewModel.snapshot.transcriptionConfiguration.asr.provider == .local,
-                        symbol: "laptopcomputer",
-                        title: "settings.onDevice",
-                        detail: "settings.onDeviceDescription"
-                    ) { viewModel.changeEngine(.local) }
+            if viewModel.snapshot.audioModeLocked {
+                Text(translate("settings.recognitionLocked", [:]))
+                    .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 10)
             }
-            .disabled(viewModel.snapshot.audioModeLocked)
-            .opacity(viewModel.snapshot.audioModeLocked ? 0.56 : 1)
-
             if viewModel.snapshot.transcriptionConfiguration.asr.provider == .local {
                 localASRSettings
             } else {
-                cloudASRSettings
+                credentialEditor(for: viewModel.snapshot.transcriptionConfiguration.asr.provider)
             }
-            if viewModel.snapshot.transcriptionConfiguration.diarization.provider == .doubao,
-               viewModel.snapshot.transcriptionConfiguration.asr.provider != .doubao {
-                doubaoCredentialEditor.padding(.leading, 16)
-            }
-
             diarizationSettings
-                .padding(.top, 20)
-                .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-                .padding(.top, 24)
+            Text(translate("settings.processingPrivacy", [:]))
+                .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 16)
         }
-    }
-
-    private var cloudASRSettings: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(translate("settings.asrProvider", [:]))
-                .font(ArcoTypography.sans(13, weight: .medium))
-                .foregroundStyle(ArcoNativeColors.inkStrong)
-                .padding(.bottom, 8)
-            HStack(spacing: 8) {
-                    providerButton(.deepgram)
-                    providerButton(.elevenlabs)
-                    providerButton(.doubao)
-            }
-            .disabled(viewModel.snapshot.audioModeLocked)
-            .opacity(viewModel.snapshot.audioModeLocked ? 0.56 : 1)
-            credentialEditor(for: viewModel.snapshot.transcriptionConfiguration.asr.provider)
-        }
-        .padding(.leading, 16)
-        .padding(.top, 12)
-    }
-
-    private func providerButton(_ provider: TranscriptionProvider) -> some View {
-        let selected = viewModel.snapshot.transcriptionConfiguration.asr.provider == provider
-        return Button { viewModel.changeEngine(provider) } label: {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(providerName(provider))
-                        .font(ArcoTypography.sans(12, weight: .semibold))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(translate("settings.\(provider == .deepgram ? "deepgram" : provider == .elevenlabs ? "elevenLabs" : "doubao")Description", [:]))
-                        .font(ArcoTypography.tiny)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-                if selected { Image(systemName: "checkmark").font(.system(size: 14)).foregroundStyle(ArcoNativeColors.success) }
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .overlay { if selected { RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineStrong) } }
-        }
-        .buttonStyle(
-            SettingsSurfaceButtonStyle(
-                fill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
-                hoverFill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceHover,
-                cornerRadius: 8
-            )
-        )
     }
 
     private var localASRSettings: some View {
@@ -640,166 +467,46 @@ public struct ArcoSettingsSheetView: View {
             }
             .disabled(viewModel.snapshot.audioModeLocked)
 
-            Label(
-                translate(
-                    viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram
-                        ? "settings.localAsrMixedPrivacy" : "settings.localPrivacy",
-                    [:]
-                ),
-                systemImage: "checkmark.shield"
-            )
-            .font(ArcoTypography.small)
-            .foregroundStyle(ArcoNativeColors.ink)
-            .padding(.top, 10)
+
         }
-        .padding(.leading, 16)
-        .padding(.top, 12)
+        .padding(.top, 8)
         .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
     }
 
     private var diarizationSettings: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                Text(translate("settings.speakerSeparation", [:]))
-                    .font(ArcoTypography.sans(13, weight: .semibold))
-                    .foregroundStyle(ArcoNativeColors.inkStrong)
-                Spacer(minLength: 0)
-                Text(diarizationSummary)
-                    .font(ArcoTypography.small)
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-                    .lineLimit(1)
-            }
-            .padding(.bottom, 12)
-
-            if viewModel.snapshot.transcriptionConfiguration.asr.provider == .elevenlabs {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.warning)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(translate("settings.elevenLabsBuiltIn", [:])).font(ArcoTypography.sans(13, weight: .medium))
-                        Text(translate("settings.elevenLabsDiarizationTiming", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
-                    }
+            SettingsControlRow {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(translate("settings.speakerSeparation", [:])).font(ArcoTypography.bodyStrong)
+                    Text(translate("settings.speakerSeparationHelp", [:]))
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
-                .frame(minHeight: 44)
-                .padding(.bottom, 12)
-                .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
+            } control: {
+                SettingsSelectMenu(title: translate("settings.diarizationProvider", [:]),
+                    selection: viewModel.snapshot.transcriptionConfiguration.diarization.provider.rawValue,
+                    options: [
+                        SettingsSelectOption(id: DiarizationProvider.doubao.rawValue, label: "Doubao"),
+                        SettingsSelectOption(id: DiarizationProvider.deepgram.rawValue, label: "Deepgram"),
+                        SettingsSelectOption(id: DiarizationProvider.local.rawValue, label: translate("settings.onDevice", [:])),
+                        SettingsSelectOption(id: DiarizationProvider.none.rawValue, label: translate("common.off", [:]))
+                    ], onSelect: { value in
+                        if value == DiarizationProvider.local.rawValue { viewModel.changeDiarizationLocation("local") }
+                        else if value == DiarizationProvider.none.rawValue { viewModel.changeDiarizationLocation("off") }
+                        else if let provider = DiarizationProvider(rawValue: value) { viewModel.changeDiarizationProvider(provider) }
+                    }).disabled(viewModel.snapshot.audioModeLocked)
             }
-
-            HStack(spacing: 8) {
-                selectionButton(
-                    selected: [.deepgram, .doubao].contains(viewModel.snapshot.transcriptionConfiguration.diarization.provider),
-                    symbol: "cloud",
-                    title: "settings.cloud",
-                    detail: "settings.diarizationCloudDescription"
-                ) { viewModel.changeDiarizationLocation("cloud") }
-                selectionButton(
-                    selected: viewModel.snapshot.transcriptionConfiguration.diarization.provider == .local,
-                    symbol: "laptopcomputer",
-                    title: "settings.onDevice",
-                    detail: "settings.diarizationLocalDescription"
-                ) { viewModel.changeDiarizationLocation("local") }
-                selectionButton(
-                    selected: viewModel.snapshot.transcriptionConfiguration.diarization.provider == .none,
-                    symbol: "xmark",
-                    title: "common.off",
-                    detail: "settings.diarizationOffDescription"
-                ) { viewModel.changeDiarizationLocation("off") }
+            if viewModel.snapshot.transcriptionConfiguration.diarization.provider == .local {
+                ForEach(arcoLocalDiarizationModels) { model in diarizationModelRow(model) }
             }
-            .disabled(viewModel.snapshot.audioModeLocked)
-            .opacity(viewModel.snapshot.audioModeLocked ? 0.56 : 1)
-
-            switch viewModel.snapshot.transcriptionConfiguration.diarization.provider {
-            case .deepgram, .doubao:
-                VStack(spacing: 0) {
-                    Text(translate("settings.diarizationProvider", [:]))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.bottom, 8)
-                    diarizationProviderButton(.deepgram)
-                    diarizationProviderButton(.doubao)
-                }
-                .padding(.leading, 16)
-                .padding(.top, 14)
-                .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-            case .local:
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(translate("settings.localDiarizationModel", [:]))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .padding(.bottom, 6)
-                    ForEach(arcoLocalDiarizationModels) { model in
-                        diarizationModelRow(model)
-                    }
-                }
-                .padding(.leading, 16)
-                .padding(.top, 14)
-                .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-            case .none:
-                EmptyView()
-            }
-
-            if viewModel.snapshot.transcriptionConfiguration.asr.provider == .deepgram
-                || viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.inkMuted)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(translate(
-                            viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram
-                                ? "settings.deepgramBuiltIn" : "settings.deepgramAsr",
-                            [:]
-                        ))
-                        .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
-                        Text(translate(
-                            viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram
-                                ? "settings.deepgramNoLocalModel" : "settings.deepgramAsrHelp",
-                            [:]
-                        ))
-                        .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
-                    }
-                }
-                .padding(.vertical, 8)
-                .frame(minHeight: 44)
-                .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-            }
-
             if viewModel.snapshot.transcriptionConfiguration.asr.provider != .deepgram,
                viewModel.snapshot.transcriptionConfiguration.diarization.provider == .deepgram {
-                credentialEditor(for: .deepgram).padding(.leading, 16)
+                credentialEditor(for: .deepgram)
+            }
+            if viewModel.snapshot.transcriptionConfiguration.asr.provider != .doubao,
+               viewModel.snapshot.transcriptionConfiguration.diarization.provider == .doubao {
+                doubaoCredentialEditor
             }
         }
-    }
-
-    private func diarizationProviderButton(_ provider: DiarizationProvider) -> some View {
-        let selected = viewModel.snapshot.transcriptionConfiguration.diarization.provider == provider
-        return Button { viewModel.changeDiarizationProvider(provider) } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .stroke(ArcoNativeColors.lineStrong)
-                    .background(Circle().fill(selected ? ArcoNativeColors.inkStrong : Color.clear).padding(3))
-                    .frame(width: 15, height: 15)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(provider == .doubao ? "Doubao" : "Deepgram")
-                        .font(ArcoTypography.sans(12, weight: .semibold))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(translate(provider == .doubao ? "settings.doubaoNoLocalModel" : "settings.deepgramNoLocalModel", [:]))
-                        .font(ArcoTypography.tiny)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
-                }
-                Spacer(minLength: 0)
-                if provider == .deepgram, viewModel.snapshot.deepgramCredential.configured {
-                    Text(translate("common.ready", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
-                } else if provider == .doubao, viewModel.snapshot.doubaoCredential.configured {
-                    Text(translate("common.ready", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
-                } else if selected {
-                    Image(systemName: "checkmark").font(.system(size: 14)).foregroundStyle(ArcoNativeColors.success)
-                }
-            }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-            .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-        }
-        .buttonStyle(.plain)
-        .disabled(viewModel.snapshot.audioModeLocked)
     }
 
     private func diarizationModelRow(_ model: LocalModelDescriptor) -> some View {
@@ -896,19 +603,13 @@ public struct ArcoSettingsSheetView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(translate("settings.\(prefix)Ready", [:]))
                                 .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
-                            Text(translate("settings.\(prefix)Keychain", [:]))
-                                .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                         }
                     }
                     Spacer()
-                    modelActionButton(
+                    credentialRemovalMenu(
                         translate("settings.remove\(provider == .deepgram ? "DeepgramKey" : "ElevenLabsKey")", [:]),
-                        remove: true
-                    ) {
-                        Task { await viewModel.removeCredential(provider) }
-                    }
-                    .disabled(busy || viewModel.snapshot.audioModeLocked)
-                    .opacity(busy || viewModel.snapshot.audioModeLocked ? 0.4 : 1)
+                        disabled: busy || viewModel.snapshot.audioModeLocked
+                    ) { await viewModel.removeCredential(provider) }
                 }
                 .frame(minHeight: 32)
             } else {
@@ -916,8 +617,6 @@ public struct ArcoSettingsSheetView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(translate("settings.\(prefix)PasteKey", [:]))
                             .font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
-                        Text(translate("settings.\(prefix)PasteKeyHelp", [:]))
-                            .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                     }
                     Spacer(minLength: 0)
                     Button(translate("settings.\(prefix)GetKey", [:])) {
@@ -973,15 +672,13 @@ public struct ArcoSettingsSheetView: View {
                         Image(systemName: "checkmark").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.success)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(translate("settings.doubaoReady", [:])).font(ArcoTypography.sans(13, weight: .medium))
-                            Text(translate("settings.doubaoKeychain", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
+                                .help(translate("settings.doubaoKeychain", [:]))
                         }
                     }
                     Spacer()
-                    modelActionButton(translate("settings.removeDoubaoCredentials", [:]), remove: true) {
-                        Task { await viewModel.removeCredential(.doubao) }
-                    }
-                    .disabled(viewModel.snapshot.audioModeLocked || viewModel.snapshot.doubaoCredentialBusy)
-                    .opacity(viewModel.snapshot.audioModeLocked || viewModel.snapshot.doubaoCredentialBusy ? 0.4 : 1)
+                    credentialRemovalMenu(translate("settings.removeDoubaoCredentials", [:]),
+                        disabled: viewModel.snapshot.audioModeLocked || viewModel.snapshot.doubaoCredentialBusy
+                    ) { await viewModel.removeCredential(.doubao) }
                 }
                 .frame(minHeight: 32)
             } else {
@@ -1043,6 +740,17 @@ public struct ArcoSettingsSheetView: View {
         .padding(.bottom, 16)
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
         .padding(.bottom, 16)
+    }
+
+    private func credentialRemovalMenu(_ title: String, disabled: Bool, action: @escaping () async -> Void) -> some View {
+        Menu {
+            Button(title, role: .destructive) { Task { await action() } }
+                .disabled(disabled)
+        } label: {
+            Label(translate("settings.accountOptions", [:]), systemImage: "ellipsis")
+                .labelStyle(.iconOnly).frame(width: 28, height: 30)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
     }
 
     private func modelActionButton(
@@ -1130,11 +838,8 @@ public struct ArcoSettingsSheetView: View {
                             .font(ArcoTypography.sans(14, weight: .semibold))
                             .foregroundStyle(ArcoNativeColors.inkStrong)
                         Text(translate("settings.betaBadge", [:]))
-                            .font(ArcoTypography.sans(9, weight: .bold))
-                            .foregroundStyle(ArcoNativeColors.brand)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ArcoNativeColors.brand.opacity(0.1), in: Capsule())
+                            .font(ArcoTypography.small)
+                            .foregroundStyle(ArcoNativeColors.inkMuted)
                     }
                     Text(translate("settings.gptLiveBetaHelp", [:]))
                         .font(ArcoTypography.sans(12))
@@ -1187,40 +892,26 @@ public struct ArcoSettingsSheetView: View {
                 }
                 Spacer(minLength: 12)
                 if viewModel.snapshot.gptLiveCredential.phase == .connected {
-                    Button {
-                        Task { await viewModel.disconnectGPTLiveCredential() }
+                    Menu {
+                        Button(translate("settings.gptLiveReconnectChatGPT", [:])) {
+                            Task { await viewModel.connectGPTLiveCredential() }
+                        }
+                        Button(translate("settings.gptLiveDisconnectChatGPT", [:])) {
+                            Task { await viewModel.disconnectGPTLiveCredential() }
+                        }
                     } label: {
-                        Text(translate("settings.gptLiveDisconnectChatGPT", [:]))
-                            .font(ArcoTypography.sans(11, weight: .medium))
-                            .padding(.horizontal, 9)
-                            .frame(minHeight: 30)
+                        Image(systemName: "ellipsis").frame(width: 28, height: 30)
                     }
-                    .buttonStyle(
-                        SettingsSurfaceButtonStyle(
-                            fill: .clear,
-                            hoverFill: ArcoNativeColors.surfaceHover,
-                            cornerRadius: 7
-                        )
-                    )
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel(translate("settings.accountOptions", [:]))
+                    .disabled(viewModel.gptLiveCredentialBusy)
+                } else {
+                    Button(translate(gptLiveCredentialActionKey, [:])) {
+                        Task { await viewModel.connectGPTLiveCredential() }
+                    }
+                    .buttonStyle(.borderedProminent).tint(ArcoNativeColors.inkStrong)
+                    .disabled(viewModel.gptLiveCredentialBusy)
                 }
-                Button {
-                    Task { await viewModel.connectGPTLiveCredential() }
-                } label: {
-                    Text(translate(gptLiveCredentialActionKey, [:]))
-                        .font(ArcoTypography.sans(11, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.surfaceRaised)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 30)
-                }
-                .buttonStyle(
-                    SettingsSurfaceButtonStyle(
-                        fill: ArcoNativeColors.inkStrong,
-                        hoverFill: ArcoNativeColors.actionHover,
-                        cornerRadius: 7
-                    )
-                )
-                .disabled(viewModel.gptLiveCredentialBusy)
-                .opacity(viewModel.gptLiveCredentialBusy ? 0.45 : 1)
             }
             .frame(minHeight: 72)
             .overlay(alignment: .bottom) {
@@ -1252,10 +943,6 @@ public struct ArcoSettingsSheetView: View {
                     value: translate(viewModel.snapshot.gptLiveBetaEnabled ? "settings.voiceEnabled" : "settings.voiceDisabled", [:]),
                     status: translate(gptLiveCredentialStatusKey, [:]))
             }
-            Text(translate("settings.meetingDiscussionHelp", [:]))
-                .font(ArcoTypography.sans(12))
-                .foregroundStyle(ArcoNativeColors.inkMuted)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1273,7 +960,7 @@ public struct ArcoSettingsSheetView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(value).font(ArcoTypography.sans(13))
+                    Text(value).font(ArcoTypography.sans(13)).lineLimit(2)
                     if let status { Text(status).font(ArcoTypography.sans(11)).foregroundStyle(ArcoNativeColors.inkMuted) }
                 }
                 .foregroundStyle(ArcoNativeColors.ink)
@@ -1282,7 +969,7 @@ public struct ArcoSettingsSheetView: View {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12)).foregroundStyle(ArcoNativeColors.inkMuted)
             }
-            .padding(.vertical, 22)
+            .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: 88)
             .contentShape(Rectangle())
         }
@@ -1298,9 +985,6 @@ public struct ArcoSettingsSheetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(translate("settings.currentConfiguration", [:]))
                         .font(ArcoTypography.sans(14, weight: .semibold))
-                    Text(translate("settings.configurationHelp", [:]))
-                        .font(ArcoTypography.sans(12))
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
                 }
                 Spacer()
                 Button(action: viewModel.actions.onEditProviders) {
@@ -1341,9 +1025,6 @@ public struct ArcoSettingsSheetView: View {
                     Text(translate("settings.onThisMacHeading", [:]))
                         .font(ArcoTypography.sans(14, weight: .semibold))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Text(translate("settings.detectedCli", [:]))
-                        .font(ArcoTypography.sans(12))
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
                 }
                 VStack(spacing: 0) {
                     ForEach(viewModel.snapshot.runtimes) { runtime in
@@ -1401,169 +1082,50 @@ public struct ArcoSettingsSheetView: View {
     }
 
     private var privacyPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.shield").font(.system(size: 18))
-                Text(translate("settings.storageIntro", [:]))
-                    .font(ArcoTypography.sans(13))
-                    .foregroundStyle(ArcoNativeColors.ink)
-            }
-            .padding(.bottom, 16)
-            .overlay(alignment: .bottom) { Rectangle().fill(Color.black.opacity(0.05)).frame(height: 1) }
-
+        VStack(alignment: .leading, spacing: 0) {
             AudioArchiveSettingsView(viewModel: viewModel, translate: translate)
-
-            storageRow(
-                symbol: "internaldrive",
-                title: "settings.meetingTranscripts",
-                accessibilityTitle: "settings.transcriptStorage",
-                settings: viewModel.snapshot.transcriptStorage,
-                busy: viewModel.snapshot.transcriptStorageChanging,
-                locked: viewModel.snapshot.audioModeLocked,
+            SettingsStorageLocationRow(title: translate("settings.meetingTranscripts", [:]),
+                detail: translate("settings.meetingTranscriptsValue", [:]),
+                directory: viewModel.snapshot.transcriptStorage.selectedDirectory,
+                usingDefault: viewModel.snapshot.transcriptStorage.usingDefault,
+                locked: viewModel.snapshot.audioModeLocked || viewModel.snapshot.transcriptStorageChanging,
+                translate: translate,
                 choose: { await viewModel.chooseTranscriptDirectory() },
-                reset: { await viewModel.resetTranscriptDirectory() }
-            )
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label(translate("settings.notes", [:]), systemImage: "folder")
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                    Spacer()
-                    Button(translate("settings.openNotesFolder", [:])) {
-                        openURL(URL(fileURLWithPath: viewModel.snapshot.notesStorage.selectedDirectory, isDirectory: true))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(ArcoNativeColors.action)
-                    .disabled(!FileManager.default.fileExists(atPath: viewModel.snapshot.notesStorage.selectedDirectory))
-                }
-                Text(translate("settings.previousNotesHelp", [:]))
-                    .font(ArcoTypography.metadata).foregroundStyle(ArcoNativeColors.inkMuted)
-                Text(viewModel.snapshot.notesStorage.selectedDirectory)
-                    .font(ArcoTypography.mono(11)).foregroundStyle(ArcoNativeColors.inkMuted)
-                    .textSelection(.enabled)
-            }
-            .padding(.vertical, 12)
-
-            VStack(spacing: 0) {
-                privacyRow("folder", "settings.legacyImport", "settings.legacyImportValue")
-                privacyRow("command", "settings.nativeConversations", "settings.nativeConversationsValue")
-                privacyRow("internaldrive", "settings.linksCacheNotes", "settings.linksCacheNotesValue")
-                privacyRow("checkmark.shield", "settings.questionContext", "settings.questionContextValue")
-            }
-        }
-    }
-
-    private func storageRow(
-        symbol: String,
-        title: String,
-        accessibilityTitle: String,
-        settings: StorageSettings,
-        busy: Bool,
-        locked: Bool,
-        choose: @escaping () async -> Void,
-        reset: @escaping () async -> Void
-    ) -> some View {
-        ZStack(alignment: .trailing) {
-            Button { Task { await choose() } } label: {
-                HStack(spacing: 14) {
-                    Label(translate(title, [:]), systemImage: symbol)
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                    Spacer(minLength: 0)
-                    HStack(spacing: 8) {
-                        Text(settings.usingDefault ? translate("settings.defaultLocation", [:]) : translate("settings.customLocation", [:]))
-                            .font(ArcoTypography.sans(9, weight: .medium))
-                            .foregroundStyle(ArcoNativeColors.inkMuted)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(ArcoNativeColors.surfaceSelected, in: RoundedRectangle(cornerRadius: 5))
-                        Text(settings.selectedDirectory)
-                            .font(ArcoTypography.mono(11))
-                            .foregroundStyle(ArcoNativeColors.ink)
-                            .lineLimit(1)
-                            .help(settings.selectedDirectory)
-                    }
-                    Image(systemName: "chevron.right").font(.system(size: 15)).foregroundStyle(ArcoNativeColors.inkMuted).frame(width: 18)
-                }
-                .padding(.trailing, settings.usingDefault ? 0 : 104)
-                .frame(minHeight: 58)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(
-                SettingsSurfaceButtonStyle(
-                    fill: .clear,
-                    hoverFill: ArcoNativeColors.surfaceHover,
-                    cornerRadius: 0
-                )
-            )
-            .disabled(busy || locked)
-            .accessibilityLabel(translate(accessibilityTitle, [:]))
-
-            if !settings.usingDefault {
-                Button { Task { await reset() } } label: {
-                    Text(translate("settings.restoreDefault", [:]))
-                        .font(ArcoTypography.tiny)
-                        .foregroundStyle(ArcoNativeColors.ink)
-                        .padding(.horizontal, 8).padding(.vertical, 4).frame(minHeight: 28)
-                }
-                    .buttonStyle(
-                        SettingsSurfaceButtonStyle(
-                            fill: ArcoNativeColors.surfaceSelected,
-                            hoverFill: ArcoNativeColors.surfaceHover,
-                            cornerRadius: 7
-                        )
-                    )
-                    .disabled(busy || locked)
-            }
-        }
-        .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-        .overlay(alignment: .bottomLeading) {
-            if locked {
+                reset: { await viewModel.resetTranscriptDirectory() })
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(translate("settings.transcriptStorage", [:]))
+            if viewModel.snapshot.audioModeLocked {
                 Text(translate("settings.storageLocked", [:]))
-                    .font(ArcoTypography.tiny)
-                    .foregroundStyle(ArcoNativeColors.warning)
-                    .offset(x: 28, y: 8)
+                    .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 12)
             }
+            DisclosureGroup(translate("settings.storageDetails", [:])) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(translate("audioArchive.formatDetails", [:]))
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                    Text(translate("settings.storageLocationHelp", [:]))
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                    SettingsStorageLocationRow(title: translate("settings.notes", [:]),
+                        detail: translate("settings.previousNotesHelp", [:]),
+                        directory: viewModel.snapshot.notesStorage.selectedDirectory,
+                        usingDefault: true, locked: false, translate: translate)
+                    privacyRow("folder", "settings.legacyImport", "settings.legacyImportValue")
+                    privacyRow("command", "settings.nativeConversations", "settings.nativeConversationsValue")
+                    privacyRow("internaldrive", "settings.linksCacheNotes", "settings.linksCacheNotesValue")
+                    privacyRow("checkmark.shield", "settings.questionContext", "settings.questionContextValue")
+                }.padding(.top, 12)
+            }
+            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+            .padding(.top, 20)
         }
-        .padding(.bottom, locked ? 8 : 0)
     }
 
-    private func selectionButton(
-        selected: Bool,
-        symbol: String,
-        title: String,
-        detail: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol).font(.system(size: 16)).foregroundStyle(ArcoNativeColors.ink)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(translate(title, [:])).font(ArcoTypography.sans(12, weight: .semibold))
-                    Text(translate(detail, [:]))
-                        .font(ArcoTypography.tiny)
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .foregroundStyle(ArcoNativeColors.inkStrong)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .overlay { if selected { RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineStrong) } }
-        }
-        .buttonStyle(
-            SettingsSurfaceButtonStyle(
-                fill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
-                hoverFill: selected ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceHover,
-                cornerRadius: 8
-            )
-        )
-    }
+
 
     private func providerConfigurationRow(_ title: String, value: String, muted: Bool) -> some View {
         HStack {
             Text(translate(title, [:])).font(ArcoTypography.sans(13, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
             Spacer()
-            Text(value).font(ArcoTypography.sans(13)).foregroundStyle(muted ? ArcoNativeColors.inkMuted : ArcoNativeColors.ink)
+            Text(value).font(ArcoTypography.sans(13)).lineLimit(2).foregroundStyle(muted ? ArcoNativeColors.inkMuted : ArcoNativeColors.ink)
         }
         .frame(minHeight: 48)
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
@@ -1589,11 +1151,7 @@ public struct ArcoSettingsSheetView: View {
         translate("settings.scenario.\(mode == .both ? "hybrid" : mode == .system ? "online" : "room").title", [:])
     }
 
-    private func audioScenarioDescription(_ mode: AudioMode) -> String {
-        translate("settings.scenario.\(mode == .both ? "hybrid" : mode == .system ? "online" : "room").description", [:])
-    }
-
-    private var recognitionStatus: String {
+    private var recognitionStatus: String? {
         if viewModel.localSetupIncomplete { return translate("settings.localModelsMissing", [:]) }
         let config = viewModel.snapshot.transcriptionConfiguration
         let verified: Bool
@@ -1606,7 +1164,7 @@ public struct ArcoSettingsSheetView: View {
         if !verified || (config.diarization.provider == .doubao && !viewModel.snapshot.doubaoCredential.verified) {
             return translate("settings.connectionNeedsCheck", [:])
         }
-        return diarizationSummary
+        return nil
     }
 
     private var recognitionSummary: String {
@@ -1617,32 +1175,7 @@ public struct ArcoSettingsSheetView: View {
                 ? label
                 : translate("settings.modelNotDownloaded", ["model": label])
         }
-        return "\(providerName(config.asr.provider)) · \(languageName(config.asr.language))"
-    }
-
-    private var diarizationSummary: String {
-        let config = viewModel.snapshot.transcriptionConfiguration.diarization
-        return switch config.provider {
-        case .deepgram: translate("settings.deepgramBuiltIn", [:])
-        case .doubao: translate("settings.doubaoBuiltIn", [:])
-        case .local:
-            if let model = viewModel.selectedDiarizationModel {
-                viewModel.selectedDiarizationModelStatus?.installed == true
-                    ? model.label
-                    : translate("settings.modelNotDownloaded", ["model": model.label])
-            } else {
-                translate("settings.speakerSeparationOff", [:])
-            }
-        case .none: translate("settings.speakerSeparationOff", [:])
-        }
-    }
-
-    private func languageName(_ id: String) -> String {
-        switch id {
-        case "auto": translate("common.automatic", [:])
-        case "en-US": translate("common.english", [:])
-        default: translate("common.chinese", [:])
-        }
+        return providerName(config.asr.provider)
     }
 
     private func providerName(_ provider: TranscriptionProvider) -> String {
@@ -1664,12 +1197,13 @@ public struct ArcoSettingsSheetView: View {
     }
 }
 
-private struct SettingsSelectOption: Identifiable {
+struct SettingsSelectOption: Identifiable {
     let id: String
     let label: String
+    var enabled = true
 }
 
-private struct SettingsControlRow<LabelContent: View, ControlContent: View>: View {
+struct SettingsControlRow<LabelContent: View, ControlContent: View>: View {
     private let label: LabelContent
     private let control: ControlContent
 
@@ -1704,7 +1238,7 @@ private struct SettingsControlRow<LabelContent: View, ControlContent: View>: Vie
     }
 }
 
-private struct SettingsSelectMenu: View {
+struct SettingsSelectMenu: View {
     let title: String
     let selection: String
     let options: [SettingsSelectOption]
@@ -1729,6 +1263,7 @@ private struct SettingsSelectMenu: View {
                         Text(option.label)
                     }
                 }
+                .disabled(!option.enabled)
             }
         } label: {
             HStack(spacing: 8) {
