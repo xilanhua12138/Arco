@@ -4,6 +4,7 @@ import SwiftUI
 public struct ArcoMainShellView: View {
     @StateObject private var controller: ArcoAppShellController
     @State private var liveReviewHovered = false
+    @State private var captureButtonHovered = false
     @FocusState private var settingsTriggerFocused: Bool
     @FocusState private var agentTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -251,9 +252,9 @@ public struct ArcoMainShellView: View {
         .accessibilityLabel(translate("capture.audioLabel", ["mode": mode.label, "source": mode.source]))
     }
 
-    @ViewBuilder private func sidebarCaptureButton(recording: Bool, enabled: Bool) -> some View {
-        let tint = recording ? ArcoNativeGlassPalette.recording : ArcoNativeGlassPalette.action
-        let button = Button {
+    private func sidebarCaptureButton(recording: Bool, enabled: Bool) -> some View {
+        let tint = recording ? ArcoNativeColors.record : ArcoNativeColors.action
+        return Button {
             let resume = controller.page == .review ? controller.store.meeting?.summary.id : nil
             Task { await controller.toggleCapture(resumeMeetingID: resume) }
         } label: {
@@ -270,17 +271,20 @@ public struct ArcoMainShellView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
-            .contentShape(Capsule())
+            .background(tint, in: Capsule(style: .circular))
+            .overlay {
+                Capsule(style: .circular)
+                    .fill(Color.black.opacity(captureButtonHovered && enabled ? 0.08 : 0))
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Capsule(style: .circular))
         }
         .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.985))
         .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
+        .onHover { captureButtonHovered = $0 }
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: captureButtonHovered)
         .accessibilityLabel(captureActionLabel)
-
-        if #available(macOS 26.0, *) {
-            button.glassEffect(.regular.tint(tint).interactive(), in: Capsule())
-        } else {
-            button.background(tint, in: Capsule())
-        }
     }
 
     @ViewBuilder private var sidebarSettingsButton: some View {
