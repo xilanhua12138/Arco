@@ -1,3 +1,4 @@
+use crate::agent_proxy::configure_agent_proxy;
 use crate::models::{
     AgentReply, AgentRunOutput, AgentSource, AgentToolActivity, MeetingDetail,
     ProviderConnectionTest, RuntimeStatus,
@@ -1930,6 +1931,7 @@ fn run_process_limited_inner(
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
     }
+    configure_agent_proxy(&mut command);
     configure_process_group(&mut command)
         .map_err(|error| format!("could not isolate agent CLI process group: {error}"))?;
     let mut child = command
@@ -2067,6 +2069,7 @@ where
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
     }
+    configure_agent_proxy(&mut command);
     configure_process_group(&mut command)
         .map_err(|error| format!("could not isolate agent CLI process group: {error}"))?;
     let mut child = command

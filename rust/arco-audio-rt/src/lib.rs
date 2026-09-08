@@ -6,6 +6,8 @@
 //! state lives in this library; the containing recorder executable remains the
 //! crash-isolation boundary.
 
+pub mod echo_canceller;
+
 use rtrb::{Consumer, Producer, RingBuffer};
 use rubato::{FftFixedIn, Resampler};
 use std::ffi::c_void;

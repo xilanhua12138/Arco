@@ -116,12 +116,10 @@ private struct AudioQualityAccumulator {
 private enum EchoCancellationPolicy {
     static func shouldEnable(mode: String, setting: String?) -> Bool {
         guard mode == "both" else { return false }
-        // AVAudioEngine voice processing makes this process a system audio
-        // "ducker" on macOS, which can reduce meeting playback from other
-        // apps to near silence. Keep AEC available for explicit experiments,
-        // but never enable that system-wide side effect by default.
+        // Use software AEC3 with the system channel as reference. Never enable
+        // AVAudioEngine voice processing: it also ducks other apps' playback.
         return setting?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "on"
+            .lowercased() != "off"
     }
 }
 
@@ -306,6 +304,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var microphoneQuality = AudioQualityAccumulator()
     private var qualityTick = 0
     private var microphoneAECEnabled = false
+    private var echoCanceller: OpaquePointer?
     private var loggedFormats = Set<String>()
     private var systemCaptureStarted = !useSystem
     private var microphoneCaptureStarted = !useMic
@@ -324,6 +323,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     func start() {
         installTerminationHandlers()
         startParentMonitor()
+        configureEchoCancellation()
         startMixTimer()
         if useMic {
             startMicrophoneCapture()
@@ -652,26 +652,50 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         markSystemCaptureStarted()
     }
 
+    private func configureEchoCancellation() {
+        let setting = ProcessInfo.processInfo.environment["ARCO_MIC_ECHO_CANCELLATION"]
+        guard EchoCancellationPolicy.shouldEnable(mode: mode, setting: setting) else {
+            log("microphone echo cancellation bypassed (mode=\(mode))")
+            return
+        }
+        let status = arco_aec_create(&echoCanceller)
+        microphoneAECEnabled = status == 0 && echoCanceller != nil
+        if microphoneAECEnabled {
+            log("microphone software echo cancellation enabled (WebRTC AEC3; playback unchanged)")
+        } else {
+            log("echo cancellation unavailable; continuing raw: \(status)")
+        }
+    }
+
+    // Called only from the normal processing queue, or after it has stopped.
+    private func applyEchoCancellation(to samples: inout [Int16]) {
+        guard let echoCanceller else { return }
+        let status = samples.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return Int32(0) }
+            return arco_aec_process(echoCanceller, base, UInt32(buffer.count / 2))
+        }
+        if status != 0 {
+            log("echo cancellation failed; continuing raw: \(status)")
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+            microphoneAECEnabled = false
+        }
+    }
+
+    private func resetEchoCancellation() {
+        guard let echoCanceller else { return }
+        if arco_aec_reset(echoCanceller) != 0 {
+            log("echo cancellation reset failed; continuing raw")
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+            microphoneAECEnabled = false
+        }
+    }
+
     private func startMicrophoneCapture() {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         configureMicrophone(input)
-        let aecSetting = ProcessInfo.processInfo.environment["ARCO_MIC_ECHO_CANCELLATION"]
-        if EchoCancellationPolicy.shouldEnable(mode: mode, setting: aecSetting) {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                // Platform AEC is useful for speaker leakage; avoid adding a
-                // second gain/noise-processing stage before Deepgram.
-                input.isVoiceProcessingAGCEnabled = false
-                microphoneAECEnabled = true
-                log("microphone platform echo cancellation enabled (AGC disabled)")
-            } catch {
-                microphoneAECEnabled = false
-                log("microphone echo cancellation unavailable; continuing raw: \(error)")
-            }
-        } else {
-            log("microphone echo cancellation bypassed (mode=\(mode))")
-        }
         let format = input.outputFormat(forBus: 0)
         let channelCount = max(1, Int(format.channelCount))
         log(
@@ -802,6 +826,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             systemQuality.recordDropped(result.droppedFrames)
             if result.discontinuity {
                 systemBuffer.removeAll()
+                resetEchoCancellation()
             } else if result.count > 0 {
                 let dropped = processingScratch.withUnsafeBufferPointer { samples in
                     systemBuffer.append(
@@ -816,6 +841,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             microphoneQuality.recordDropped(result.droppedFrames)
             if result.discontinuity {
                 micBuffer.removeAll()
+                resetEchoCancellation()
             } else if result.count > 0 {
                 let dropped = processingScratch.withUnsafeBufferPointer { samples in
                     micBuffer.append(
@@ -880,6 +906,8 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 maxFrames: frameSize
             )
             : 0
+        let rawPayload = interleavedOutput.withUnsafeBytes { Data($0) }
+        applyEchoCancellation(to: &interleavedOutput)
         if useSystem {
             systemQuality.observeInterleaved(
                 samples: interleavedOutput,
@@ -933,7 +961,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             let emitted = payload.withUnsafeBytes { bytes in
                 self.writeAll(bytes)
             }
-            self.archive?.append(payload)
+            self.archive?.append(rawPayload)
             self.outputWriteGate.signal()
             guard !emitted else { return }
             self.lifecycleQueue.async { [weak self] in
@@ -1306,6 +1334,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             microphoneCallbacksQuiesced: microphoneCallbacksQuiesced
                 && processingQueueQuiesced
         )
+        if processingQueueQuiesced, let echoCanceller {
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+        }
         archive?.finish()
     }
 
@@ -1456,7 +1488,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 )
             }
             archive?.append(chunk.samples.withUnsafeBytes { Data($0) })
-            let emitted = chunk.samples.withUnsafeBytes { bytes in
+            var processedSamples = chunk.samples
+            applyEchoCancellation(to: &processedSamples)
+            let emitted = processedSamples.withUnsafeBytes { bytes in
                 writeAll(bytes)
             }
             guard emitted else {
@@ -1772,13 +1806,16 @@ private func runRecorderSelfTests() throws {
         "expanded shutdown FIFO changed frame order"
     )
 
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "both mode enabled ducking AEC without explicit opt-in")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "mixed capture must cancel speaker playback echo by default")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: nil), "mic-only mode enabled AEC")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "off"), "explicit AEC off was ignored")
     try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "on"), "explicit AEC on was ignored")
     try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: " ON "), "normalized AEC opt-in was ignored")
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: ""), "empty AEC setting enabled ducking AEC")
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting enabled ducking AEC")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: ""), "empty AEC setting must use the mixed capture default")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting must use the mixed capture default")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: " OFF "), "normalized explicit AEC off was ignored")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "system", setting: "on"), "system-only capture must not enable microphone AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: "on"), "microphone-only capture must not enable playback-reference AEC")
 
     FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_OK\n".utf8))
 }

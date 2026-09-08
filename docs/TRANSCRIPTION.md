@@ -214,4 +214,4 @@ Rust reports `recording` only after every resolved worker is ready. Deepgram sig
 
 ## Echo caveat
 
-Hybrid setups can leak room speech back through conferencing output or acoustic echo. Identity mapping cannot fix duplicated audio. Capture should prefer OS echo cancellation and may later deduplicate only when channel, timing, and text strongly agree—not by global text equality.
+Hybrid capture enables software WebRTC AEC3 by default, using system playback as a reference to remove loudspeaker echo from the microphone sent to transcription. It does not enable macOS voice processing or change playback volume. The audio archive retains both original captured channels. Microphone-only and system-only capture are unchanged; an explicit `ARCO_MIC_ECHO_CANCELLATION=off` disables AEC. See [software echo cancellation](features/software-echo-cancellation.md) for build requirements, fallback behavior and measured limits. Speaker identity mapping still cannot correct every duplicate or fragmented provider label.
