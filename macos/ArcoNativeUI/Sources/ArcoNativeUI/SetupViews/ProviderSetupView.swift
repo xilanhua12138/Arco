@@ -331,7 +331,8 @@ public struct ProviderSetupView: View {
     }
 
     private func settingsProviderMenu(selection: ProviderID?, secondary: Bool) -> some View {
-        SettingsSelectMenu(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
+        SettingsSelect(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
+            noResults: translate("common.noOptions", [:]),
             selection: selection?.rawValue ?? "none",
             options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]))] : [])
                 + ProviderID.allCases.map { provider in

@@ -190,12 +190,13 @@ public struct ArcoSettingsSheetView: View {
                 SettingsControlRow {
                     settingsLabel("settings.appLanguage", help: "settings.appLanguageHelp")
                 } control: {
-                    SettingsSelectMenu(
+                    SettingsAutocomplete(
                         title: translate("settings.appLanguage", [:]),
+                    noResults: translate("common.noOptions", [:]),
                         selection: viewModel.snapshot.locale,
                         options: [
-                            SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: "简体中文"),
-                            SettingsSelectOption(id: AppLocale.english.rawValue, label: "English"),
+                            SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: "简体中文", detail: translate("common.chineseSimplified", [:])),
+                            SettingsSelectOption(id: AppLocale.english.rawValue, label: "English", detail: translate("common.english", [:])),
                         ],
                         onSelect: { viewModel.setLocale($0) }
                     )
@@ -355,16 +356,21 @@ public struct ArcoSettingsSheetView: View {
     ) -> some View {
         Button(action: action) {
             Text(title)
-                .font(ArcoTypography.sans(13, weight: .medium))
+                .font(ArcoTypography.sans(14))
                 .foregroundStyle(prominent ? ArcoNativeColors.surfaceRaised : ArcoNativeColors.ink)
-                .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 38)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(ArcoNativeColors.line, lineWidth: 1))
+                .padding(.horizontal, 12).frame(height: 32)
+                .overlay {
+                    // Continuous corners produce side spurs at capsule proportions.
+                    RoundedRectangle(cornerRadius: 16, style: .circular)
+                        .strokeBorder(ArcoNativeColors.line, lineWidth: 1)
+                }
         }
         .buttonStyle(
             SettingsSurfaceButtonStyle(
                 fill: prominent ? ArcoNativeColors.inkStrong : ArcoNativeColors.surfaceRaised,
                 hoverFill: prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover,
-                cornerRadius: 7
+                cornerRadius: 16,
+                cornerStyle: .circular
             )
         )
     }
@@ -379,7 +385,8 @@ public struct ArcoSettingsSheetView: View {
                         .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
-                SettingsSelectMenu(title: translate("settings.meetingType", [:]),
+                SettingsSelect(title: translate("settings.meetingType", [:]),
+                    noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.audioMode.rawValue,
                     options: [AudioMode.both, .system, .mic].map {
                         SettingsSelectOption(id: $0.rawValue, label: audioScenarioTitle($0))
@@ -404,7 +411,8 @@ public struct ArcoSettingsSheetView: View {
             SettingsControlRow {
                 Text(translate("settings.speechRecognition", [:])).font(ArcoTypography.bodyStrong)
             } control: {
-                SettingsSelectMenu(title: translate("settings.asrProvider", [:]),
+                SettingsSelect(title: translate("settings.asrProvider", [:]),
+                    noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.provider.rawValue,
                     options: [TranscriptionProvider.doubao, .deepgram, .elevenlabs, .local].map {
                         SettingsSelectOption(id: $0.rawValue, label: providerName($0))
@@ -435,8 +443,9 @@ public struct ArcoSettingsSheetView: View {
                         .font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
-                SettingsSelectMenu(
+                SettingsSelect(
                     title: translate("settings.onDeviceModel", [:]),
+                    noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.model,
                     options: arcoLocalASRModels.map {
                         SettingsSelectOption(id: $0.id, label: "\($0.label) · \($0.downloadSize ?? "")")
@@ -456,8 +465,9 @@ public struct ArcoSettingsSheetView: View {
                     Text(translate("settings.recognitionLanguageHelp", [:])).font(ArcoTypography.tiny).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
-                SettingsSelectMenu(
+                SettingsSelect(
                     title: translate("settings.recognitionLanguage", [:]),
+                    noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.language,
                     options: [
                         SettingsSelectOption(id: "auto", label: translate("common.automatic", [:])),
@@ -484,7 +494,8 @@ public struct ArcoSettingsSheetView: View {
                         .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
             } control: {
-                SettingsSelectMenu(title: translate("settings.diarizationProvider", [:]),
+                SettingsSelect(title: translate("settings.diarizationProvider", [:]),
+                    noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.diarization.provider.rawValue,
                     options: [
                         SettingsSelectOption(id: DiarizationProvider.doubao.rawValue, label: "Doubao"),
@@ -945,34 +956,33 @@ public struct ArcoSettingsSheetView: View {
     }
 
     private func settingsDetailRow(_ destination: SettingsPage, help: String, value: String, status: String? = nil) -> some View {
-        Button { viewModel.page = destination } label: {
-            SettingsControlRow {
-                settingsLabel("settings.\(destination.rawValue)", help: help)
-            } control: {
-                HStack(spacing: 12) {
+        SettingsControlRow {
+            settingsLabel("settings.\(destination.rawValue)", help: help)
+        } control: {
+            HStack(spacing: 16) {
+                if !value.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(value.isEmpty ? translate("common.editConfiguration", [:]) : value)
-                            .font(ArcoTypography.sans(13)).lineLimit(2)
+                        Text(value)
+                            .font(ArcoTypography.sans(14))
+                            .foregroundStyle(ArcoNativeColors.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                         if let status {
-                            Text(status).font(ArcoTypography.sans(11))
+                            Text(status)
+                                .font(ArcoTypography.sans(12))
                                 .foregroundStyle(ArcoNativeColors.inkMuted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11)).foregroundStyle(ArcoNativeColors.inkMuted)
                 }
-                .foregroundStyle(ArcoNativeColors.ink)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                .background(ArcoNativeColors.surfaceRaised, in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(ArcoNativeColors.line, lineWidth: 1))
+                Spacer(minLength: 0)
+                updateActionButton(title: translate("common.configure", [:]), prominent: false) {
+                    viewModel.page = destination
+                }
+                .fixedSize()
+                .accessibilityLabel(translate("settings.\(destination.rawValue)", [:]) + " · " + translate("common.configure", [:]))
             }
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
         }
-        .buttonStyle(SettingsSurfaceButtonStyle(fill: .clear, hoverFill: ArcoNativeColors.surfaceHover, cornerRadius: 8))
     }
 
     private var agentPage: some View {
@@ -1219,6 +1229,7 @@ struct SettingsSection<Content: View>: View {
 struct SettingsSelectOption: Identifiable {
     let id: String
     let label: String
+    var detail: String? = nil
     var enabled = true
 }
 
@@ -1252,78 +1263,11 @@ struct SettingsControlRow<LabelContent: View, ControlContent: View>: View {
     }
 }
 
-struct SettingsSelectMenu: View {
-    let title: String
-    let selection: String
-    let options: [SettingsSelectOption]
-    let onSelect: (String) -> Void
-
-    @Environment(\.isEnabled) private var isEnabled
-    @FocusState private var focused: Bool
-
-    private var selectedLabel: String {
-        options.first(where: { $0.id == selection })?.label ?? selection
-    }
-
-    var body: some View {
-        Menu {
-            ForEach(options) { option in
-                Button {
-                    onSelect(option.id)
-                } label: {
-                    if option.id == selection {
-                        Label(option.label, systemImage: "checkmark")
-                    } else {
-                        Text(option.label)
-                    }
-                }
-                .disabled(!option.enabled)
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Text(selectedLabel)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-        .font(ArcoTypography.sans(14))
-        .foregroundStyle(ArcoNativeColors.inkStrong)
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
-        .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(ArcoNativeColors.surfaceRaised)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(ArcoNativeColors.line, lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .overlay {
-            if focused {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(ArcoNativeColors.brand, lineWidth: 2)
-                    .padding(-3)
-                    .allowsHitTesting(false)
-            }
-        }
-        .focused($focused)
-        .opacity(isEnabled ? 1 : 0.55)
-        .accessibilityLabel(title)
-        .accessibilityValue(selectedLabel)
-    }
-}
-
 private struct SettingsSurfaceButtonStyle: ButtonStyle {
     let fill: Color
     let hoverFill: Color
     let cornerRadius: CGFloat
+    var cornerStyle: RoundedCornerStyle = .continuous
     var pressedScale: CGFloat = 0.985
 
     func makeBody(configuration: Configuration) -> some View {
@@ -1332,6 +1276,7 @@ private struct SettingsSurfaceButtonStyle: ButtonStyle {
             fill: fill,
             hoverFill: hoverFill,
             cornerRadius: cornerRadius,
+            cornerStyle: cornerStyle,
             pressedScale: pressedScale
         )
     }
@@ -1342,6 +1287,7 @@ private struct SettingsSurfaceButton: View {
     let fill: Color
     let hoverFill: Color
     let cornerRadius: CGFloat
+    let cornerStyle: RoundedCornerStyle
     let pressedScale: CGFloat
 
     @Environment(\.isEnabled) private var isEnabled
@@ -1352,7 +1298,7 @@ private struct SettingsSurfaceButton: View {
         configuration.label
             .background(
                 hovered && isEnabled ? hoverFill : fill,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle)
             )
             .scaleEffect(
                 configuration.isPressed && isEnabled && !accessibilityReduceMotion

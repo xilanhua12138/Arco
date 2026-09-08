@@ -19,6 +19,7 @@ test:
 		ArcoContentSourceParityContractTests \
 		ArcoHistoryPerformanceContractTests \
 		ArcoSettingsParityContractTests \
+		ArcoSettingsControlContractTests \
 		ArcoSetupSourceParityContractTests \
 		ArcoOverlaySourceParityContractTests \
 		ArcoWindowChromeContractTests \

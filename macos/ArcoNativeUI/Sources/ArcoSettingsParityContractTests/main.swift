@@ -337,14 +337,6 @@ expectTrue(
     "Settings must not leak SwiftUI's default Picker surface into the React-parity rows"
 )
 expectTrue(
-    settingsViewSource.contains("struct SettingsSelectMenu")
-        && settingsViewSource.contains(".frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)")
-        && settingsViewSource.contains("RoundedRectangle(cornerRadius: 7")
-        && settingsViewSource.contains(".fill(ArcoNativeColors.surfaceRaised)")
-        && settingsViewSource.contains(".stroke(ArcoNativeColors.line, lineWidth: 1)"),
-    "Settings select menus preserve the React full-track width, fixed 40pt height, 7px radius, raised fill, and thin border"
-)
-expectTrue(
     settingsViewSource.contains("struct SettingsControlRow")
         && settingsViewSource.contains("ViewThatFits(in: .horizontal)")
         && settingsViewSource.contains("control.frame(width: 236)")
@@ -352,25 +344,14 @@ expectTrue(
     "Settings control rows retain a 236pt control track and stack without fixed-height clipping"
 )
 expectTrue(
-    settingsViewSource.contains(".menuStyle(.borderlessButton)")
-        && settingsViewSource.contains(".menuIndicator(.hidden)")
-        && settingsViewSource.contains("chevron.down"),
-    "Settings select menus use a native menu without the mismatched default Picker chrome"
-)
-expectTrue(
-    settingsViewSource.contains(".stroke(ArcoNativeColors.brand, lineWidth: 2)")
-        && settingsViewSource.contains(".padding(-3)")
-        && settingsViewSource.contains(".opacity(isEnabled ? 1 : 0.55)"),
-    "Settings select menus preserve the React focus ring and disabled opacity"
-)
-expectTrue(
-    settingsViewSource.contains("SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: \"简体中文\")")
-        && settingsViewSource.contains("SettingsSelectOption(id: AppLocale.english.rawValue, label: \"English\")"),
+    settingsViewSource.contains("SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: \"简体中文\", detail:")
+        && settingsViewSource.contains("SettingsSelectOption(id: AppLocale.english.rawValue, label: \"English\", detail:"),
     "The app-language select preserves the React source's literal option labels"
 )
 expectTrue(
-    settingsViewSource.components(separatedBy: "SettingsSelectMenu(").count - 1 == 6,
-    "Language, meeting source, recognition, speaker separation and local model controls share one menu component"
+    settingsViewSource.components(separatedBy: "SettingsAutocomplete(").count - 1 == 1
+        && settingsViewSource.components(separatedBy: "SettingsSelect(").count - 1 == 5,
+    "Language, meeting source, recognition, speaker separation and local model controls distinguish searchable language from finite choices"
 )
 let storageRowSource = (try? String(contentsOf: meetingOutputViewURL.deletingLastPathComponent()
     .appendingPathComponent("SettingsStorageLocationRow.swift"), encoding: .utf8)) ?? ""
