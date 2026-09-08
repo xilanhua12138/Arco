@@ -8,7 +8,7 @@ use arco_core::gpt_live::{
     sideband_auth_headers,
 };
 use arco_core::gpt_live_oauth::{
-    GptLiveCredentialStorage, GptLiveCredentials, MacOSGptLiveCredentialStorage,
+    FileGptLiveCredentialStorage, GptLiveCredentialStorage, GptLiveCredentials,
     OPENAI_OAUTH_CALLBACK_HOST, TokenResult, UreqOAuthTokenTransport,
     create_default_authorization_flow, exchange_token_with_transport, extract_auth_identity,
     load_credentials_from, parse_callback_url, refresh_token_with_transport, save_credentials_to,
@@ -119,11 +119,11 @@ async fn run_login() -> Result<(), String> {
         now_ms()?,
     );
     let credentials = credentials_from_login_result(token)?;
-    save_credentials_to(&MacOSGptLiveCredentialStorage, &credentials)?;
+    save_credentials_to(&FileGptLiveCredentialStorage, &credentials)?;
     let identity = credentials
         .email()
         .unwrap_or_else(|| credentials.account_id());
-    println!("OpenAI sign-in saved in macOS Keychain for {identity}.");
+    println!("OpenAI sign-in saved in ~/.arco/credentials.json for {identity}.");
     println!(
         "This only enables the Beta credential; GPT Live remains controlled by Arco's Beta toggle."
     );
@@ -232,7 +232,7 @@ fn credentials_from_login_result(result: TokenResult) -> Result<GptLiveCredentia
 }
 
 fn show_status() -> Result<(), String> {
-    let Some(credentials) = load_credentials_from(&MacOSGptLiveCredentialStorage)? else {
+    let Some(credentials) = load_credentials_from(&FileGptLiveCredentialStorage)? else {
         println!("GPT Live Beta: not signed in.");
         return Ok(());
     };
@@ -254,13 +254,13 @@ fn show_status() -> Result<(), String> {
 }
 
 fn logout() -> Result<(), String> {
-    MacOSGptLiveCredentialStorage.delete()?;
-    println!("GPT Live Beta OpenAI sign-in was removed from macOS Keychain.");
+    FileGptLiveCredentialStorage.delete()?;
+    println!("GPT Live Beta OpenAI sign-in was removed from ~/.arco/credentials.json.");
     Ok(())
 }
 
 async fn run_live_handshake() -> Result<(), String> {
-    let storage = MacOSGptLiveCredentialStorage;
+    let storage = FileGptLiveCredentialStorage;
     let credentials = load_credentials_from(&storage)?
         .ok_or_else(|| "run `arco-gpt-live-probe login` first".to_string())?;
     let credentials = refresh_if_needed(credentials)?;

@@ -1,11 +1,6 @@
 use serde::Serialize;
-use std::sync::{Mutex, OnceLock};
 
-const KEYCHAIN_SERVICE: &str = "app.arco.desktop.elevenlabs.v1";
-const KEYCHAIN_ACCOUNT: &str = "api-key";
 const ELEVENLABS_USER_URL: &str = "https://api.elevenlabs.io/v1/user";
-
-static SESSION_API_KEY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,35 +55,13 @@ fn status_from_presence(presence: Result<bool, String>) -> ElevenLabsCredentialS
 }
 
 fn has_api_key() -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use security_framework::item::{ItemClass, ItemSearchOptions};
-
-        let result = ItemSearchOptions::new()
-            .class(ItemClass::generic_password())
-            .service(KEYCHAIN_SERVICE)
-            .account(KEYCHAIN_ACCOUNT)
-            .load_attributes(true)
-            .search();
-        match result {
-            Ok(items) => Ok(!items.is_empty()),
-            Err(error) if error.code() == -25300 => Ok(false),
-            Err(error) => Err(format!(
-                "could not inspect the ElevenLabs credential in Keychain: {error}"
-            )),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(false)
-    }
+    Ok(load_api_key()?.is_some())
 }
 
 pub fn save_verified_api_key(value: &str) -> Result<ElevenLabsCredentialStatus, String> {
     let key = normalize_api_key(value)?;
     validate_api_key(&key)?;
     store_api_key(&key)?;
-    cache_api_key(Some(key))?;
     Ok(ElevenLabsCredentialStatus {
         configured: true,
         verified: true,
@@ -97,92 +70,16 @@ pub fn save_verified_api_key(value: &str) -> Result<ElevenLabsCredentialStatus, 
 }
 
 pub fn remove_api_key() -> Result<ElevenLabsCredentialStatus, String> {
-    cache_api_key(None)?;
-    #[cfg(target_os = "macos")]
-    {
-        match security_framework::passwords::delete_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        ) {
-            Ok(()) => {}
-            Err(error) if error.code() == -25300 => {}
-            Err(error) => {
-                return Err(format!(
-                    "could not remove the ElevenLabs key from Keychain: {error}"
-                ));
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        return Err("Arco stores ElevenLabs credentials in macOS Keychain.".into());
-    }
+    crate::credential_store::remove("elevenLabs")?;
     Ok(ElevenLabsCredentialStatus::missing())
 }
 
 pub fn load_api_key() -> Result<Option<String>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut cached = session_api_key()
-            .lock()
-            .map_err(|_| "the in-memory ElevenLabs credential cache is unavailable".to_string())?;
-        if cached.is_some() {
-            return Ok(cached.clone());
-        }
-        let loaded = match security_framework::passwords::get_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        ) {
-            Ok(bytes) => Some(
-                String::from_utf8(bytes)
-                    .map_err(|_| "the ElevenLabs credential in Keychain is not valid UTF-8")?,
-            ),
-            Err(error) if error.code() == -25300 => None,
-            Err(error) => {
-                return Err(format!(
-                    "could not read the ElevenLabs credential from Keychain: {error}"
-                ));
-            }
-        };
-        if loaded.is_some() {
-            *cached = loaded.clone();
-        }
-        Ok(loaded)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(None)
-    }
+    crate::credential_store::load_api_key("elevenLabs")
 }
 
 fn store_api_key(key: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use security_framework::os::macos::keychain::SecKeychain;
-
-        let keychain = SecKeychain::default()
-            .map_err(|error| format!("could not open the login Keychain: {error}"))?;
-        keychain
-            .set_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, key.as_bytes())
-            .map_err(|error| format!("could not save the ElevenLabs key to Keychain: {error}"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = key;
-        Err("Arco stores ElevenLabs credentials in macOS Keychain.".into())
-    }
-}
-
-fn session_api_key() -> &'static Mutex<Option<String>> {
-    SESSION_API_KEY.get_or_init(|| Mutex::new(None))
-}
-
-fn cache_api_key(value: Option<String>) -> Result<(), String> {
-    let mut cached = session_api_key()
-        .lock()
-        .map_err(|_| "the in-memory ElevenLabs credential cache is unavailable".to_string())?;
-    *cached = value;
-    Ok(())
+    crate::credential_store::save_api_key("elevenLabs", key)
 }
 
 fn validate_api_key(key: &str) -> Result<(), String> {

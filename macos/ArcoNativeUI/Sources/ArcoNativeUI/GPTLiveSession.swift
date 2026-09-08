@@ -118,7 +118,7 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
 }
 
 /// A connected GPT Live worker owned by Arco. The UI only holds this bounded
-/// lifecycle handle; OAuth credentials remain in Keychain and never cross the
+/// lifecycle handle; OAuth credentials remain in the Rust credential store and never cross the
 /// Swift process boundary.
 @MainActor
 public protocol GPTLiveSessionHandle: AnyObject {
