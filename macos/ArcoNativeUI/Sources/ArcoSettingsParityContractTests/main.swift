@@ -312,12 +312,12 @@ expectTrue(
 expectTrue(
     meetingOutputViewSource.contains(".background(ArcoNativeColors.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))")
         && meetingOutputViewSource.contains(".overlay(RoundedRectangle(cornerRadius: 10).stroke(ArcoNativeColors.line))")
-        && meetingOutputViewSource.contains("let fill = prominent ? ArcoNativeColors.action : Color.clear"),
+        && meetingOutputViewSource.contains("SettingsActionButtonStyle(prominent: prominent)"),
     "Meeting output keeps the React editor border and prominent/transparent action hierarchy"
 )
 expectTrue(
     meetingOutputViewSource.contains("MeetingOutputActionButtonStyle")
-        && meetingOutputViewSource.contains("prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover")
+        && meetingOutputViewSource.contains("SettingsActionButtonStyle(prominent: prominent)")
         && meetingOutputViewSource.contains("MeetingOutputTextButtonStyle"),
     "Meeting output restores the React action and text-link hover states without glass"
 )

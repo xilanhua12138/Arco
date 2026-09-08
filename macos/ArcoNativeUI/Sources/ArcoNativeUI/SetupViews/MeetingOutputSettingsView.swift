@@ -304,15 +304,8 @@ public struct MeetingOutputSettingsView: View {
     }
 
     private func outputActionButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(ArcoTypography.sans(12, weight: .medium))
-                .foregroundStyle(prominent ? ArcoNativeColors.actionInk : ArcoNativeColors.ink)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .frame(minHeight: 32)
-        }
-        .buttonStyle(MeetingOutputActionButtonStyle(prominent: prominent))
+        Button(title, action: action)
+            .buttonStyle(MeetingOutputActionButtonStyle(prominent: prominent))
     }
 
     private func title(for rule: MeetingOutputRuleKey) -> String {
@@ -337,30 +330,7 @@ private struct MeetingOutputActionButtonStyle: ButtonStyle {
     let prominent: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        MeetingOutputActionButton(configuration: configuration, prominent: prominent)
-    }
-}
-
-private struct MeetingOutputActionButton: View {
-    let configuration: ButtonStyleConfiguration
-    let prominent: Bool
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovered = false
-
-    var body: some View {
-        let fill = prominent ? ArcoNativeColors.action : Color.clear
-        let hoverFill = prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover
-        configuration.label
-            .background(
-                hovered && isEnabled ? hoverFill : fill,
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
-            .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
-            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovered)
-            .onHover { hovered = $0 }
+        SettingsActionButtonStyle(prominent: prominent).makeBody(configuration: configuration)
     }
 }
 

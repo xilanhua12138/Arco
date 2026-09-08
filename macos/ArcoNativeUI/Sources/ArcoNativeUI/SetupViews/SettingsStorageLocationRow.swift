@@ -23,7 +23,7 @@ struct SettingsStorageLocationRow: View {
             Button(translate("settings.openFolder", [:])) {
                 openURL(URL(fileURLWithPath: directory, isDirectory: true))
             }
-            .buttonStyle(.bordered).controlSize(.regular)
+            .buttonStyle(SettingsActionButtonStyle())
             .disabled(!FileManager.default.fileExists(atPath: directory))
             .help(directory)
             if let choose {

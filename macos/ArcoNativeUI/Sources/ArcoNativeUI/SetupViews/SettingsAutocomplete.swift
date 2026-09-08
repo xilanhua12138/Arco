@@ -69,7 +69,7 @@ final class SettingsChoiceButton: NSButton, NSTextFieldDelegate {
         isBordered = false
         alignment = .left
         font = .systemFont(ofSize: 14)
-        focusRingType = .exterior
+        focusRingType = .none
         target = self
         action = #selector(toggleChoices)
         setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -86,6 +86,12 @@ final class SettingsChoiceButton: NSButton, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     override var intrinsicContentSize: NSSize { NSSize(width: 236, height: 40) }
     override var acceptsFirstResponder: Bool { isEnabled }
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder(); needsDisplay = true; return result
+    }
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder(); needsDisplay = true; return result
+    }
     override var focusRingMaskBounds: NSRect { bounds }
     override func drawFocusRingMask() {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10).fill()
@@ -112,8 +118,14 @@ final class SettingsChoiceButton: NSButton, NSTextFieldDelegate {
         let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
         NSColor(white: hovered && isEnabled && popup == nil ? 0.985 : 1, alpha: 1).setFill()
         border.fill()
-        NSColor(white: popup == nil ? 0.88 : 0.2, alpha: 1).setStroke()
-        border.lineWidth = popup == nil ? 1 : 1.5
+        let focused = popup != nil || window?.firstResponder === self
+        if focused {
+            NSColor(white: 0.2, alpha: 0.10).setStroke()
+            border.lineWidth = 5
+            border.stroke()
+        }
+        NSColor(white: focused ? 0.2 : 0.88, alpha: 1).setStroke()
+        border.lineWidth = 1
         border.stroke()
         let ink = NSColor(white: 0.20, alpha: isEnabled ? 1 : 0.45)
         if editor.isHidden {

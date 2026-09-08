@@ -35,16 +35,7 @@ public struct ArcoSettingsSheetView: View {
                             .padding(.top, 12)
                             .padding(.bottom, 36)
                     }
-                    if viewModel.page == .agentConnection, let providerViewModel {
-                        ProviderSetupView(viewModel: providerViewModel,
-                            shortcutViewModel: viewModel.shortcutViewModel,
-                            locale: .constant(viewModel.snapshot.locale), translate: translate, embeddedInSettings: true)
-                            .connectionSaveButton
-                            .padding(.horizontal, 40)
-                            .padding(.vertical, 16)
-                            .background(ArcoNativeColors.surfaceSettingsContent)
-                            .overlay(alignment: .top) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
-                    }
+
                 }
                 .background(ArcoNativeColors.surfaceSettingsContent)
                 .overlay(alignment: .leading) { Rectangle().fill(ArcoNativeColors.surfaceEdgeHighlight).frame(width: 1) }
@@ -354,25 +345,8 @@ public struct ArcoSettingsSheetView: View {
         prominent: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(ArcoTypography.sans(14))
-                .foregroundStyle(prominent ? ArcoNativeColors.surfaceRaised : ArcoNativeColors.ink)
-                .padding(.horizontal, 12).frame(height: 32)
-                .overlay {
-                    // Continuous corners produce side spurs at capsule proportions.
-                    RoundedRectangle(cornerRadius: 16, style: .circular)
-                        .strokeBorder(ArcoNativeColors.line, lineWidth: 1)
-                }
-        }
-        .buttonStyle(
-            SettingsSurfaceButtonStyle(
-                fill: prominent ? ArcoNativeColors.inkStrong : ArcoNativeColors.surfaceRaised,
-                hoverFill: prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover,
-                cornerRadius: 16,
-                cornerStyle: .circular
-            )
-        )
+        Button(title, action: action)
+            .buttonStyle(SettingsActionButtonStyle(prominent: prominent))
     }
 
     private var audioPage: some View {
@@ -918,7 +892,7 @@ public struct ArcoSettingsSheetView: View {
                     Button(translate(gptLiveCredentialActionKey, [:])) {
                         Task { await viewModel.connectGPTLiveCredential() }
                     }
-                    .buttonStyle(.borderedProminent).tint(ArcoNativeColors.inkStrong)
+                    .buttonStyle(SettingsActionButtonStyle(prominent: true))
                     .disabled(viewModel.gptLiveCredentialBusy)
                 }
             }
