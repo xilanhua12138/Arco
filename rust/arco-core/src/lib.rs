@@ -1,4 +1,5 @@
 pub mod agent;
+mod agent_proxy;
 pub mod audio_archive;
 pub mod audio_setup;
 pub mod capture;

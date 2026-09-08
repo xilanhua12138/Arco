@@ -2207,8 +2207,9 @@ mod tests {
     fn native_aec_contract_degrades_without_stopping_capture() {
         let source = include_str!("../../../native/recorder.swift");
 
-        assert!(source.contains("try input.setVoiceProcessingEnabled(true)"));
-        assert!(source.contains("input.isVoiceProcessingAGCEnabled = false"));
+        assert!(!source.contains("setVoiceProcessingEnabled(true)"));
+        assert!(source.contains("arco_aec_create(&echoCanceller)"));
+        assert!(source.contains("arco_aec_process(echoCanceller"));
         assert!(source.contains("echo cancellation unavailable; continuing raw"));
         assert!(source.contains("EchoCancellationPolicy.shouldEnable(mode: mode"));
     }

@@ -1,6 +1,6 @@
 [package]
 name = "arco-audio-rt"
-version = "0.3.21"
+version = "0.3.22"
 description = "Real-time-safe audio queue and sample-rate conversion for Arco recorder"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -15,3 +15,4 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 rtrb = "0.3.4"
 rubato = "0.16.2"
+webrtc-audio-processing = { version = "=2.1.0", features = ["bundled"] }
