@@ -338,23 +338,23 @@ expectTrue(
 )
 expectTrue(
     settingsViewSource.contains("struct SettingsSelectMenu")
-        && settingsViewSource.contains(".frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)")
+        && settingsViewSource.contains(".frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)")
         && settingsViewSource.contains("RoundedRectangle(cornerRadius: 7")
         && settingsViewSource.contains(".fill(ArcoNativeColors.surfaceRaised)")
-        && settingsViewSource.contains(".stroke(ArcoNativeColors.lineThin, lineWidth: 1)"),
-    "Settings select menus preserve the React full-track width, fixed 32px height, 7px radius, raised fill, and thin border"
+        && settingsViewSource.contains(".stroke(ArcoNativeColors.line, lineWidth: 1)"),
+    "Settings select menus preserve the React full-track width, fixed 40pt height, 7px radius, raised fill, and thin border"
 )
 expectTrue(
     settingsViewSource.contains("struct SettingsControlRow")
         && settingsViewSource.contains("ViewThatFits(in: .horizontal)")
-        && settingsViewSource.contains("control.frame(width: 200)")
-        && settingsViewSource.contains(".frame(minHeight: 58)"),
-    "Settings control rows retain a 200pt control track and stack without fixed-height clipping"
+        && settingsViewSource.contains("control.frame(width: 236)")
+        && settingsViewSource.contains(".frame(minHeight: 80)"),
+    "Settings control rows retain a 236pt control track and stack without fixed-height clipping"
 )
 expectTrue(
     settingsViewSource.contains(".menuStyle(.borderlessButton)")
         && settingsViewSource.contains(".menuIndicator(.hidden)")
-        && settingsViewSource.contains("chevron.up.chevron.down"),
+        && settingsViewSource.contains("chevron.down"),
     "Settings select menus use a native menu without the mismatched default Picker chrome"
 )
 expectTrue(

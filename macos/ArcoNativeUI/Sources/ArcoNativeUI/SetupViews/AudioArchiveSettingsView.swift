@@ -19,10 +19,10 @@ struct AudioArchiveSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             if let settings = viewModel.snapshot.audioArchive {
                 HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(translate("audioArchive.title", [:])).font(ArcoTypography.bodyStrong)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(translate("audioArchive.title", [:])).font(ArcoTypography.sans(14, weight: .medium))
                         Text(translate("audioArchive.description", [:]))
-                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                            .font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.inkMuted)
                     }
                     Spacer()
                     Toggle(translate("audioArchive.title", [:]), isOn: Binding(
@@ -31,15 +31,14 @@ struct AudioArchiveSettingsView: View {
                         }))
                         .labelsHidden().toggleStyle(.switch).disabled(locked)
                 }
-                .padding(.vertical, 18)
-                .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
+                .padding(.vertical, 20)
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(translate("audioArchive.storage", [:])).font(ArcoTypography.bodyStrong)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(translate("audioArchive.storage", [:])).font(ArcoTypography.sans(14, weight: .medium))
                             Text(translate("audioArchive.used", ["size": formattedUsage(settings.usedBytes)]))
-                                .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                                .font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.inkMuted)
                         }
                         Spacer(minLength: 0)
                         Button(translate("settings.openFolder", [:])) {
@@ -66,17 +65,16 @@ struct AudioArchiveSettingsView: View {
                         .tint(ArcoNativeColors.inkMuted)
                         .accessibilityLabel(translate("audioArchive.storage", [:]))
                     Text(translate("audioArchive.retention", [:]))
-                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                        .font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.inkMuted)
                     if let error = settings.status?.error {
                         Text(translate("audioArchive.partial", [:]) + "\n" + error)
-                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.warning)
+                            .font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.warning)
                     }
                 }
-                .padding(.vertical, 18)
-                .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
+                .padding(.vertical, 20)
             }
             if let error = viewModel.snapshot.audioArchiveError {
-                Text(error).font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.warning).padding(.top, 12)
+                Text(error).font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.warning).padding(.top, 12)
                 Button(translate("audioArchive.refresh", [:])) { Task { await viewModel.actions.onRefreshAudioArchive() } }
                     .padding(.top, 8)
             }
