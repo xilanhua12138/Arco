@@ -25,6 +25,7 @@ public final class ProviderSetupViewModel: ObservableObject {
     private let refreshRuntimes: (() async throws -> [RuntimeStatus]?)?
     private let testProvider: (ProviderID) async throws -> ProviderConnectionTest
     private let complete: (ProviderConfiguration) -> Void
+    private let configurationChanged: ((ProviderConfiguration) -> Void)?
     private var testGeneration = 0
 
     public init(
@@ -33,6 +34,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         initialConfiguration: ProviderConfiguration? = nil,
         onRefresh: (() async throws -> [RuntimeStatus]?)? = nil,
         onTest: @escaping (ProviderID) async throws -> ProviderConnectionTest,
+        onChange: ((ProviderConfiguration) -> Void)? = nil,
         onComplete: @escaping (ProviderConfiguration) -> Void
     ) {
         self.mode = mode
@@ -46,6 +48,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         refreshRuntimes = onRefresh
         testProvider = onTest
         complete = onComplete
+        configurationChanged = onChange
     }
 
     public var primary: ProviderID? {
@@ -93,6 +96,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         resetTest()
         configurationErrorKey = nil
         furthestStep = 1
+        persistSelectionChange()
     }
 
     public func changeSecondary(_ provider: ProviderID?) {
@@ -102,6 +106,12 @@ public final class ProviderSetupViewModel: ObservableObject {
         secondary = provider
         configurationErrorKey = nil
         furthestStep = min(furthestStep, 2)
+        persistSelectionChange()
+    }
+
+    private func persistSelectionChange() {
+        guard let primary, primaryAvailable else { return }
+        configurationChanged?(ProviderConfiguration(setupComplete: true, primary: primary, secondary: effectiveSecondary))
     }
 
     public func runPrimaryTest() async {
@@ -296,7 +306,7 @@ public struct ProviderSetupView: View {
                         Text(translate(viewModel.testState == .working ? "onboarding.testingMayTakeTime" : "onboarding.testConnection", [:]))
                     }
                 }
-                .buttonStyle(.bordered).controlSize(.regular)
+                .buttonStyle(SettingsActionButtonStyle())
                 .disabled(!viewModel.primaryAvailable || viewModel.testState == .working)
             }
             .padding(.vertical, 18)
@@ -320,8 +330,10 @@ public struct ProviderSetupView: View {
                         Button(translate("onboarding.recheckInstallations", [:])) {
                             Task { await viewModel.refreshInstallations() }
                         }
+                        .buttonStyle(SettingsActionButtonStyle())
                         .disabled(viewModel.refreshing)
-                        .padding(.top, 8)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 12)
                     }
                 }.padding(.top, 8)
             }
@@ -331,7 +343,8 @@ public struct ProviderSetupView: View {
     }
 
     private func settingsProviderMenu(selection: ProviderID?, secondary: Bool) -> some View {
-        SettingsSelectMenu(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
+        SettingsSelect(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
+            noResults: translate("common.noOptions", [:]),
             selection: selection?.rawValue ?? "none",
             options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]))] : [])
                 + ProviderID.allCases.map { provider in
@@ -341,19 +354,6 @@ public struct ProviderSetupView: View {
                     if secondary { viewModel.changeSecondary(ProviderID(rawValue: value)) }
                     else if let provider = ProviderID(rawValue: value) { viewModel.changePrimary(provider) }
                 })
-    }
-
-    public var connectionSaveButton: some View {
-        ProviderSettingsObservation(model: viewModel) {
-        HStack {
-            Spacer()
-            setupFooterButton(translate("onboarding.saveConfiguration", [:]), symbol: "checkmark", prominent: true) {
-                viewModel.finish()
-            }
-            .disabled(!viewModel.primaryTestPassed || !viewModel.primaryAvailable)
-            .opacity(viewModel.primaryTestPassed && viewModel.primaryAvailable ? 1 : 0.4)
-        }
-        }
     }
 
     private var steps: [String] {

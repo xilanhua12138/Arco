@@ -666,6 +666,10 @@ public final class ArcoAppShellController: ObservableObject {
                 guard let store else { throw CancellationError() }
                 return try await store.testProvider(provider)
             },
+            onChange: { [weak self] configuration in
+                guard let self, self.settingsOpen else { return }
+                self.saveProviderConfiguration(configuration)
+            },
             onComplete: { [weak self] configuration in
                 Task { await self?.shortcutViewModel.teardown() }
                 self?.saveProviderConfiguration(configuration)

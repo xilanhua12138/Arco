@@ -58,6 +58,17 @@ import ArcoNativeUI
             return bitmap.representation(using: .png, properties: [:])!
         }
         let initial = pixels()
+        func buttons(_ view: NSView) -> [NSButton] {
+            (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
+        }
+        guard let limit = buttons(host).first(where: { $0.title == "10 GB" && $0.accessibilityRole() == .popUpButton }) else { fatalError("Storage capacity must use the shared select") }
+        limit.performClick(nil)
+        guard let panel = window.childWindows?.first,
+              let option = panel.contentView.flatMap({ buttons($0).first(where: { $0.title == "20 GB" }) }) else { fatalError("Capacity choices must open") }
+        option.performClick(nil)
+        try await Task.sleep(for: .milliseconds(200))
+        precondition(store.audioArchiveSettings?.maxBytes == 20_000_000_000, "Selecting a capacity must persist through the real Rust API")
+        precondition(limit.title == "20 GB", "Capacity must immediately refresh after saving")
         let directory = root.appendingPathComponent("selected").path
         await store.setAudioArchiveSettings(enabled: false, directory: directory, maxBytes: 5_000_000_000)
         update()

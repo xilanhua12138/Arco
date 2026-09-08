@@ -166,7 +166,7 @@ by sequenced audio frames.
   speaker timeline. With Doubao as diarization-only, it publishes speaker
   intervals without writing a duplicate transcript.
 - Credentials support a Doubao Speech APP Key or the legacy App ID + Access
-  Token pair and are stored in a dedicated macOS Keychain service. Arco never
+  Token pair and are stored in the local ~/.arco/credentials.json file. Arco never
   falls back to the generic Ark/LLM `DOUBAO_API_KEY`.
 - The worker is ready only after every active channel receives a server
   response. Provider handshake errors remain terminal. A transient disconnect
@@ -191,7 +191,7 @@ ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not c
 - Audio is streamed only while the meeting is active. Arco does not buffer meeting audio for a later ElevenLabs batch pass and does not replace the transcript after capture stops.
 - Speaker attribution remains incremental; Arco does not run a stop-time batch pass or replace the transcript after capture stops.
 
-The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned helper environment.
+The API key is verified against ElevenLabs' user endpoint, stored in ~/.arco/credentials.json, and injected only into the owned helper environment.
 
 Primary references:
 

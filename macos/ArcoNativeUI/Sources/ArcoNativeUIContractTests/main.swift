@@ -878,8 +878,9 @@ private func testCurrentCaptureControlSourceParity() {
         "Sidebar capture action must preserve source horizontal padding and explicitly center its contents"
     )
     expectTrue(
-        mainShellSource.contains("button.glassEffect(.regular.tint(tint).interactive(), in: Capsule())"),
-        "Sidebar capture action must use the SwiftUI Liquid Glass surface directly, without an opaque prefill"
+        mainShellSource.contains(".background(tint, in: Capsule(style: .circular))")
+            && !mainShellSource.contains(".glassEffect("),
+        "Sidebar capture action uses an opaque fill without Liquid Glass highlights"
     )
     expectTrue(
         currentIdleSource.contains("public var initializing: Bool")

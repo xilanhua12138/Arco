@@ -11,11 +11,10 @@ use arco_core::gpt_live::{
     create_call_with_transport, parse_inbound_event, sideband_auth_headers,
 };
 use arco_core::gpt_live_oauth::{
-    GptLiveCredentialStatus, GptLiveCredentialStorage, GptLiveCredentials,
-    MacOSGptLiveCredentialStorage, OPENAI_OAUTH_CALLBACK_HOST, TokenResult,
-    UreqOAuthTokenTransport, create_default_authorization_flow, exchange_token_with_transport,
-    extract_auth_identity, load_credentials_from, parse_callback_url, refresh_token_with_transport,
-    save_credentials_to,
+    FileGptLiveCredentialStorage, GptLiveCredentialStatus, GptLiveCredentialStorage,
+    GptLiveCredentials, OPENAI_OAUTH_CALLBACK_HOST, TokenResult, UreqOAuthTokenTransport,
+    create_default_authorization_flow, exchange_token_with_transport, extract_auth_identity,
+    load_credentials_from, parse_callback_url, refresh_token_with_transport, save_credentials_to,
 };
 use arco_gpt_live::{
     GptLiveMeetingContext, GptLiveRuntimeCommand, GptLiveSessionOptions, GptLiveWebRtcPeer,
@@ -66,7 +65,7 @@ async fn run_session(options: GptLiveSessionOptions) -> Result<(), String> {
     ensure_executable(&options)?;
 
     emit_event("connecting", None);
-    let storage = MacOSGptLiveCredentialStorage;
+    let storage = FileGptLiveCredentialStorage;
     let credentials = load_credentials_from(&storage)?
         .ok_or_else(|| "Sign in to ChatGPT for Arco GPT Live Beta, then retry.".to_string())?;
     let credentials = refresh_if_needed(credentials)?;
@@ -155,7 +154,7 @@ async fn run_session(options: GptLiveSessionOptions) -> Result<(), String> {
 
 fn show_auth_status() -> Result<(), String> {
     let now = now_ms()?;
-    let status = load_credentials_from(&MacOSGptLiveCredentialStorage)?
+    let status = load_credentials_from(&FileGptLiveCredentialStorage)?
         .map(|credentials| credentials.status(now))
         .unwrap_or(GptLiveCredentialStatus {
             configured: false,
@@ -195,7 +194,7 @@ async fn run_login() -> Result<(), String> {
         &flow.redirect_uri,
         now_ms()?,
     ))?;
-    save_credentials_to(&MacOSGptLiveCredentialStorage, &credentials)?;
+    save_credentials_to(&FileGptLiveCredentialStorage, &credentials)?;
     show_auth_status()
 }
 
@@ -300,7 +299,7 @@ fn credentials_from_login_result(result: TokenResult) -> Result<GptLiveCredentia
 }
 
 fn logout() -> Result<(), String> {
-    MacOSGptLiveCredentialStorage.delete()?;
+    FileGptLiveCredentialStorage.delete()?;
     show_auth_status()
 }
 

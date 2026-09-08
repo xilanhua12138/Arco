@@ -4,6 +4,7 @@ pub mod audio_archive;
 pub mod audio_setup;
 pub mod capture;
 pub mod controller;
+mod credential_store;
 pub mod deepgram;
 pub mod deepgram_credentials;
 pub mod doubao;

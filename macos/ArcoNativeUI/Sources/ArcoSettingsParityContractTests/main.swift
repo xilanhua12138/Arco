@@ -312,12 +312,12 @@ expectTrue(
 expectTrue(
     meetingOutputViewSource.contains(".background(ArcoNativeColors.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))")
         && meetingOutputViewSource.contains(".overlay(RoundedRectangle(cornerRadius: 10).stroke(ArcoNativeColors.line))")
-        && meetingOutputViewSource.contains("let fill = prominent ? ArcoNativeColors.action : Color.clear"),
+        && meetingOutputViewSource.contains("SettingsActionButtonStyle(prominent: prominent)"),
     "Meeting output keeps the React editor border and prominent/transparent action hierarchy"
 )
 expectTrue(
     meetingOutputViewSource.contains("MeetingOutputActionButtonStyle")
-        && meetingOutputViewSource.contains("prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover")
+        && meetingOutputViewSource.contains("SettingsActionButtonStyle(prominent: prominent)")
         && meetingOutputViewSource.contains("MeetingOutputTextButtonStyle"),
     "Meeting output restores the React action and text-link hover states without glass"
 )
@@ -337,40 +337,21 @@ expectTrue(
     "Settings must not leak SwiftUI's default Picker surface into the React-parity rows"
 )
 expectTrue(
-    settingsViewSource.contains("struct SettingsSelectMenu")
-        && settingsViewSource.contains(".frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)")
-        && settingsViewSource.contains("RoundedRectangle(cornerRadius: 7")
-        && settingsViewSource.contains(".fill(ArcoNativeColors.surfaceRaised)")
-        && settingsViewSource.contains(".stroke(ArcoNativeColors.lineThin, lineWidth: 1)"),
-    "Settings select menus preserve the React full-track width, fixed 32px height, 7px radius, raised fill, and thin border"
-)
-expectTrue(
     settingsViewSource.contains("struct SettingsControlRow")
         && settingsViewSource.contains("ViewThatFits(in: .horizontal)")
-        && settingsViewSource.contains("control.frame(width: 200)")
-        && settingsViewSource.contains(".frame(minHeight: 58)"),
-    "Settings control rows retain a 200pt control track and stack without fixed-height clipping"
+        && settingsViewSource.contains("control.frame(width: 236)")
+        && settingsViewSource.contains(".frame(minHeight: 80)"),
+    "Settings control rows retain a 236pt control track and stack without fixed-height clipping"
 )
 expectTrue(
-    settingsViewSource.contains(".menuStyle(.borderlessButton)")
-        && settingsViewSource.contains(".menuIndicator(.hidden)")
-        && settingsViewSource.contains("chevron.up.chevron.down"),
-    "Settings select menus use a native menu without the mismatched default Picker chrome"
-)
-expectTrue(
-    settingsViewSource.contains(".stroke(ArcoNativeColors.brand, lineWidth: 2)")
-        && settingsViewSource.contains(".padding(-3)")
-        && settingsViewSource.contains(".opacity(isEnabled ? 1 : 0.55)"),
-    "Settings select menus preserve the React focus ring and disabled opacity"
-)
-expectTrue(
-    settingsViewSource.contains("SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: \"简体中文\")")
-        && settingsViewSource.contains("SettingsSelectOption(id: AppLocale.english.rawValue, label: \"English\")"),
+    settingsViewSource.contains("SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: \"简体中文\", detail:")
+        && settingsViewSource.contains("SettingsSelectOption(id: AppLocale.english.rawValue, label: \"English\", detail:"),
     "The app-language select preserves the React source's literal option labels"
 )
 expectTrue(
-    settingsViewSource.components(separatedBy: "SettingsSelectMenu(").count - 1 == 6,
-    "Language, meeting source, recognition, speaker separation and local model controls share one menu component"
+    settingsViewSource.components(separatedBy: "SettingsAutocomplete(").count - 1 == 1
+        && settingsViewSource.components(separatedBy: "SettingsSelect(").count - 1 == 5,
+    "Language, meeting source, recognition, speaker separation and local model controls distinguish searchable language from finite choices"
 )
 let storageRowSource = (try? String(contentsOf: meetingOutputViewURL.deletingLastPathComponent()
     .appendingPathComponent("SettingsStorageLocationRow.swift"), encoding: .utf8)) ?? ""

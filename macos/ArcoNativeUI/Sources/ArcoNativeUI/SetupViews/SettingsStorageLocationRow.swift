@@ -14,16 +14,16 @@ struct SettingsStorageLocationRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(ArcoTypography.bodyStrong).foregroundStyle(ArcoNativeColors.inkStrong)
-                Text(detail).font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(ArcoTypography.sans(14, weight: .medium)).foregroundStyle(ArcoNativeColors.inkStrong)
+                Text(detail).font(ArcoTypography.sans(13)).foregroundStyle(ArcoNativeColors.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
             Button(translate("settings.openFolder", [:])) {
                 openURL(URL(fileURLWithPath: directory, isDirectory: true))
             }
-            .buttonStyle(.bordered).controlSize(.regular)
+            .buttonStyle(SettingsActionButtonStyle())
             .disabled(!FileManager.default.fileExists(atPath: directory))
             .help(directory)
             if let choose {
@@ -31,7 +31,7 @@ struct SettingsStorageLocationRow: View {
                     locked: locked, translate: translate, choose: choose, reset: reset)
             }
         }
-        .padding(.vertical, 18)
+        .padding(.vertical, 20)
         .frame(minHeight: 72)
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
     }

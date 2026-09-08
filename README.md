@@ -33,7 +33,7 @@ When that local CLI is signed in with your Codex or Claude subscription, Arco us
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
-The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
+The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Provider credentials are stored in a private local file; normal app use does not request Keychain access. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
 
 ## Live context, not another meeting dashboard
 
@@ -92,11 +92,11 @@ By default, transcripts and meeting state live at:
 - Selecting Doubao for either ASR or speaker separation sends meeting audio to Doubao Speech. When selected for both roles, Arco uses Doubao's fused streaming recognition and automatic speaker separation.
 - Selecting ElevenLabs ASR sends audio to ElevenLabs. Its realtime API does not supply speaker identities, but Arco can label its finalized segments from the separately selected Deepgram or local streaming diarizer.
 - Speaker separation is incremental during the meeting. Arco does not run a later batch pass or rewrite the transcript after capture stops.
-- Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
+- Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored in separate entries in `~/.arco/credentials.json` (directory permissions `700`, file permissions `600`); they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
 - GPT Live is an opt-in Beta and is off by default. Arco sends the active meeting audio to OpenAI only after you click the GPT Live button, and disconnects when you click again or stop the meeting.
-- ChatGPT OAuth credentials for GPT Live are stored in macOS Keychain and are managed separately from the Codex CLI login. This Beta currently depends on an undocumented ChatGPT backend interface and may stop working for some accounts or after upstream changes.
+- ChatGPT OAuth credentials for GPT Live are stored in `~/.arco/credentials.json` and are managed separately from the Codex CLI login. This Beta currently depends on an undocumented ChatGPT backend interface and may stop working for some accounts or after upstream changes.
 
 ## Development
 
@@ -129,7 +129,7 @@ To create the same locally signed macOS archive used for preview releases:
 
 The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
-Open **Settings → Listening & recording → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
+Open **Settings → Listening & recording → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in `~/.arco/credentials.json`. On-device models live under `~/Library/Application Support/Arco/models/`.
 
 ## The original Agent Skill is still here
 
@@ -183,3 +183,5 @@ Issues and pull requests are welcome. For a larger product or architecture chang
 ## License
 
 Arco is licensed under the [MIT License](./LICENSE).
+
+Existing Keychain credentials can be re-entered in Settings or imported once using the [credential migration instructions](docs/features/credential-file-storage.md). The new app does not fall back to Keychain.
