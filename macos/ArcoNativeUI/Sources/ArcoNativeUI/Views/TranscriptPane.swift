@@ -294,6 +294,7 @@ public struct TranscriptPaneView: View {
                             .font(ArcoTypography.body)
                             .foregroundStyle(ArcoNativeColors.inkStrong)
                             .lineSpacing(5.2)
+                            .padding(.leading, 25) // Match the 18pt avatar and 7pt label gap.
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }

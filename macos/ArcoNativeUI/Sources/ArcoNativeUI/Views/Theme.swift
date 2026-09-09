@@ -216,7 +216,6 @@ public enum ArcoLayoutMetrics {
     public static let workspaceCornerRadius: CGFloat = 16
     public static let compactViewportBreakpoint: CGFloat = 1_024
     public static let workspaceSplitMinimumWidth: CGFloat = 740
-    public static let transcriptReadingMaximumWidth: CGFloat = 720
     public static let idleMediumViewportBreakpoint: CGFloat = 1_100
     public static let idleStackedViewportBreakpoint: CGFloat = 880
 
