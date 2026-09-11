@@ -40,7 +40,7 @@ let package = Package(
         .executableTarget(name: "ArcoProviderPresentationContractTests", dependencies: ["ArcoNativeUI"]),
         .target(
             name: "ArcoNativeUI",
-            resources: [.copy("Resources/Fonts")],
+            resources: [.copy("Resources/Fonts"), .copy("Resources/MeetingAudioGuide"), .copy("Resources/Aura")],
             linkerSettings: [
                 .linkedFramework("Security"),
                 .unsafeFlags(["-L", rustLibraryDirectory, "-larco_core"]),

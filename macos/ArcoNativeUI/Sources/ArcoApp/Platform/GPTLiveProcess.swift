@@ -38,6 +38,8 @@ private enum GPTLiveProcessError: LocalizedError, Sendable {
 final class GPTLiveProcessLauncher {
     private var current: GPTLiveProcessHandle?
     private var credentialProcess: Process?
+    private var microphoneBridge: GPTLiveProcessHandle?
+    private var meetingAudioStopTask: Task<Void, Never>?
 
     func credentialStatus() async throws -> GPTLiveCredentialStatus {
         try await runCredentialCommand("auth-status")
@@ -52,7 +54,9 @@ final class GPTLiveProcessLauncher {
     }
 
     func start(request: GPTLiveSessionRequest) async throws -> any GPTLiveSessionHandle {
+        await meetingAudioStopTask?.value
         guard current == nil else { throw GPTLiveProcessError.alreadyRunning }
+        let previousBridge = microphoneBridge
         guard let workerURL = Self.resolveExecutable(
             override: "ARCO_GPT_LIVE_BIN",
             bundledName: "arco-gpt-live",
@@ -88,6 +92,11 @@ final class GPTLiveProcessLauncher {
         handle.onTermination = { [weak self, weak handle] in
             guard let self, let handle, self.current === handle else { return }
             self.current = nil
+            // The physical default input is restored by the bridge before it exits.
+            // AI leave or network failure therefore does not leave a silent virtual mic.
+            let bridge = self.microphoneBridge
+            self.microphoneBridge = nil
+            self.meetingAudioStopTask = Task { @MainActor in await bridge?.stop() }
         }
         current = handle
         handle.installMonitoring()
@@ -107,25 +116,95 @@ final class GPTLiveProcessLauncher {
         defer { timeout.cancel() }
         do {
             try await handle.waitUntilConnected()
+            guard current === handle, process.isRunning else {
+                throw GPTLiveProcessError.workerFailed("Arco invitation was cancelled.")
+            }
+            try await startMicrophoneBridge(workerURL: workerURL, arguments: process.arguments ?? [])
+            guard current === handle, process.isRunning else {
+                throw GPTLiveProcessError.workerFailed("Arco invitation was cancelled.")
+            }
             return handle
         } catch {
             await handle.stop()
+            if microphoneBridge !== previousBridge { await stopMeetingAudio() }
             if current === handle { current = nil }
             throw error
         }
     }
 
     func stop() async {
-        guard let current else { return }
-        await current.stop()
+        let current = current
+        await current?.stop()
         if self.current === current { self.current = nil }
+        await stopMeetingAudio()
+        await meetingAudioStopTask?.value
     }
 
     func stopImmediately() {
         current?.stopImmediately()
         current = nil
+        microphoneBridge?.stopImmediately()
+        microphoneBridge = nil
         if credentialProcess?.isRunning == true { credentialProcess?.terminate() }
         credentialProcess = nil
+    }
+
+    func stopMeetingAudio() async {
+        let bridge = microphoneBridge
+        microphoneBridge = nil
+        await bridge?.stop()
+    }
+
+    func recoverMeetingAudio() async {
+        guard let worker = Self.resolveExecutable(override: "ARCO_GPT_LIVE_BIN", bundledName: "arco-gpt-live",
+            developmentRelativePath: "rust/arco-gpt-live/target/debug/arco-gpt-live") else { return }
+        await Task.detached {
+            let process = Process()
+            process.executableURL = worker
+            process.arguments = ["recover-meeting-audio"]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do { try process.run(); process.waitUntilExit() } catch { }
+        }.value
+    }
+
+    private func startMicrophoneBridge(workerURL: URL, arguments: [String]) async throws {
+        if let bridge = microphoneBridge, bridge.hasMeetingOutput { return }
+        await stopMeetingAudio()
+        let process = Process()
+        let input = Pipe()
+        let errors = Pipe()
+        process.executableURL = workerURL
+        process.arguments = ["microphone-bridge"] + arguments.dropFirst()
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errors
+        let bridge = GPTLiveProcessHandle(process: process, input: input, errors: errors)
+        microphoneBridge = bridge
+        bridge.onTermination = { [weak self, weak bridge] in
+            guard let self, let bridge, self.microphoneBridge === bridge else { return }
+            self.microphoneBridge = nil
+            // A broken send bus must not remain displayed as a working invitation.
+            self.current?.stopImmediately()
+            Task { @MainActor in await self.recoverMeetingAudio() }
+        }
+        bridge.installMonitoring()
+        do { try process.run() } catch {
+            bridge.abandonBeforeLaunch()
+            microphoneBridge = nil
+            throw error
+        }
+        let timeout = Task { @MainActor [weak bridge] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            bridge?.failStartup(GPTLiveProcessError.startupTimedOut)
+        }
+        defer { timeout.cancel() }
+        do { try await bridge.waitUntilConnected() } catch {
+            await stopMeetingAudio()
+            throw error
+        }
     }
 
     private func runCredentialCommand(_ command: String) async throws -> GPTLiveCredentialStatus {
@@ -221,6 +300,14 @@ private final class GPTLiveProcessHandle: GPTLiveSessionHandle {
     private var terminalError: (any Error)?
     private var startupContinuation: CheckedContinuation<Void, any Error>?
     private var exitContinuation: CheckedContinuation<Void, any Error>?
+    private var statusObserver: (@MainActor (GPTLiveWorkerStatus) -> Void)?
+    private var lastStatus: GPTLiveWorkerStatus?
+    var hasMeetingOutput: Bool { lastStatus?.meetingOutput == true }
+
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void) {
+        statusObserver = handler
+        if let lastStatus { handler(lastStatus) }
+    }
 
     var onTermination: (() -> Void)?
 
@@ -325,6 +412,10 @@ private final class GPTLiveProcessHandle: GPTLiveSessionHandle {
     }
 
     private func consume(_ status: GPTLiveWorkerStatus) {
+        if !stopping {
+            lastStatus = status
+            statusObserver?(status)
+        }
         switch status.state {
         case .connected:
             guard !stopping, !connected else { return }
@@ -341,7 +432,7 @@ private final class GPTLiveProcessHandle: GPTLiveSessionHandle {
                 resumeStartup(with: .failure(error))
                 stopImmediately()
             }
-        case .connecting, .speaking, .disconnecting:
+        case .connecting, .speaking, .listening, .thinking, .disconnecting:
             break
         }
     }
@@ -349,6 +440,7 @@ private final class GPTLiveProcessHandle: GPTLiveSessionHandle {
     private func processTerminated(status: Int32) {
         guard !exited else { return }
         exited = true
+        statusObserver = nil
         errors.fileHandleForReading.readabilityHandler = nil
         try? errors.fileHandleForReading.close()
         try? input.fileHandleForWriting.close()

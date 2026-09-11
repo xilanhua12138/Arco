@@ -1,3 +1,6 @@
+pub mod meeting_audio;
+pub mod meeting_route;
+pub mod voice_permission;
 use arco_core::gpt_live::{bound_delegation_result, build_speakable_events};
 use arco_core::meetings::parse_meeting;
 use arco_core::models::MeetingDetail;
@@ -272,6 +275,9 @@ impl GptLiveSessionOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GptLiveRuntimeCommand {
     Session(GptLiveSessionOptions),
+    MicrophoneBridge(GptLiveSessionOptions),
+    MeetingAudioStatus,
+    RecoverMeetingAudio,
     AuthStatus,
     Login,
     Logout,
@@ -279,6 +285,14 @@ pub enum GptLiveRuntimeCommand {
 
 pub fn parse_runtime_command(arguments: &[String]) -> Result<GptLiveRuntimeCommand, String> {
     match arguments.first().map(String::as_str) {
+        Some("meeting-audio-status") if arguments.len() == 1 => {
+            Ok(GptLiveRuntimeCommand::MeetingAudioStatus)
+        }
+        Some("recover-meeting-audio") if arguments.len() == 1 => {
+            Ok(GptLiveRuntimeCommand::RecoverMeetingAudio)
+        }
+        Some("microphone-bridge") => GptLiveSessionOptions::parse(&arguments[1..])
+            .map(GptLiveRuntimeCommand::MicrophoneBridge),
         Some("session") => {
             GptLiveSessionOptions::parse(&arguments[1..]).map(GptLiveRuntimeCommand::Session)
         }

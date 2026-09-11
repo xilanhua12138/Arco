@@ -5,15 +5,18 @@ public struct ArcoSettingsSheetView: View {
     @ObservedObject private var viewModel: SettingsSheetViewModel
     private let translate: ArcoTranslate
     private let providerViewModel: ProviderSetupViewModel?
+    private let meetingAudioSetup: MeetingAudioSetupModel?
 
 
     public init(
         viewModel: SettingsSheetViewModel,
         providerViewModel: ProviderSetupViewModel? = nil,
+        meetingAudioSetup: MeetingAudioSetupModel? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english
     ) {
         self.viewModel = viewModel
         self.providerViewModel = providerViewModel
+        self.meetingAudioSetup = meetingAudioSetup
         self.translate = translate
     }
 
@@ -369,6 +372,10 @@ public struct ArcoSettingsSheetView: View {
             }
             settingsDetailRow(.recognition, help: "settings.recognitionHelp", value: recognitionSummary, status: recognitionStatus)
             settingsDetailRow(.output, help: "settings.outputHelp", value: "")
+            if let meetingAudioSetup {
+                MeetingAudioSetupView(model: meetingAudioSetup, locked: viewModel.snapshot.audioModeLocked,
+                    translate: translate).padding(.top, 20)
+            }
         }
     }
 

@@ -20,6 +20,10 @@ public struct ArcoAppEnvironment {
     public var cancelListeningShortcutRecording: () async -> Void
     public var startGPTLiveSession: (_ request: GPTLiveSessionRequest) async throws -> any GPTLiveSessionHandle
     public var stopPendingGPTLiveSession: () async -> Void
+    public var stopMeetingAudio: () async -> Void
+    public var hideVoiceParticipant: () -> Void
+    public var presentVoiceParticipant: () -> Void
+    public var recoverMeetingAudio: () async -> Void
     public var loadGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
     public var connectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
     public var disconnectGPTLiveCredential: () async throws -> GPTLiveCredentialStatus
@@ -44,6 +48,10 @@ public struct ArcoAppEnvironment {
             throw GPTLiveSessionLaunchError.unavailable
         },
         stopPendingGPTLiveSession: @escaping () async -> Void = {},
+        stopMeetingAudio: @escaping () async -> Void = {},
+        recoverMeetingAudio: @escaping () async -> Void = {},
+        presentVoiceParticipant: @escaping () -> Void = {},
+        hideVoiceParticipant: @escaping () -> Void = {},
         loadGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
         connectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
         disconnectGPTLiveCredential: @escaping () async throws -> GPTLiveCredentialStatus = { .missing },
@@ -65,6 +73,10 @@ public struct ArcoAppEnvironment {
         self.cancelListeningShortcutRecording = cancelListeningShortcutRecording
         self.startGPTLiveSession = startGPTLiveSession
         self.stopPendingGPTLiveSession = stopPendingGPTLiveSession
+        self.stopMeetingAudio = stopMeetingAudio
+        self.recoverMeetingAudio = recoverMeetingAudio
+        self.presentVoiceParticipant = presentVoiceParticipant
+        self.hideVoiceParticipant = hideVoiceParticipant
         self.loadGPTLiveCredential = loadGPTLiveCredential
         self.connectGPTLiveCredential = connectGPTLiveCredential
         self.disconnectGPTLiveCredential = disconnectGPTLiveCredential
@@ -161,6 +173,8 @@ public final class ArcoAppShellController: ObservableObject {
     public let preferences: ArcoPreferences
     public let environment: ArcoAppEnvironment
     public let updateManager: UpdateManager
+    @Published public private(set) var voiceInvitationPreparing = false
+    private var voiceInvitationGeneration = 0
     public let gptLiveSession: GPTLiveSessionModel
     public lazy var shortcutViewModel: ShortcutRecorderViewModel = ShortcutRecorderViewModel(
         value: listeningShortcut,
@@ -186,6 +200,10 @@ public final class ArcoAppShellController: ObservableObject {
     private var settingsViewModelStorage: SettingsSheetViewModel?
     private var providerViewModelStorage: ProviderSetupViewModel?
     private var onboardingViewModelStorage: OnboardingViewModel?
+    public lazy var meetingAudioSetup = MeetingAudioSetupModel(canInstall: { [weak self] in
+        guard let self else { return false }
+        return !self.audioModeLocked && self.onboardingViewModelStorage?.workingAudioSource == nil
+    })
     private var settingsGeneration = 0
     private var cancellables = Set<AnyCancellable>()
 
@@ -234,7 +252,10 @@ public final class ArcoAppShellController: ObservableObject {
             .store(in: &cancellables)
         gptLiveSession.$status
             .dropFirst()
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] status in
+                self?.objectWillChange.send()
+                if status.phase == .idle { self?.environment.hideVoiceParticipant() }
+            }
             .store(in: &cancellables)
     }
 
@@ -269,6 +290,7 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func initialize() async {
+        await environment.recoverMeetingAudio()
         let setupTask: Task<[TranscriptionModelStatus]?, Never>? = if providerSetupOpen {
             Task { @MainActor [weak store] in try? await store?.refreshSetupStatus() }
         } else {
@@ -341,10 +363,14 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func toggleCapture(resumeMeetingID: String? = nil) async {
+        guard meetingAudioSetup.state != .installing else {
+            interfaceError = translate("meetingAudio.waitForInstall", [:])
+            return
+        }
         guard !store.loading else { return }
         guard store.capture.phase != .stopping else { return }
-        if store.capture.phase == .recording {
-            await gptLiveSession.disconnect()
+        if store.capture.phase == .recording || store.capture.phase == .starting {
+            await leaveArco()
         }
         if store.capture.phase == .recording, page == .current {
             topBarViewModelStorage = nil
@@ -383,7 +409,15 @@ public final class ArcoAppShellController: ObservableObject {
     /// backend event. GPT Live follows the shared capture state instead of any
     /// individual view lifecycle so none of those paths can leak a call.
     public func captureStateChanged(_ state: CaptureState) {
-        guard state.phase != .recording,
+        if state.phase == .stopping || state.phase == .error || (state.phase == .idle && !voiceInvitationPreparing) {
+            voiceInvitationGeneration += 1
+            voiceInvitationPreparing = false
+            environment.hideVoiceParticipant()
+        }
+        if state.phase != .recording && state.phase != .starting {
+            Task { @MainActor [weak self] in await self?.environment.stopMeetingAudio() }
+        }
+        guard state.phase != .recording, state.phase != .starting,
               gptLiveSession.status.phase != .idle,
               gptLiveSession.status.phase != .disconnecting
         else { return }
@@ -492,16 +526,14 @@ public final class ArcoAppShellController: ObservableObject {
     public func changeGPTLiveBetaEnabled(_ enabled: Bool) {
         gptLiveBetaEnabled = enabled
         preferences.saveGPTLiveBetaEnabled(enabled)
-        if !enabled, gptLiveSession.status.phase != .idle {
-            Task { @MainActor [weak self] in await self?.gptLiveSession.disconnect() }
+        if !enabled {
+            Task { @MainActor [weak self] in await self?.leaveArco() }
         }
         updateSettingsViewModel()
     }
 
     public func connectGPTLiveCredential() async throws -> GPTLiveCredentialStatus {
-        if gptLiveSession.status.phase != .idle {
-            await gptLiveSession.disconnect()
-        }
+        await leaveArco()
         gptLiveCredential = GPTLiveCredentialStatus(phase: .connecting)
         updateSettingsViewModel()
         do {
@@ -520,9 +552,7 @@ public final class ArcoAppShellController: ObservableObject {
     }
 
     public func disconnectGPTLiveCredential() async throws -> GPTLiveCredentialStatus {
-        if gptLiveSession.status.phase != .idle {
-            await gptLiveSession.disconnect()
-        }
+        await leaveArco()
         gptLiveCredential = .checking
         updateSettingsViewModel()
         do {
@@ -540,7 +570,14 @@ public final class ArcoAppShellController: ObservableObject {
         }
     }
 
-    public func toggleGPTLive() async {
+    /// The meeting entry point is idempotent: an existing invitation is revealed,
+    /// never toggled off. Departing is a separate action inside the participant card.
+    public func inviteArco() async {
+        if voiceInvitationPreparing || [.connecting, .connected].contains(gptLiveSession.status.phase) {
+            environment.presentVoiceParticipant()
+            return
+        }
+        guard gptLiveSession.status.phase != .disconnecting else { return }
         guard gptLiveBetaEnabled else {
             interfaceError = translate("agent.gptLiveEnableFirst", [:])
             return
@@ -549,22 +586,50 @@ public final class ArcoAppShellController: ObservableObject {
             interfaceError = translate("agent.gptLiveConnectAccountFirst", [:])
             return
         }
+        guard !store.loading, store.capture.phase != .stopping else { return }
+        voiceInvitationPreparing = true
+        voiceInvitationGeneration += 1
+        let generation = voiceInvitationGeneration
+        environment.presentVoiceParticipant()
+        defer { if generation == voiceInvitationGeneration { voiceInvitationPreparing = false } }
+        if store.capture.phase == .idle || store.capture.phase == .error {
+            // An invitation from history starts a current meeting. Only the explicit
+            // Continue listening action may append audio to an old meeting.
+            await toggleCapture()
+        }
+        for _ in 0..<150 where store.capture.phase == .starting && generation == voiceInvitationGeneration {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        guard generation == voiceInvitationGeneration else { return }
         guard store.capture.phase == .recording,
               store.capture.activeMeetingId != nil,
               let transcriptPath = store.capture.transcriptPath ?? store.meeting?.summary.path
         else {
-            interfaceError = translate("agent.gptLiveMeetingRequired", [:])
+            environment.hideVoiceParticipant()
+            interfaceError = store.capture.message ?? translate("agent.gptLiveMeetingRequired", [:])
             return
         }
-        let provider = ProviderRoute.resolve(
-            config: providerConfiguration,
-            runtimes: store.runtimes
-        ).provider ?? providerConfiguration.primary ?? .codex
-        await gptLiveSession.toggle(request: GPTLiveSessionRequest(
-            mode: displayedAudioMode,
-            transcriptPath: transcriptPath,
-            provider: provider
+        let provider = ProviderRoute.resolve(config: providerConfiguration, runtimes: store.runtimes).provider
+            ?? providerConfiguration.primary ?? .codex
+        voiceInvitationPreparing = false
+        await gptLiveSession.connect(request: GPTLiveSessionRequest(
+            mode: displayedAudioMode, transcriptPath: transcriptPath, provider: provider
         ))
+    }
+
+    public var voiceParticipantStatus: GPTLiveSessionStatus {
+        voiceInvitationPreparing ? GPTLiveSessionStatus(phase: .connecting) : gptLiveSession.status
+    }
+
+    public func hideVoiceParticipant() {
+        environment.hideVoiceParticipant()
+    }
+
+    public func leaveArco() async {
+        voiceInvitationGeneration += 1
+        voiceInvitationPreparing = false
+        environment.hideVoiceParticipant()
+        await gptLiveSession.disconnect()
     }
 
     public func changeLocale(_ rawValue: String) {
@@ -715,9 +780,14 @@ public final class ArcoAppShellController: ObservableObject {
                 guard let store else { throw CancellationError() }
                 return try await store.prepareTranscriptionModel(model)
             },
-            onTestAudio: { [weak store] mode in
-                guard let store else { throw CancellationError() }
-                return try await store.testAudio(mode)
+            onTestAudio: { [weak self] mode in
+                guard let self else { throw CancellationError() }
+                guard self.meetingAudioSetup.state != .installing else {
+                    throw NSError(domain: "ArcoMeetingAudio", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: self.translate("meetingAudio.waitForInstall", [:])
+                    ])
+                }
+                return try await self.store.testAudio(mode)
             },
             onRelaunch: environment.relaunch,
             saveDraft: { [weak self] draft in try? self?.preferences.saveOnboardingDraft(draft) },

@@ -2007,15 +2007,15 @@ mod tests {
         );
         let microphone_callback = source_between(
             source,
-            "input.installTap(",
-            "do {\n            engine.prepare()",
+            "let created = AudioDeviceCreateIOProcID(",
+            "guard created == noErr",
         );
 
         assert!(source.contains("arco_audio_rt_io_proc"));
         assert!(io_callback.contains("arco_audio_rt_io_proc"));
         assert!(io_callback.contains("UnsafeMutableRawPointer(audioRuntime.producer)"));
         assert!(!io_callback.contains("Unmanaged"));
-        assert!(microphone_callback.contains("arco_audio_rt_push_planar_f32"));
+        assert!(microphone_callback.contains("arco_audio_rt_io_proc"));
         for callback in [io_callback, microphone_callback] {
             assert!(!callback.contains("Array("));
             assert!(!callback.contains("resampler"));
@@ -2074,7 +2074,7 @@ mod tests {
             "@available(macOS 14.2, *)\n    private func stopCoreAudioTapCapture()",
         );
 
-        let microphone_stop = stop.find("removeTap(onBus: 0)").unwrap();
+        let microphone_stop = stop.find("AudioDeviceStop(microphoneDeviceID, callback)").unwrap();
         let system_stop = stop.find("stopCoreAudioTapCapture()").unwrap();
         let stream_stop = stop.find("stream.stopCapture").unwrap();
         let runtime_stop = stop.find("stopAudioRuntime(").unwrap();

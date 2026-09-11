@@ -231,8 +231,8 @@ expectTrue(
 expectTrue(
     collapsedAgentHeader.contains("if live, gptLiveBetaEnabled")
         && collapsedAgentHeader.contains("GPTLiveBetaButton(")
-        && application.contains("gptLiveStatus: shellController.gptLiveSession.status")
-        && application.contains("await shellController.toggleGPTLive()"),
+        && application.contains("gptLiveStatus: shellController.voiceParticipantStatus")
+        && application.contains("await shellController.inviteArco()"),
     "The floating Ask Arco header must expose the same explicit live-only Beta connection as the docked panel"
 )
 let expandedTranscriptHeader = sourceSection(
@@ -421,8 +421,8 @@ expectTrue(
 // Read-only window lifecycle/geometry: source placement, resize, reuse, close.
 expectTrue(
     geometry.contains("static let hudSize = CGSize(width: 368, height: 56)")
-        && geometry.contains("static let agentSize = CGSize(width: 720, height: 560)")
-        && geometry.contains("static let collapsedAgentSize = CGSize(width: 432, height: 560)"),
+        && geometry.contains("static let agentSize = CGSize(width: 960, height: 560)")
+        && geometry.contains("static let collapsedAgentSize = CGSize(width: 720, height: 560)"),
     "Native windows must preserve the source HUD and expanded/collapsed Agent sizes"
 )
 expectTrue(

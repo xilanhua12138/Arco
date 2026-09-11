@@ -163,9 +163,9 @@ expectTrue(
     "Main composer must not retain the migration-only 63pt growth allowance"
 )
 expectTrue(
-    insightSource.contains("if live, gptLiveBetaEnabled, let onToggleGPTLive")
+    insightSource.contains("if gptLiveBetaEnabled, let onToggleGPTLive")
         && insightSource.contains("GPTLiveBetaButton("),
-    "GPT Live must be an explicit active-meeting button in Ask Arco, gated by the Beta preference"
+    "GPT Live must be an explicit invite button in Ask Arco, gated by the Beta preference; invitation may start a new meeting"
 )
 expectTrue(
     !insightSource.contains("onAppear { onToggleGPTLive"),

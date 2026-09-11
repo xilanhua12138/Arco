@@ -13,13 +13,25 @@ public enum GPTLiveSessionPhase: String, Equatable, Sendable {
 public struct GPTLiveSessionStatus: Equatable, Sendable {
     public var phase: GPTLiveSessionPhase
     public var message: String?
+    public var activity: GPTLiveActivity
+    public var audioLevel: Double
+    public var meetingOutput: Bool
 
-    public init(phase: GPTLiveSessionPhase, message: String? = nil) {
+    public init(phase: GPTLiveSessionPhase, message: String? = nil,
+                activity: GPTLiveActivity = .listening, audioLevel: Double = 0,
+                meetingOutput: Bool = false) {
         self.phase = phase
         self.message = message
+        self.activity = activity
+        self.audioLevel = audioLevel.isFinite ? min(1, max(0, audioLevel)) : 0
+        self.meetingOutput = meetingOutput
     }
 
     public static let idle = GPTLiveSessionStatus(phase: .idle)
+}
+
+public enum GPTLiveActivity: String, Equatable, Sendable {
+    case listening, thinking, speaking
 }
 
 public struct GPTLiveSessionRequest: Equatable, Sendable {
@@ -87,16 +99,23 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
         case connecting
         case connected
         case speaking
+        case listening
+        case thinking
         case disconnecting
         case error
     }
 
     public let state: State
     public let message: String?
+    public let audioLevel: Double
+    public let meetingOutput: Bool
 
-    public init(state: State, message: String? = nil) {
+    public init(state: State, message: String? = nil, audioLevel: Double = 0,
+                meetingOutput: Bool = false) {
         self.state = state
         self.message = message
+        self.audioLevel = audioLevel
+        self.meetingOutput = meetingOutput
     }
 
     public static func parse(line: String) -> GPTLiveWorkerStatus? {
@@ -107,13 +126,18 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
               let state = State(rawValue: envelope.state),
               envelope.message?.utf8.count ?? 0 <= 1_024
         else { return nil }
-        return GPTLiveWorkerStatus(state: state, message: envelope.message)
+        let level = envelope.audioLevel ?? 0
+        guard level.isFinite, (0...1).contains(level) else { return nil }
+        return GPTLiveWorkerStatus(state: state, message: envelope.message,
+                                  audioLevel: level, meetingOutput: envelope.meetingOutput ?? false)
     }
 
     private struct Envelope: Decodable {
         let type: String
         let state: String
         let message: String?
+        let audioLevel: Double?
+        let meetingOutput: Bool?
     }
 }
 
@@ -124,6 +148,11 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
 public protocol GPTLiveSessionHandle: AnyObject {
     func waitUntilExit() async throws
     func stop() async
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void)
+}
+
+public extension GPTLiveSessionHandle {
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void) {}
 }
 
 public enum GPTLiveSessionLaunchError: LocalizedError {
@@ -142,8 +171,8 @@ public enum GPTLiveButtonPresentation {
     public static func labelKey(for phase: GPTLiveSessionPhase) -> String {
         switch phase {
         case .idle: "agent.gptLiveConnect"
-        case .connecting: "agent.gptLiveCancel"
-        case .connected: "agent.gptLiveListening"
+        case .connecting: "agent.voiceJoining"
+        case .connected: "agent.voicePresent"
         case .disconnecting: "agent.gptLiveDisconnecting"
         case .failed: "agent.gptLiveRetry"
         }
@@ -152,8 +181,8 @@ public enum GPTLiveButtonPresentation {
     public static func helpKey(for phase: GPTLiveSessionPhase) -> String {
         switch phase {
         case .idle, .failed: "agent.gptLiveConnectHelp"
-        case .connecting: "agent.gptLiveCancelHelp"
-        case .connected: "agent.gptLiveDisconnectHelp"
+        case .connecting: "agent.voiceShowHelp"
+        case .connected: "agent.voiceShowHelp"
         case .disconnecting: "agent.gptLiveDisconnectingHelp"
         }
     }
@@ -198,10 +227,6 @@ public struct GPTLiveBetaButton: View {
                 Text(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]))
                     .font(ArcoTypography.sans(11, weight: .semibold))
                     .lineLimit(1)
-                Text(translate("settings.betaBadge", [:]))
-                    .font(ArcoTypography.sans(8, weight: .bold))
-                    .tracking(0.45)
-                    .opacity(status.phase == .connected ? 0.86 : 0.68)
             }
             .foregroundStyle(foreground)
             .padding(.horizontal, 9)
@@ -319,7 +344,8 @@ public final class GPTLiveSessionModel: ObservableObject {
         status = .idle
     }
 
-    private func connect(request: GPTLiveSessionRequest) async {
+    public func connect(request: GPTLiveSessionRequest) async {
+        guard status.phase == .idle || status.phase == .failed else { return }
         generation += 1
         let requestGeneration = generation
         status = GPTLiveSessionStatus(phase: .connecting)
@@ -331,6 +357,16 @@ public final class GPTLiveSessionModel: ObservableObject {
             }
             handle = nextHandle
             status = GPTLiveSessionStatus(phase: .connected)
+            nextHandle.observeStatus { [weak self] update in
+                guard let self, self.generation == requestGeneration,
+                      self.status.phase == .connected else { return }
+                let activity = GPTLiveActivity(rawValue: update.state.rawValue) ?? .listening
+                let nextStatus = GPTLiveSessionStatus(
+                    phase: .connected, activity: activity,
+                    audioLevel: update.audioLevel, meetingOutput: update.meetingOutput
+                )
+                if self.status != nextStatus { self.status = nextStatus }
+            }
             monitorTask?.cancel()
             monitorTask = Task { @MainActor [weak self] in
                 do {

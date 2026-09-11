@@ -197,6 +197,10 @@ private final class TestGPTLiveSessionHandle: GPTLiveSessionHandle {
     private(set) var stopCount = 0
     private var termination: CheckedContinuation<Void, any Error>?
     private var pendingResult: Result<Void, any Error>?
+    var statusObserver: (@MainActor (GPTLiveWorkerStatus) -> Void)?
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void) {
+        statusObserver = handler
+    }
 
     func waitUntilExit() async throws {
         if let pendingResult {
@@ -501,7 +505,15 @@ private func testGPTLiveSessionStateMachine() async {
         "GPT Live receives the meeting audio mode, transcript, and agent provider"
     )
 
+    handle.statusObserver?(GPTLiveWorkerStatus(state: .speaking, audioLevel: 0.7, meetingOutput: true))
+    expect(model.status.activity, .speaking, "Actual playback updates the aura speaking state")
+    expect(model.status.audioLevel, 0.7, "Actual audio energy reaches the visualizer")
+    expect(model.status.meetingOutput, true, "A ready send bus is disclosed independently of connection")
+    handle.statusObserver?(GPTLiveWorkerStatus(state: .listening))
+    expect(model.status.audioLevel, 0, "Playback silence resets the visualizer")
     await model.toggle(request: gptLiveRequest(mode: .both))
+    handle.statusObserver?(GPTLiveWorkerStatus(state: .speaking, audioLevel: 1))
+    expect(model.status, .idle, "A late meter event cannot revive a disconnected session")
     expect(model.status, .idle, "A second click disconnects GPT Live")
     expect(handle.stopCount, 1, "Disconnect stops the owned GPT Live worker exactly once")
 
@@ -590,7 +602,7 @@ private func testGPTLiveDisconnectsWhenCaptureStopsOutsideTheMainWindow() async 
     backend.respond("list_agent_turns", with: [AgentTurn]())
     backend.respond("list_attachments", with: [MeetingAttachment]())
     await controller.toggleCapture()
-    await controller.toggleGPTLive()
+    await controller.inviteArco()
     expect(controller.gptLiveSession.status.phase, .connected, "Precondition: GPT Live is connected")
 
     controller.captureStateChanged(capture(phase: .idle))
@@ -613,12 +625,12 @@ private func testGPTLiveButtonPresentationCoversEveryState() {
     )
     expect(
         GPTLiveButtonPresentation.labelKey(for: .connecting),
-        "agent.gptLiveCancel",
-        "The connecting button remains a useful cancel action"
+        "agent.voiceJoining",
+        "The connecting entry reveals the in-flight invitation"
     )
     expect(
         GPTLiveButtonPresentation.labelKey(for: .connected),
-        "agent.gptLiveListening",
+        "agent.voicePresent",
         "Connected GPT Live shows that meeting audio is being sent"
     )
     expect(
@@ -633,7 +645,7 @@ private func testGPTLiveButtonPresentationCoversEveryState() {
     )
     expectTrue(
         GPTLiveButtonPresentation.isEnabled(for: .connecting),
-        "Users can cancel a slow GPT Live connection"
+        "Users can reveal an in-flight connection"
     )
     expectTrue(
         !GPTLiveButtonPresentation.isEnabled(for: .disconnecting),
@@ -643,6 +655,10 @@ private func testGPTLiveButtonPresentationCoversEveryState() {
 
 @MainActor
 private func testGPTLiveWorkerStatusProtocolRejectsMalformedOutput() {
+    expectTrue(GPTLiveWorkerStatus.parse(line: #"{"type":"status","state":"speaking","audioLevel":2}"#) == nil,
+               "Out-of-range voice telemetry is rejected")
+    expect(GPTLiveWorkerStatus.parse(line: #"{"type":"status","state":"thinking","audioLevel":0.2,"meetingOutput":true}"#),
+           GPTLiveWorkerStatus(state: .thinking, audioLevel: 0.2, meetingOutput: true), "Voice telemetry is decoded")
     expect(
         GPTLiveWorkerStatus.parse(line: #"{"type":"status","state":"connected"}"#),
         GPTLiveWorkerStatus(state: .connected),
@@ -678,6 +694,8 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
     installStorageHandlers(on: backend)
     installSetupSuccessHandlers(on: backend)
 
+    let windowVisible = LockedBox<Bool>(false)
+    let presentations = LockedBox<Int>(0)
     let startedRequests = LockedBox<[GPTLiveSessionRequest]>([])
     let handle = TestGPTLiveSessionHandle()
     let environment = ArcoAppEnvironment(
@@ -685,6 +703,8 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
             startedRequests.mutate { $0.append(request) }
             return handle
         },
+        presentVoiceParticipant: { presentations.mutate { $0 += 1 }; windowVisible.mutate { $0 = true } },
+        hideVoiceParticipant: { windowVisible.mutate { $0 = false } },
         loadGPTLiveCredential: {
             GPTLiveCredentialStatus(phase: .connected, identity: "member@example.com")
         }
@@ -692,7 +712,7 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
     let controller = makeController(backend: backend, environment: environment)
     await controller.initialize()
 
-    await controller.toggleGPTLive()
+    await controller.inviteArco()
     expect(startedRequests.read { $0 }, [], "A default-off Beta never starts a voice worker")
     expect(
         controller.interfaceError,
@@ -702,13 +722,10 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
 
     controller.dismissError()
     controller.changeGPTLiveBetaEnabled(true)
-    await controller.toggleGPTLive()
+    await controller.inviteArco()
     expect(startedRequests.read { $0 }, [], "GPT Live cannot start outside an active meeting")
-    expect(
-        controller.interfaceError,
-        "agent.gptLiveMeetingRequired",
-        "An idle meeting click explains that recording is required"
-    )
+    expectTrue(controller.interfaceError != nil, "Capture startup failure remains visible")
+    expectTrue(!windowVisible.read { $0 }, "Capture startup failure dismisses the participant window")
 
     let liveSummary = summary(id: "gpt-live-meeting")
     backend.respond(
@@ -719,8 +736,9 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
     backend.respond("read_meeting", with: detail(id: liveSummary.id))
     backend.respond("list_agent_turns", with: [AgentTurn]())
     backend.respond("list_attachments", with: [MeetingAttachment]())
-    await controller.toggleCapture()
-    await controller.toggleGPTLive()
+    await controller.inviteArco()
+    expect(controller.store.capture.phase, .recording, "Invitation starts the meeting capture when idle")
+    expect(presentations.read { $0 }, 2, "Each enabled invitation presents the shared participant window")
 
     expect(
         startedRequests.read { $0 },
@@ -729,9 +747,18 @@ private func testGPTLiveControllerRequiresExplicitBetaAndActiveMeeting() async {
     )
     expect(controller.gptLiveSession.status.phase, .connected, "The controller exposes the connected voice state")
 
-    controller.changeGPTLiveBetaEnabled(false)
+    controller.hideVoiceParticipant()
+    expectTrue(!windowVisible.read { $0 }, "Hide dismisses only the surface")
+    expect(handle.stopCount, 0, "Hiding the card does not end the voice session")
+    await controller.inviteArco()
+    expectTrue(windowVisible.read { $0 }, "The main entry reopens the hidden card")
+    expect(startedRequests.read { $0.count }, 1, "Repeated invitation never starts a second worker")
+    expect(handle.stopCount, 0, "Repeated invitation never toggles an active session off")
+    await controller.leaveArco()
+    expectTrue(!windowVisible.read { $0 }, "Leaving automatically closes the card")
     let stopped = await eventually { handle.stopCount == 1 }
-    expectTrue(stopped, "Turning the Beta off stops the active voice worker")
+    expectTrue(stopped, "Leaving stops the active voice worker")
+    controller.changeGPTLiveBetaEnabled(false)
     expect(controller.store.capture.phase, .recording, "Stopping voice never stops the meeting recording")
     controller.store.dispose()
 }
@@ -2338,8 +2365,62 @@ private func testLiveTranscriptEdgeTracksTentativeTextRefinements() {
     )
 }
 
+@MainActor
+private func testOptionalMeetingAudioSetup() async {
+    var installed = false
+    var downloads = 0
+    var installs = 0
+    let model = MeetingAudioSetupModel(dependencies: .init(
+        detect: { installed ? .ready : .missing },
+        download: { downloads += 1; return URL(fileURLWithPath: "/fixture/component.pkg") },
+        install: { _ in installs += 1; installed = true }
+    ), defaults: nil)
+    model.skip()
+    expect(model.skipped, true, "optional setup can be skipped")
+    expect(downloads, 0, "skipping never starts a download")
+    model.refresh()
+    expect(installs, 0, "opening or refreshing settings never installs a driver")
+    await model.configure()
+    expect(model.state, .ready, "settings can complete setup after a skip")
+    expect(model.skipped, false, "successful setup clears the skip")
+    await model.configure()
+    expect(installs, 1, "an installed device is not installed again")
+
+    let broken = MeetingAudioSetupModel(dependencies: .init(
+        detect: { .missing }, download: { throw ContractTestError.setupFailure },
+        install: { _ in installs += 1 }
+    ), defaults: nil)
+    await broken.configure()
+    expect(broken.errorKey, "meetingAudio.downloadFailed", "download or verification failure is actionable")
+    expect(installs, 1, "unverified downloads cannot reach installation")
+
+    var cancelled = true
+    let retry = MeetingAudioSetupModel(dependencies: .init(
+        detect: { cancelled ? .missing : .restartRequired },
+        download: { URL(fileURLWithPath: "/fixture/component.pkg") },
+        install: { _ in if cancelled { cancelled = false; throw CancellationError() } }
+    ), defaults: nil)
+    await retry.configure()
+    expect(retry.state, .failed, "declining authorization leaves setup optional and retryable")
+    retry.refresh()
+    expect(retry.state, .restartRequired, "a driver on disk is not falsely reported ready")
+
+    var capturing = false
+    let race = MeetingAudioSetupModel(dependencies: .init(
+        detect: { .missing },
+        download: { capturing = true; return URL(fileURLWithPath: "/fixture/component.pkg") },
+        install: { _ in installs += 1 }
+    ), defaults: nil, canInstall: { !capturing })
+    await race.configure()
+    expect(race.errorKey, "meetingAudio.inMeeting", "capture starting during download blocks installation")
+    expect(installs, 1, "an active recording cannot be interrupted by the installer")
+    await race.configure()
+    expect(race.state, .missing, "setup stays available after a blocked attempt")
+}
+
 testNavigationAndCaptureInvariants()
 testProviderRouting()
+await testOptionalMeetingAudioSetup()
 await testGPTLiveSessionStateMachine()
 await testGPTLiveConnectingCanBeCancelledAndLateStartsAreRejected()
 await testGPTLiveUnexpectedWorkerExitIsVisible()

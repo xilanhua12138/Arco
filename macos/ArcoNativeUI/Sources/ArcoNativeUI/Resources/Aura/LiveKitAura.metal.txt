@@ -1,0 +1,205 @@
+/*
+ * LiveKit Agents UI Aura shader, adapted from GLSL to Metal.
+ * Original: livekit/components-js/packages/shadcn/components/agents-ui/agent-audio-visualizer-aura.tsx
+ * Originally developed for Unicorn Studio https://unicorn.studio
+ * Licensed under the Polyform Non-Resale License 1.0.0
+ * https://polyformproject.org/licenses/non-resale/1.0.0/
+ * © 2026 UNCRN LLC
+ * Arco changes: Metal entrypoints, explicit uniform arguments and opaque background composition.
+ */
+#include <metal_stdlib>
+using namespace metal;
+struct AuraUniforms { float2 resolution; float time; float speed; float amplitude; float frequency; float scale; float brightness; };
+struct VertexOut { float4 position [[position]]; };
+vertex VertexOut auraVertex(uint id [[vertex_id]]) {
+  const float2 points[3] = {float2(-1,-1),float2(3,-1),float2(-1,3)};
+  return {float4(points[id],0,1)};
+}
+#define iResolution u.resolution
+#define iTime u.time
+#define uSpeed u.speed
+#define uAmplitude u.amplitude
+#define uFrequency u.frequency
+#define uScale u.scale
+#define uMix u.brightness
+#define uShape 1.0f
+#define uBlur 1.0f
+#define uBloom 0.0f
+#define uSpacing 0.5f
+#define uColorShift 0.3f
+#define uVariance 0.1f
+#define uSmoothing 1.0f
+#define uMode 0.0f
+#define uColor float3(0.1215686,0.8352941,0.9764706)
+
+constant float TAU = 6.283185;
+
+// Noise for dithering
+float2 randFibo(float2 p) {
+  p = fract(p * float2(443.897, 441.423));
+  p += dot(p, p.yx + 19.19);
+  return fract((p.xx + p.yx) * p.xy);
+}
+
+// Tonemap
+float3 Tonemap(float3 x) {
+  x *= 4.0;
+  return x / (1.0 + x);
+}
+
+// Luma for alpha
+float luma(float3 color) {
+  return dot(color, float3(0.299, 0.587, 0.114));
+}
+
+// RGB to HSV
+float3 rgb2hsv(float3 c) {
+  float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+// HSV to RGB
+float3 hsv2rgb(float3 c) {
+  float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// SDF shapes
+float sdCircle(float2 st, float r) {
+  return length(st) - r;
+}
+
+float sdLine(float2 p, float r) {
+  float halfLen = r * 2.0;
+  float2 a = float2(-halfLen, 0.0);
+  float2 b = float2(halfLen, 0.0);
+  float2 pa = p - a;
+  float2 ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+float getSdf(float2 st, constant AuraUniforms &u) {
+  if(uShape == 1.0) return sdCircle(st, uScale);
+  else if(uShape == 2.0) return sdLine(st, uScale);
+  return sdCircle(st, uScale); // Default
+}
+
+float2 turb(float2 pos, float t, float it, constant AuraUniforms &u) {
+  // Initial rotation matrix for swirl direction
+  float2x2 rotation = float2x2(float2(0.6, -0.25), float2(0.25, 0.9));
+  // Secondary rotation applied each iteration (approx 53 degree rotation)
+  float2x2 layerRotation = float2x2(float2(0.6, -0.8), float2(0.8, 0.6));
+
+  float frequency = mix(2.0, 15.0, uFrequency);
+  float amplitude = uAmplitude;
+  float frequencyGrowth = 1.4;
+  float animTime = t * 0.1 * uSpeed;
+
+  const int LAYERS = 4;
+  for(int i = 0; i < LAYERS; i++) {
+    // Calculate wave displacement for this layer
+    float2 rotatedPos = pos * rotation;
+    float2 wave = sin(frequency * rotatedPos + float(i) * animTime + it);
+
+    // Apply displacement along rotation direction
+    pos += (amplitude / frequency) * rotation[0] * wave;
+
+    // Evolve parameters for next layer
+    rotation = rotation * layerRotation;
+    amplitude *= mix(1.0, max(wave.x, wave.y), uVariance);
+    frequency *= frequencyGrowth;
+  }
+
+  return pos;
+}
+
+constant float ITERATIONS = 36.0;
+
+fragment float4 auraFragment(VertexOut in [[stage_in]], constant AuraUniforms &u [[buffer(0)]]) {
+  float4 fragColor;
+  float2 fragCoord = float2(in.position.x, u.resolution.y - in.position.y);
+  float2 uv = fragCoord / iResolution.xy;
+
+  float3 pp = float3(0.0);
+  float3 bloom = float3(0.0);
+  float t = iTime * 0.5;
+  float2 pos = uv - 0.5;
+
+  float2 prevPos = turb(pos, t, 0.0 - 1.0 / ITERATIONS, u);
+  float spacing = mix(1.0, TAU, uSpacing);
+
+  for(float i = 1.0; i < ITERATIONS + 1.0; i++) {
+    float iter = i / ITERATIONS;
+    float2 st = turb(pos, t, iter * spacing, u);
+    float d = abs(getSdf(st, u));
+    float pd = distance(st, prevPos);
+    prevPos = st;
+    float dynamicBlur = exp2(pd * 2.0 * 1.4426950408889634) - 1.0;
+    float ds = smoothstep(0.0, uBlur * 0.05 + max(dynamicBlur * uSmoothing, 0.001), d);
+
+    // Shift color based on iteration using uColorScale
+    float3 color = uColor;
+    if(uColorShift > 0.01) {
+      float3 hsv = rgb2hsv(color);
+      // Shift hue by iteration
+      hsv.x = fract(hsv.x + (1.0 - iter) * uColorShift * 0.3);
+      color = hsv2rgb(hsv);
+    }
+
+    float invd = 1.0 / max(d + dynamicBlur, 0.001);
+    pp += (ds - 1.0) * color;
+    bloom += clamp(invd, 0.0, 250.0) * color;
+  }
+
+  pp *= 1.0 / ITERATIONS;
+
+  float3 color;
+
+  // Dark mode (default)
+  if(uMode < 0.5) {
+    // use bloom effect
+    bloom = bloom / (bloom + 2e4);
+    color = (-pp + bloom * 3.0 * uBloom) * 1.2;
+    color += (randFibo(fragCoord).x - 0.5) / 255.0;
+    color = Tonemap(color);
+    float alpha = luma(color) * uMix;
+    fragColor = float4(color * uMix, alpha);
+  }
+
+  // Light mode
+  else {
+    // no bloom effect
+    color = -pp;
+    color += (randFibo(fragCoord).x - 0.5) / 255.0;
+
+    // Preserve hue by tone mapping brightness only
+    float brightness = length(color);
+    float3 direction = brightness > 0.0 ? color / brightness : color;
+
+    // Reinhard on brightness
+    float factor = 2.0;
+    float mappedBrightness = (brightness * factor) / (1.0 + brightness * factor);
+    color = direction * mappedBrightness;
+
+    // Boost saturation to compensate for white background bleed-through
+    // When alpha < 1.0, white bleeds through making colors look desaturated
+    // So we increase saturation to maintain vibrant appearance
+    float gray = dot(color, float3(0.2, 0.5, 0.1));
+    float saturationBoost = 3.0;
+    color = mix(float3(gray), color, saturationBoost);
+
+    // Clamp between 0-1
+    color = clamp(color, 0.0, 1.0);
+
+    float alpha = mappedBrightness * clamp(uMix, 1.0, 2.0);
+    fragColor = float4(color, alpha);
+  }
+
+  return float4(max(fragColor.rgb, float3(0.0)) * fragColor.a + float3(0.025, 0.035, 0.055) * (1.0 - fragColor.a), 1.0);
+}

@@ -175,12 +175,14 @@ struct AgentOverlaySurfaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-                .frame(height: 52)
+            header.frame(height: 52)
             workspace
         }
+        .background(ArcoNativeColors.surfaceDocument)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
+        .background(ArcoNativeColors.surfaceSubtle)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("agent.askArco", [:]))

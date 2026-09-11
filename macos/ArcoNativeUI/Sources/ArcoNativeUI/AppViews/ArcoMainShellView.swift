@@ -66,6 +66,7 @@ public struct ArcoMainShellView: View {
             shortcutViewModel: controller.shortcutViewModel,
             locale: localeBinding,
             shortcutTestCount: controller.shortcutTestCount,
+            meetingAudioSetup: controller.meetingAudioSetup,
             translate: translate
         )
     }
@@ -103,6 +104,7 @@ public struct ArcoMainShellView: View {
                 ArcoSettingsSheetView(
                     viewModel: controller.settingsViewModel(),
                     providerViewModel: controller.providerViewModel(),
+                    meetingAudioSetup: controller.meetingAudioSetup,
                     translate: translate
                 )
                 .transition(
@@ -554,7 +556,7 @@ public struct ArcoMainShellView: View {
             attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
             gptLiveBetaEnabled: controller.gptLiveBetaEnabled,
-            gptLiveStatus: controller.gptLiveSession.status,
+            gptLiveStatus: controller.voiceParticipantStatus,
             showHeader: true,
             streamingTurn: controller.store.agentStreamingTurn,
             translate: translate,
@@ -580,7 +582,7 @@ public struct ArcoMainShellView: View {
             onClose: { setAgentExpanded(false) },
             onConnectAgent: controller.openProviderSetup,
             onToggleGPTLive: {
-                Task { @MainActor in await controller.toggleGPTLive() }
+                Task { @MainActor in await controller.inviteArco() }
             }
         )
         .id(meeting?.summary.id)

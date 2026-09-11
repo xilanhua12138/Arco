@@ -229,6 +229,19 @@ private final class NativeApplicationRuntime {
             stopPendingGPTLiveSession: { [weak gptLiveProcessLauncher] in
                 await gptLiveProcessLauncher?.stop()
             },
+            stopMeetingAudio: { [weak gptLiveProcessLauncher] in
+                await gptLiveProcessLauncher?.stopMeetingAudio()
+            },
+            recoverMeetingAudio: { [weak gptLiveProcessLauncher] in
+                await gptLiveProcessLauncher?.recoverMeetingAudio()
+            },
+            presentVoiceParticipant: { [weak bridge] in
+                guard let controller = bridge?.shellController else { return }
+                bridge?.windowCoordinator?.showVoiceParticipant(controller: controller, translate: translate)
+            },
+            hideVoiceParticipant: { [weak windowCoordinator] in
+                windowCoordinator?.voiceParticipantWindow?.orderOut(nil)
+            },
             loadGPTLiveCredential: { [weak gptLiveProcessLauncher] in
                 guard let gptLiveProcessLauncher else { throw GPTLiveSessionLaunchError.unavailable }
                 return try await gptLiveProcessLauncher.credentialStatus()
@@ -389,10 +402,14 @@ private final class NativeApplicationRuntime {
             )
         }
         store.onCaptureStateChanged = {
-            [weak menuBarController, weak meetingAwarenessController, weak shellController] state in
+            [weak menuBarController, weak meetingAwarenessController, weak shellController, weak windowCoordinator] state in
             menuBarController?.updateCapture(state.phase)
             meetingAwarenessController?.updateCapturePhase(state.phase)
             shellController?.captureStateChanged(state)
+            if state.phase == .error {
+                shellController?.presentInterfaceError(state.error ?? state.message ?? "Could not start listening.")
+                _ = try? windowCoordinator?.showMainWindow()
+            }
         }
         windowCoordinator.install(WindowContentFactories(
             main: { [weak shellController] in
@@ -492,11 +509,11 @@ private struct AgentOverlayHostView: View {
             transcriptLoading: store.loading,
             translate: translate,
             gptLiveBetaEnabled: shellController.gptLiveBetaEnabled,
-            gptLiveStatus: shellController.gptLiveSession.status,
+            gptLiveStatus: shellController.voiceParticipantStatus,
             onHide: actions.hide,
             onFocusMain: actions.focusMain,
             onToggleGPTLive: {
-                Task { @MainActor in await shellController.toggleGPTLive() }
+                Task { @MainActor in await shellController.inviteArco() }
             },
             onError: { error in
                 shellController.presentInterfaceError(error.localizedDescription)

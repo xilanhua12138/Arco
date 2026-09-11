@@ -36,9 +36,9 @@
 
 ## 邀请 Arco 入会
 
-> **开发预览 · 2026 年 9 月。** 以下为本机开发版的真实截图。独立参会窗与会议麦克风自动切换尚未包含在公开源码及 v0.3.24 安装包中。
+> **v0.3.25 已提供。** 以下为 Arco 独立参会悬浮窗和会议麦克风切换的真实截图。
 
-邀请 Arco 和你一起听会，支持线上、线下和混合会议。系统音频接收远端发言，物理麦克风拾取现场声音。Arco 默认安静，被点名后再用语音回应；涉及会议内容的问题，会交给能读取当前转写的 Codex 或 Claude Agent。
+邀请 Arco 和你一起听会，支持线上、线下和混合会议。系统音频接收远端发言，物理麦克风拾取现场声音。Arco 默认安静，每轮被点名后再用语音回应；涉及会议内容的问题，会交给能读取当前转写的 Codex 或 Claude Agent。
 
 <p align="center">
   <img src="docs/images/arco-invite-meeting.jpg" alt="Arco 原生会议界面：询问 Arco 旁的邀请入会按钮和实时录音状态" width="1000">
@@ -99,7 +99,7 @@ Arco 把转写作为证据层，把 Agent 固定在右侧。系统音频与房�
 | 流式转写 | 可选择 Deepgram、豆包、ElevenLabs，或本地 Nemotron / Whisper 模型。 | 自由权衡识别质量、延迟与隐私。 |
 | 多说话人分离 | 独立选择 Deepgram、豆包，或本地 Streaming Sortformer、Pyannote + WeSpeaker、LS-EEND，在每条音频通道内增量分离匿名说话人。 | 一个麦克风可能听到多人，Arco 不会把整条麦克风通道标记为“你”。 |
 | 本地原生 Agent | 调用 Mac 上已经安装并登录的 Codex CLI 或 Claude Code。 | 会议助手可以使用你已经信任的账号和项目理解。 |
-| GPT Live 实时语音（Beta） | 在设置中主动开启语音 Beta，通过 OAuth 连接 ChatGPT，再从会议中启动语音会话。上方的独立参会卡片流程属于下一版开发预览。 | 可以直接说出问题并听取简短回答；涉及会议进度的问题会交给读取当前转写的 Agent。 |
+| GPT Live 实时语音（Beta） | 在设置中主动开启语音 Beta，通过 OAuth 连接 ChatGPT，再从会议中启动语音会话。点击「邀请 Arco 入会」打开独立参会窗。 | 可以直接说出问题并听取简短回答；涉及会议进度的问题会交给读取当前转写的 Agent。 |
 | 显式上下文 | 每次问题都包含会议转写；用户可以在输入框里明确附加一个工作区。 | 更广的上下文是可见且主动选择的，不会从无关目录里猜测。 |
 | 原生会话连续性 | 每场会议、每个 Provider 和上下文边界都绑定准确的 Codex / Claude session。 | 后续问题保持连续，但不会通过 `--last` 误选其他对话。 |
 | 自动会议产出 | 内容足够后生成标题，会议结束后生成总结；两类 Prompt 都可配置。 | 无需会前命名或手动记笔记，也能得到可复用的会议记录。 |
@@ -124,7 +124,7 @@ Arco 本地优先并完全开源。默认数据位置：
 - Deepgram、豆包语音和 ElevenLabs 凭证均由 Rust 后端验证，分别保存在 `~/.arco/credentials.json` 中（目录权限 `700`、文件权限 `600`），不会写入转写或日志。
 - Agent 问题通过所选的本地 CLI 发送；输入框会始终显示当前使用的是“仅转写”还是“转写 + 工作区”。
 - Codex 的转写与工作区模式会额外受到 macOS 只读沙箱保护。
-- GPT Live 是默认关闭、需要主动开启的 Beta 功能。只有主动开启语音会话后，Arco 才会把当前会议音频发送给 OpenAI；结束语音会话或停止会议会断开连接。在开发预览中，收起参会窗会保持语音连接，点击**离会**才会结束。
+- GPT Live 是默认关闭、需要主动开启的 Beta 功能。只有主动开启语音会话后，Arco 才会把当前会议音频发送给 OpenAI；结束语音会话或停止会议会断开连接。收起参会窗会保持语音连接，点击**离会**才会结束。
 - GPT Live 的 ChatGPT OAuth 凭证单独保存在 `~/.arco/credentials.json` 中，不读取 Codex CLI 的登录信息。当前 Beta 依赖未公开的 ChatGPT 后端接口，部分账号可能不可用，上游改动也可能使它失效。
 
 ## 开发
@@ -212,3 +212,5 @@ ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
 ## License
 
 Arco 使用 [MIT License](./LICENSE)。
+
+第三方组件保留各自许可。Aura 着色器移植自 LiveKit Agents UI / Unicorn Studio，保留上游 Polyform Non-Resale 声明，详见[第三方声明](macos/ArcoNativeUI/Sources/ArcoNativeUI/Resources/Aura/NOTICE.md)。

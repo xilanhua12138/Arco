@@ -69,6 +69,8 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     private(set) var hudWindow: NSPanel?
     private(set) var agentWindow: NSPanel?
     private(set) var meetingPromptWindow: NSPanel?
+    var voiceParticipantWindow: NSPanel?
+    var onVoiceParticipantClosed: () -> Void = {}
 
     var canShowAgent: @MainActor () -> Bool = { false }
     var onHUDPresented: @MainActor () -> Void = {}
@@ -312,9 +314,19 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     // MARK: - NSWindowDelegate
 
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === voiceParticipantWindow else { return }
+        window.saveFrame(usingName: "ArcoVoiceParticipant")
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === hudWindow {
             onHUDHidden()
+            sender.orderOut(nil)
+            return false
+        }
+        if sender === voiceParticipantWindow {
+            onVoiceParticipantClosed()
             sender.orderOut(nil)
             return false
         }

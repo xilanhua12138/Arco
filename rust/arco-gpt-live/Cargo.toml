@@ -1,6 +1,6 @@
 [package]
 name = "arco-gpt-live"
-version = "0.3.24"
+version = "0.3.25"
 description = "Beta GPT-Live WebRTC worker and transport probe for Arco"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -17,11 +17,12 @@ async-http-proxy = { version = "1.2.5", features = ["basic-auth", "runtime-tokio
 async-trait = "0.1.89"
 bytes = "1.12"
 futures-util = "0.3"
+libc = "0.2"
 opus-pure = "=0.2.1"
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 rtc = "=0.20.4"
 serde_json = "1.0"
-tokio = { version = "1.52", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52", features = ["io-std", "io-util", "macros", "net", "process", "signal", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2.5"
 uuid = { version = "1.23", features = ["v4"] }

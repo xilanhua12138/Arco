@@ -8,6 +8,7 @@ public struct OnboardingView: View {
 
     private let shortcutTestCount: Int
     private let translate: ArcoTranslate
+    private let meetingAudioSetup: MeetingAudioSetupModel?
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     public init(
@@ -15,12 +16,14 @@ public struct OnboardingView: View {
         shortcutViewModel: ShortcutRecorderViewModel,
         locale: Binding<String>,
         shortcutTestCount: Int,
+        meetingAudioSetup: MeetingAudioSetupModel? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english
     ) {
         self.viewModel = viewModel
         self.shortcutViewModel = shortcutViewModel
         _locale = locale
         self.shortcutTestCount = shortcutTestCount
+        self.meetingAudioSetup = meetingAudioSetup
         self.translate = translate
     }
 
@@ -209,7 +212,9 @@ public struct OnboardingView: View {
                 .frame(height: 72)
 
                 VStack(spacing: 0) {
-                    stepContent
+                    ScrollView {
+                        stepContent
+                    }
                         .frame(maxWidth: .infinity, minHeight: 392, alignment: .topLeading)
 
                     if viewModel.step < 5 {
@@ -670,6 +675,11 @@ public struct OnboardingView: View {
                     .font(ArcoTypography.small)
                     .foregroundStyle(ArcoNativeColors.success)
                     .padding(.top, 14)
+            }
+            if let meetingAudioSetup {
+                MeetingAudioSetupView(model: meetingAudioSetup, onboarding: true,
+                    locked: viewModel.workingAudioSource != nil, translate: translate)
+                    .padding(.top, 20)
             }
             if viewModel.audioChecks[.system]?.restartRequired == true {
                 VStack(alignment: .leading, spacing: 0) {
