@@ -172,10 +172,12 @@ final class GPTLiveProcessLauncher {
                 message ?? "ChatGPT sign-in did not complete. Try again."
             )
         }
-        guard stdout.count <= 4_096,
-              let line = String(data: stdout, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              let status = GPTLiveCredentialStatus.parse(line: line)
+        // A login shell can print startup notices before the worker's JSON.
+        guard stdout.count <= 65_536,
+              let status = String(data: stdout, encoding: .utf8)?
+                .split(whereSeparator: \.isNewline)
+                .compactMap({ GPTLiveCredentialStatus.parse(line: String($0)) })
+                .last
         else {
             throw GPTLiveProcessError.workerFailed("Arco could not read the ChatGPT sign-in status.")
         }

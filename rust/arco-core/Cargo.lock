@@ -32,6 +32,7 @@ version = "0.3.23"
 dependencies = [
  "base64",
  "chrono",
+ "core-foundation",
  "flate2",
  "futures-util",
  "libc",
@@ -118,6 +119,16 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ use arco_core::gpt_live_oauth::{
 use arco_gpt_live::{
     GptLiveWebRtcPeer, LIVE_BETA_ACK, OPUS_FRAME_SAMPLES_PER_CHANNEL, SpeechEnergyGate,
     TranscriptMarkerGate, build_sideband_request, callback_url_from_http_request,
-    finish_live_handshake, require_beta_ack, resolve_https_proxy,
+    finish_live_handshake, require_beta_ack, resolve_sideband_proxy,
 };
 use async_http_proxy::{http_connect_tokio, http_connect_tokio_with_basic_auth};
 use futures_util::{SinkExt, StreamExt};
@@ -28,8 +28,18 @@ const CALLBACK_WAIT: Duration = Duration::from_secs(180);
 const NETWORK_WAIT: Duration = Duration::from_secs(15);
 const LIVE_PROBE_MARKER: &str = "Arco GPT Live transport test OK";
 
+fn main() {
+    if matches!(env::args().nth(1).as_deref(), Some("live" | "login"))
+        && let Err(error) = arco_core::network_environment::inherit_login_shell()
+    {
+        eprintln!("GPT Live Beta probe failed: {error}");
+        std::process::exit(1);
+    }
+    run_async();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_async() {
     if let Err(error) = run().await {
         eprintln!("GPT Live Beta probe failed: {error}");
         std::process::exit(1);
@@ -376,7 +386,7 @@ async fn wait_for_sideband_start(
     config.max_message_size = Some(16 * 1024 * 1024);
     config.max_frame_size = Some(16 * 1024 * 1024);
     let connect = async {
-        if let Some(proxy) = resolve_https_proxy("api.openai.com")? {
+        if let Some(proxy) = resolve_sideband_proxy(sideband_url)? {
             let mut stream = TcpStream::connect((proxy.host(), proxy.port()))
                 .await
                 .map_err(|error| {

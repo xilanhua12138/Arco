@@ -338,14 +338,16 @@ impl Default for UreqOAuthTokenTransport {
     }
 }
 
-fn build_openai_ureq_agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .redirects(0)
-        .try_proxy_from_env(true)
-        .timeout_connect(timeout)
-        .timeout_read(timeout)
-        .timeout_write(timeout)
-        .build()
+fn build_openai_ureq_agent(timeout: Duration) -> Result<ureq::Agent, String> {
+    Ok(crate::network_proxy::configure_http_agent(
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .timeout_write(timeout),
+        OPENAI_OAUTH_TOKEN_URL,
+    )?
+    .build())
 }
 
 impl OAuthTokenTransport for UreqOAuthTokenTransport {
@@ -353,7 +355,7 @@ impl OAuthTokenTransport for UreqOAuthTokenTransport {
         if request.url != OPENAI_OAUTH_TOKEN_URL {
             return Err("OpenAI OAuth transport refused an unexpected URL".into());
         }
-        let agent = build_openai_ureq_agent(self.timeout);
+        let agent = build_openai_ureq_agent(self.timeout)?;
         let mut outgoing = agent.post(&request.url);
         for (name, value) in &request.headers {
             outgoing = outgoing.set(name, value);
@@ -819,7 +821,7 @@ mod tests {
         }
         std::env::set_var("HTTPS_PROXY", "http://proxy.example.test:8765");
 
-        let agent = build_openai_ureq_agent(Duration::from_secs(1));
+        let agent = build_openai_ureq_agent(Duration::from_secs(1)).unwrap();
         let debug = format!("{agent:?}");
 
         for (key, value) in previous {

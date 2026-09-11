@@ -19,7 +19,7 @@ use arco_core::gpt_live_oauth::{
 use arco_gpt_live::{
     GptLiveMeetingContext, GptLiveRuntimeCommand, GptLiveSessionOptions, GptLiveWebRtcPeer,
     RecorderPcmFramer, RemotePlaybackPrebuffer, build_sideband_request,
-    callback_url_from_http_request, parse_runtime_command, resolve_https_proxy,
+    callback_url_from_http_request, parse_runtime_command, resolve_sideband_proxy,
 };
 use async_http_proxy::{http_connect_tokio, http_connect_tokio_with_basic_auth};
 use futures_util::{SinkExt, StreamExt};
@@ -43,8 +43,18 @@ enum StartupDecision {
     Stop,
 }
 
+fn main() {
+    if matches!(env::args().nth(1).as_deref(), Some("session" | "login"))
+        && let Err(error) = arco_core::network_environment::inherit_login_shell()
+    {
+        emit_event("error", Some(&error));
+        std::process::exit(1);
+    }
+    run_async();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_async() {
     if let Err(error) = run().await {
         emit_event("error", Some(&error));
         std::process::exit(1);
@@ -434,7 +444,7 @@ async fn connect_sideband(
     config.max_message_size = Some(16 * 1024 * 1024);
     config.max_frame_size = Some(16 * 1024 * 1024);
     let connect = async {
-        if let Some(proxy) = resolve_https_proxy("api.openai.com")? {
+        if let Some(proxy) = resolve_sideband_proxy(sideband_url)? {
             let mut stream = TcpStream::connect((proxy.host(), proxy.port()))
                 .await
                 .map_err(|error| format!("GPT-Live could not connect to the proxy: {error}"))?;
