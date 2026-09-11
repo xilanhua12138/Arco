@@ -85,10 +85,11 @@ dependencies = [
 
 [[package]]
 name = "arco-core"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "core-foundation",
  "flate2",
  "futures-util",
  "libc",
@@ -109,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "arco-gpt-live"
-version = "0.3.23"
+version = "0.3.24"
 dependencies = [
  "arco-core",
  "async-http-proxy",
@@ -500,6 +501,16 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
 
 [[package]]
 name = "core-foundation-sys"

@@ -1,6 +1,6 @@
 [package]
 name = "arco-core"
-version = "0.3.23"
+version = "0.3.24"
 description = "Framework-independent backend for the native Arco macOS app"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -54,3 +54,6 @@ wait-timeout = "0.2"
 
 [dev-dependencies]
 serial_test = "3.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"

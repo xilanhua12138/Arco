@@ -18,6 +18,8 @@ pub mod meeting_output;
 pub mod meeting_state;
 pub mod meetings;
 pub mod models;
+pub mod network_environment;
+pub mod network_proxy;
 pub mod notes;
 pub mod paths;
 pub mod process;

@@ -500,8 +500,7 @@ public struct ArcoMainShellView: View {
             // reply and scroll state alive across hiding and width breakpoints.
             layout {
                 transcriptDock(meeting)
-                    .frame(maxWidth: ArcoLayoutMetrics.transcriptReadingMaximumWidth)
-                    .frame(width: transcriptWidth, height: transcriptHeight)
+                    .frame(width: transcriptWidth, height: transcriptHeight, alignment: .topLeading)
                 agentDock(meeting)
                     .frame(width: agentWidth, height: agentHeight)
                     .frame(width: stacked ? available : (expanded ? agentWidth : 0),

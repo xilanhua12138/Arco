@@ -528,20 +528,18 @@ impl fmt::Debug for HttpsProxyConfig {
 }
 
 pub fn resolve_https_proxy(target_host: &str) -> Result<Option<HttpsProxyConfig>, String> {
-    let variables = [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var(key).ok().map(|value| (key.into(), value)))
-    .collect::<BTreeMap<_, _>>();
-    resolve_https_proxy_from(&variables, target_host)
+    resolve_sideband_proxy(&format!("wss://{target_host}/"))
+}
+
+pub fn resolve_sideband_proxy(target_url: &str) -> Result<Option<HttpsProxyConfig>, String> {
+    let url = Url::parse(target_url).map_err(|_| "Invalid GPT Live sideband URL")?;
+    let host = url.host_str().ok_or("GPT Live sideband URL has no host")?;
+    match arco_core::network_proxy::proxy_for_url(target_url)? {
+        Some(proxy) => {
+            resolve_https_proxy_from(&BTreeMap::from([("HTTPS_PROXY".into(), proxy)]), host)
+        }
+        None => Ok(None),
+    }
 }
 
 pub fn resolve_https_proxy_from(
