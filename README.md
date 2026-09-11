@@ -37,20 +37,22 @@ The current preview build uses Arco's stable local development signature but is 
 
 ## Invite Arco to your meeting
 
-> **Available in v0.3.25.** Real screenshots of Arco’s independent meeting participant window and meeting-microphone routing.
+> **Available in v0.3.25.** Actual app screenshots using a synthetic-voice demonstration meeting, with live transcription, generated answers, and Arco’s connected participant window.
 
 Invite Arco to listen alongside you in an online, in-person, or hybrid meeting. System audio carries remote participants; your physical microphone captures the room. Arco stays quiet until directly addressed by name in each turn, then responds by voice. Questions about the meeting use the transcript-aware Codex or Claude Agent for context.
 
 <p align="center">
-  <img src="docs/images/arco-invite-meeting.jpg" alt="Arco’s native meeting workspace with the Invite Arco button beside Ask Arco and the live recording indicator" width="1000">
+  <img src="docs/images/arco-invite-meeting.jpg" alt="A demonstration meeting with a populated live transcript, an actual Arco summary, and the Invite Arco button" width="1000">
   <br>
-  <sub>Start transcription on its own, then invite Arco when you want voice participation.</sub>
+  <sub>A demonstration discussion is transcribed live; Arco summarizes the release plan and identifies the unassigned permission test.</sub>
 </p>
 
 The invitation opens a separate, always-on-top participant card. Its Aura visualization uses the official [LiveKit Agents UI shader](https://github.com/livekit/components-js/blob/main/packages/shadcn/components/agents-ui/agent-audio-visualizer-aura.tsx), adapted to native Metal, and reflects listening, thinking, and speech playback.
 
 <p align="center">
-  <img src="docs/images/arco-voice-participant.png" alt="Arco’s standalone Aura participant card while listening, with a hide control, meeting microphone status, and Leave meeting button" width="300">
+  <img src="docs/images/arco-voice-participant.png" alt="Arco actively listening in its floating Aura window alongside the meeting transcript and question-and-answer panel" width="1000">
+  <br>
+  <sub>Actual app windows during a demonstration session. Transcription and text Q&amp;A remain available while Arco participates by voice.</sub>
 </p>
 
 | Action | What happens |

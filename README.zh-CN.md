@@ -36,20 +36,22 @@
 
 ## 邀请 Arco 入会
 
-> **v0.3.25 已提供。** 以下为 Arco 独立参会悬浮窗和会议麦克风切换的真实截图。
+> **v0.3.25 已提供。** 以下为应用真实截图：使用合成语音进行演示会议，展示实时转写、实际生成的回答和已连接的参会悬浮窗。
 
 邀请 Arco 和你一起听会，支持线上、线下和混合会议。系统音频接收远端发言，物理麦克风拾取现场声音。Arco 默认安静，每轮被点名后再用语音回应；涉及会议内容的问题，会交给能读取当前转写的 Codex 或 Claude Agent。
 
 <p align="center">
-  <img src="docs/images/arco-invite-meeting.jpg" alt="Arco 原生会议界面：询问 Arco 旁的邀请入会按钮和实时录音状态" width="1000">
+  <img src="docs/images/arco-invite-meeting.jpg" alt="演示会议的实时转写、Arco 生成的发布安排总结，以及邀请入会入口" width="1000">
   <br>
-  <sub>先独立记录会议，需要语音参与时再邀请 Arco。</sub>
+  <sub>演示讨论被实时转写，Arco 根据发言整理发布安排，并指出尚未安排负责人的权限测试。</sub>
 </p>
 
 点击邀请后，Arco 出现在独立置顶的参会卡片中。Aura 动效采用 [LiveKit Agents UI 官方着色器](https://github.com/livekit/components-js/blob/main/packages/shadcn/components/agents-ui/agent-audio-visualizer-aura.tsx)，移植到原生 Metal，呈现聆听、思考和语音播放状态。
 
 <p align="center">
-  <img src="docs/images/arco-voice-participant.png" alt="Arco 独立 Aura 参会卡片：正在聆听、收起按钮、会议麦克风已接通和请 Arco 离会按钮" width="300">
+  <img src="docs/images/arco-voice-participant.png" alt="Arco 已连接并正在聆听，独立 Aura 悬浮窗与会议转写、问答面板同屏显示" width="1000">
+  <br>
+  <sub>演示会议中的实际应用窗口：Arco 语音参会时，仍可同时查看转写和问答。</sub>
 </p>
 
 | 操作 | 结果 |
