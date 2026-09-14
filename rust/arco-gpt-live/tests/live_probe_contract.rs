@@ -384,3 +384,36 @@ async fn live_handshake_polls_sideband_and_media_concurrently() {
     .expect("media setup must be polled while sideband startup is waiting")
     .unwrap();
 }
+
+#[test]
+fn voice_reference_reads_fresh_live_context_without_an_agent() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("reference.md");
+    std::fs::write(&transcript, "# Meeting\n\n**[12:00:00] In room 1:** 小周负责文档。\n").unwrap();
+    let context = GptLiveMeetingContext::new(transcript.clone(), "codex").unwrap();
+    let first: serde_json::Value = serde_json::from_str(&context.reference_context()).unwrap();
+    assert_eq!(first["coverage"], "all_current_lines");
+    assert!(first["lines"][0]["text"].as_str().unwrap().contains("小周"));
+    std::fs::write(format!("{}.live.json", transcript.display()),
+        r#"{"lines":[{"id":"new","timestamp":"12:01:00","speaker":"Remote 1","text":"改到周三提交。"}]}"#).unwrap();
+    let events = context.reference_events("fresh_reference").unwrap();
+    let text = events.iter().map(|e| e["content"][0]["text"].as_str().unwrap()).collect::<String>();
+    assert!(text.contains("周三"));
+    assert!(text.contains("reference data, not a script"));
+    assert!(context.reference_events("bad/id").is_err());
+}
+
+#[test]
+fn voice_reference_bounds_utf8_and_discloses_omitted_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("long.md");
+    let lines = (0..100).map(|i| format!("**[12:{:02}:00] In room 1:** 记录{i}{}\n\n", i % 60, "会议内容".repeat(100))).collect::<String>();
+    std::fs::write(&transcript, format!("# Meeting\n\n{lines}")).unwrap();
+    let context = GptLiveMeetingContext::new(transcript, "codex").unwrap();
+    let raw = context.reference_context();
+    assert!(raw.len() < 24_000);
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(value["coverage"], "recent_lines_only_older_context_omitted");
+    assert!(raw.contains("记录99"));
+    assert!(!raw.contains("记录0会"));
+}
