@@ -380,6 +380,7 @@ impl PipelineReadySignals {
 
     fn clear(&self) {
         let _ = fs::remove_file(&self.recorder);
+        let _ = fs::remove_file(self.recorder.with_extension("error.signal"));
         for transcriber in &self.transcribers {
             let _ = fs::remove_file(transcriber);
         }
@@ -949,7 +950,11 @@ impl CaptureManager {
             .env("ARCO_MEETING_ID", &active_meeting_id)
             .env("ARCO_TRANSCRIPT_PATH", &transcript)
             .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix)
-            .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
+            .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder)
+            .env(
+                "ARCO_RECORDER_ERROR_FILE",
+                ready_signals.recorder.with_extension("error.signal"),
+            );
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;
         let mut recorder = match recorder_command.spawn() {
@@ -1341,6 +1346,19 @@ fn interrupt_active_capture(inner: &mut CaptureInner) {
     inner.state = CaptureState::idle(Some("Capture interrupted because Arco closed".into()));
 }
 
+fn recorder_startup_error(ready_file: &Path) -> Option<String> {
+    let message = fs::read_to_string(ready_file.with_extension("error.signal")).ok()?;
+    let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+    if message.starts_with("no physical microphone is connected") {
+        Some("No physical microphone is available. Connect a microphone or choose System audio only.".into())
+    } else {
+        Some(format!("Native recorder could not start: {message}"))
+    }
+}
+
 fn wait_for_pipeline_ready(
     children: &mut CaptureChildren,
     recorder_ready_file: &Path,
@@ -1359,9 +1377,15 @@ fn wait_for_pipeline_ready(
         if startup_cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
             return Err(STARTUP_CANCELLED.into());
         }
+        if let Some(error) = recorder_startup_error(recorder_ready_file) {
+            return Err(error);
+        }
         for transcriber in &mut children.transcribers {
             match transcriber.child.try_wait() {
                 Ok(Some(status)) => {
+                    if let Some(error) = recorder_startup_error(recorder_ready_file) {
+                        return Err(error);
+                    }
                     return Err(format!(
                         "transcriber exited before readiness: {} ({status})",
                         transcriber.label,
@@ -1849,6 +1873,7 @@ fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
         "ARCO_AUDIO_BUFFER_SECONDS",
         "ARCO_MIC_DEVICE_ID",
         "ARCO_MIC_DEVICE_NAME",
+        "ARCO_MICROPHONE_SELECTION_FILE",
         "ARCO_MIC_ECHO_CANCELLATION",
         "HTTPS_PROXY",
         "HTTP_PROXY",

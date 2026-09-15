@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct ArcoSettingsSheetView: View {
+    @StateObject private var microphones = MicrophoneSettingsModel()
     @Environment(\.openURL) private var openURL
     @ObservedObject private var viewModel: SettingsSheetViewModel
     private let translate: ArcoTranslate
@@ -57,6 +58,12 @@ public struct ArcoSettingsSheetView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .shadow(color: .black.opacity(0.16), radius: 20, y: 10)
         }
+        }
+        .task {
+            while !Task.isCancelled {
+                microphones.refresh()
+                do { try await Task.sleep(for: .seconds(2)) } catch { break }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("common.settings", [:]))
@@ -370,6 +377,23 @@ public struct ArcoSettingsSheetView: View {
                     }, onSelect: { if let mode = AudioMode(rawValue: $0) { viewModel.setAudioMode(mode) } })
                     .disabled(viewModel.snapshot.audioModeLocked)
             }
+            SettingsControlRow {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(translate("settings.microphone", [:])).font(ArcoTypography.bodyStrong)
+                    Text(microphoneDescription)
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                    if microphones.saveFailed {
+                        Text(translate("settings.microphone.saveFailed", [:]))
+                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.record)
+                    }
+                }
+            } control: {
+                SettingsSelect(title: translate("settings.microphone", [:]),
+                    noResults: translate("common.noOptions", [:]),
+                    selection: microphones.selected?.id ?? "", options: microphoneOptions,
+                    onSelect: { if !viewModel.snapshot.audioModeLocked { microphones.select($0) } })
+                    .disabled(viewModel.snapshot.audioModeLocked || viewModel.snapshot.audioMode == .system)
+            }
             settingsDetailRow(.recognition, help: "settings.recognitionHelp", value: recognitionSummary, status: recognitionStatus)
             settingsDetailRow(.output, help: "settings.outputHelp", value: "")
             if let meetingAudioSetup {
@@ -377,6 +401,24 @@ public struct ArcoSettingsSheetView: View {
                     translate: translate).padding(.top, 20)
             }
         }
+    }
+
+    private var microphoneOptions: [SettingsSelectOption] {
+        var options = [SettingsSelectOption(id: "", label: translate("settings.microphone.automatic", [:]))]
+        options += microphones.devices.map { SettingsSelectOption(id: $0.id, label: $0.name) }
+        if microphones.selectionUnavailable, let selected = microphones.selected {
+            options.append(SettingsSelectOption(id: selected.id,
+                label: translate("settings.microphone.disconnected", ["name": selected.name])))
+        }
+        return options
+    }
+
+    private var microphoneDescription: String {
+        if viewModel.snapshot.audioMode == .system { return translate("settings.microphone.unused", [:]) }
+        if viewModel.snapshot.audioModeLocked { return translate("settings.lockedUntilEnd", [:]) }
+        guard let device = microphones.effective else { return translate("capture.microphoneUnavailable", [:]) }
+        return translate(microphones.selectionUnavailable ? "settings.microphone.fallback" : "settings.microphone.next",
+            ["name": device.name])
     }
 
     private var audioScenarioDescriptionKey: String {

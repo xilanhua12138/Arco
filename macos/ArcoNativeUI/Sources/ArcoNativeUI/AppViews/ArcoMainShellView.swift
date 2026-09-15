@@ -591,7 +591,9 @@ public struct ArcoMainShellView: View {
     }
 
     private func errorToast(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        let displayMessage = message.hasPrefix("No physical microphone is available.")
+            ? translate("capture.microphoneUnavailable", [:]) : message
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 17))
                 .foregroundStyle(ArcoNativeColors.warning)
@@ -599,7 +601,7 @@ public struct ArcoMainShellView: View {
                 Text(translate("app.needsAttention", [:]))
                     .font(ArcoTypography.sans(12, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
-                Text(message)
+                Text(displayMessage)
                     .font(ArcoTypography.metadata)
                     .foregroundStyle(ArcoNativeColors.ink)
             }
