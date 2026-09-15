@@ -273,19 +273,37 @@ public enum SpeakerAttribution {
     }
 }
 
+public struct TranscriptWord: Codable, Sendable, Equatable {
+    public let text: String
+    public let startMs: Int64
+    public let endMs: Int64
+    public init(text: String, startMs: Int64, endMs: Int64) {
+        self.text = text; self.startMs = startMs; self.endMs = endMs
+    }
+}
+
+private struct SavedTranscriptTiming: Encodable {
+    let startMs: Int64
+    let endMs: Int64
+    let words: [TranscriptWord]
+    let originMs: Int64
+}
+
 public struct TranscriptSegment: Sendable, Equatable {
     public let channel: Int
     public let speaker: Int
     public let text: String
     public let start: Double
     public let end: Double
+    public let words: [TranscriptWord]
 
-    public init(channel: Int, speaker: Int, text: String, start: Double, end: Double) {
+    public init(channel: Int, speaker: Int, text: String, start: Double, end: Double, words: [TranscriptWord] = []) {
         self.channel = channel
         self.speaker = speaker
         self.text = text
         self.start = start
         self.end = end
+        self.words = words
     }
 }
 
@@ -304,9 +322,13 @@ public final class TranscriptWriter: @unchecked Sendable {
         guard !text.isEmpty else { return }
         let prefix = segment.channel == 0 ? "Remote" : "In room"
         let timestamp = Self.clock.string(from: sessionStartedAt.addingTimeInterval(segment.start))
+        let timing = SavedTranscriptTiming(startMs: Int64((segment.start * 1000).rounded()), endMs: Int64((segment.end * 1000).rounded()), words: segment.words, originMs: Int64((sessionStartedAt.timeIntervalSince1970 * 1000).rounded()))
+        let json = String(decoding: try JSONEncoder().encode(timing), as: UTF8.self)
+            .replacingOccurrences(of: "<", with: "\\u003c").replacingOccurrences(of: ">", with: "\\u003e")
         let block = "**[\(timestamp)] \(prefix) \(segment.speaker + 1):** \(text)\n\n"
             + "<!-- arco channel=\(segment.channel) speaker=\(segment.speaker) stream=local "
             + String(format: "start=%.3f end=%.3f", segment.start, segment.end) + " -->\n\n"
+            + "<!-- arco-timing \(json) -->\n\n"
         lock.lock()
         defer { lock.unlock() }
         let handle = try FileHandle(forWritingTo: path)

@@ -13,6 +13,7 @@ test:
 	@set -e; for product in \
 		ArcoNativeUIContractTests \
 		ArcoAudioArchiveContractTests \
+		ArcoRecordingPlaybackContractTests \
 		ArcoProviderPresentationContractTests \
 		ArcoMarkdownContractTests \
 		ArcoTopBarContractTests \

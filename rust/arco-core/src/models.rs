@@ -47,6 +47,8 @@ pub struct TranscriptLine {
     pub speaker: String,
     pub text: String,
     pub sequence: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<TranscriptTiming>,
 }
 
 /// Display-only transcript text that has not reached the provider's second-pass
@@ -562,4 +564,24 @@ pub struct NoteDocument {
     pub meeting_id: Option<String>,
     pub meeting_title: Option<String>,
     pub agent_turn_id: Option<String>,
+}
+
+/// Audio-relative milliseconds. Origin is only used in stored transcript metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimedWord {
+    pub text: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptTiming {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    #[serde(default)]
+    pub words: Vec<TimedWord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_ms: Option<i64>,
 }

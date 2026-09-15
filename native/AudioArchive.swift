@@ -44,6 +44,8 @@ final class MeetingAudioArchive {
                                    attributes: [.posixPermissions: 0o700])
             let metadata: [String: Any] = ["schemaVersion": 1, "owner": "app.arco.audio-archive",
                 "meetingID": meetingID, "transcript": transcript, "startedAt": ISO8601DateFormatter().string(from: Date()),
+                "sessionStartedAtUnix": Double(ProcessInfo.processInfo.environment["ARCO_SESSION_STARTED_AT_UNIX"] ?? "") ?? Date().timeIntervalSince1970,
+                "segmentDurationMs": segmentFrames * 1000 / 16_000,
                 "format": "AAC 64 kbps, 16000 Hz, stereo", "systemChannel": 0, "microphoneChannel": 1]
             try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys])
                 .write(to: folder.appendingPathComponent("recording.json"), options: .atomic)

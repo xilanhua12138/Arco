@@ -34,6 +34,11 @@ public enum MeetingTitleRefreshPolicy {
 @MainActor
 @Observable
 public final class ArcoStore {
+    public func recording(for id: String) async throws -> MeetingRecording {
+        try await backend.call("meeting_recording", arguments: ["id": .string(id)])
+    }
+
+
     public private(set) var meetings: [MeetingSummary] = []
     public private(set) var activeMeeting: MeetingSummary?
     public private(set) var selectedMeetingId: String?

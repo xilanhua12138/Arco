@@ -948,6 +948,7 @@ impl CaptureManager {
             .env("ARCO_SESSION_ID", &suffix)
             .env("ARCO_MEETING_ID", &active_meeting_id)
             .env("ARCO_TRANSCRIPT_PATH", &transcript)
+            .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix)
             .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;

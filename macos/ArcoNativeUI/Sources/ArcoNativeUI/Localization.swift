@@ -5,6 +5,19 @@ import Observation
 /// public so contract tests can prove both locales expose the same complete key set.
 public enum ArcoTranslations {
     public static let englishMessages: [String: String] = [
+        "playback.recording": "RECORDING",
+        "playback.followOn": "Following",
+        "playback.loading": "Loading recording…",
+        "playback.play": "Play recording",
+        "playback.pause": "Pause recording",
+        "playback.position": "Recording position",
+        "playback.speed": "Playback speed",
+        "playback.following": "Following transcript · click to pause follow",
+        "playback.follow": "Follow transcript",
+        "playback.partial": "Some audio is unavailable. Playback skips missing sections.",
+        "playback.unavailable": "No saved recording is available for this meeting.",
+        "playback.playFromHere": "Play from here",
+
         "settings.openFolder": "Open",
         "settings.storageOptions": "Storage options",
         "settings.accountOptions": "Account options",
@@ -755,6 +768,19 @@ public enum ArcoTranslations {
     ]
 
     public static let simplifiedChineseMessages: [String: String] = [
+        "playback.recording": "录音",
+        "playback.followOn": "跟随中",
+        "playback.loading": "正在加载录音…",
+        "playback.play": "播放录音",
+        "playback.pause": "暂停录音",
+        "playback.position": "录音进度",
+        "playback.speed": "播放速度",
+        "playback.following": "正在跟随转录稿 · 点击暂停跟随",
+        "playback.follow": "跟随转录稿",
+        "playback.partial": "部分录音缺失，播放时会跳过这些区间。",
+        "playback.unavailable": "这场会议没有可用的已保存录音。",
+        "playback.playFromHere": "从这里播放",
+
         "settings.openFolder": "打开",
         "settings.storageOptions": "存储选项",
         "settings.accountOptions": "账号选项",

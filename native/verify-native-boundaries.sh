@@ -75,12 +75,16 @@ for helper in $HELPERS; do
   [ "$archs" = "$MAIN_ARCHS" ] || fail "Architecture mismatch: Arco=$MAIN_ARCHS, $helper=$archs"
 done
 
-# The UI process owns presentation and the Rust control plane only. Capture and
-# inference frameworks are confined to killable helper processes.
+# The UI owns presentation, saved-recording playback and the Rust control plane.
+# Live capture and inference remain in killable helper processes.
 reject_links \
   "$MAIN" \
-  'WebKit|JavaScriptCore|CoreML|AVFoundation|AVFAudio|ScreenCaptureKit|AudioToolbox|CoreAudio' \
+  'WebKit|JavaScriptCore|CoreML|ScreenCaptureKit' \
   "The SwiftUI process links a browser, capture, or local-model framework"
+
+if grep -R -E 'AVCaptureSession|AVAudioEngine|SCStream\(' "$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI" "$ROOT/macos/ArcoNativeUI/Sources/ArcoApp" >/dev/null; then
+  fail "Live audio capture must remain outside the UI process"
+fi
 
 for helper in arco-deepgram-transcriber arco-elevenlabs-transcriber arco-doubao-transcriber; do
   reject_links \

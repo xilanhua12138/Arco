@@ -7,12 +7,34 @@ public struct TimedText: Sendable, Equatable {
     public let text: String
     public let start: Double
     public let end: Double
+    public let words: [TranscriptWord]
 
-    public init(text: String, start: Double, end: Double) {
+    public init(text: String, start: Double, end: Double, words: [TranscriptWord] = []) {
         self.text = text
         self.start = start
         self.end = end
+        self.words = words
     }
+}
+
+/// whisper.cpp's max_len word splitting strips boundary spaces. Restore
+/// readable prose without adding spaces between Chinese characters.
+public func joinedWhisperWords(_ words: [TranscriptWord]) -> String {
+    func cjk(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            (0x3400...0x9fff).contains(scalar.value) || (0x20000...0x3134f).contains(scalar.value)
+                || (0x3040...0x30ff).contains(scalar.value) || (0xac00...0xd7af).contains(scalar.value)
+        }
+    }
+    var text = ""
+    for word in words {
+        let token = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = token.first else { continue }
+        if let last = text.last, !cjk(last), !cjk(first),
+           !",.;:!?%)]}，。！？、；：）】'’".contains(first), !"([{（【'’".contains(last) { text += " " }
+        text += token
+    }
+    return text
 }
 
 public protocol LocalTranscriptionProvider: Sendable {
@@ -36,7 +58,12 @@ public actor NemotronTranscriptionProvider: LocalTranscriptionProvider {
         guard !text.isEmpty else { return [] }
         let start = result.timings.first?.startTime ?? 0
         let end = result.timings.last?.endTime ?? Double(samples.count) / 16_000
-        return [TimedText(text: text, start: start, end: end)]
+        let words = result.timings.compactMap { timing -> TranscriptWord? in
+            let token = timing.token.replacingOccurrences(of: "▁", with: " ")
+            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return TranscriptWord(text: token, startMs: Int64((timing.startTime * 1000).rounded()), endMs: Int64((timing.endTime * 1000).rounded()))
+        }
+        return [TimedText(text: text, start: start, end: end, words: words)]
     }
 }
 
@@ -50,6 +77,9 @@ public actor WhisperTranscriptionProvider: LocalTranscriptionProvider {
             throw RuntimeError("Whisper model is not installed: \(modelURL.lastPathComponent)")
         }
         whisper = Whisper(fromFileURL: modelURL)
+        whisper.params.token_timestamps = true
+        whisper.params.max_len = 1
+        whisper.params.split_on_word = true
     }
 
     public func transcribe(samples: [Float], language: String) async throws -> [TimedText] {
@@ -59,14 +89,14 @@ public actor WhisperTranscriptionProvider: LocalTranscriptionProvider {
         case "en-US": whisper.params.language = .english
         default: whisper.params.language = .auto
         }
-        return try await whisper.transcribe(audioFrames: samples).compactMap { segment in
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : TimedText(
-                text: text,
-                start: Double(segment.startTime) / 1_000,
-                end: Double(segment.endTime) / 1_000
-            )
+        let segments = try await whisper.transcribe(audioFrames: samples)
+        let words = segments.compactMap { segment -> TranscriptWord? in
+            guard !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return TranscriptWord(text: segment.text, startMs: Int64(segment.startTime), endMs: Int64(segment.endTime))
         }
+        guard let first = words.first, let last = words.last else { return [] }
+        return [TimedText(text: joinedWhisperWords(words),
+                          start: Double(first.startMs) / 1000, end: Double(last.endMs) / 1000, words: words)]
     }
 }
 
@@ -421,7 +451,11 @@ public actor LocalStreamRunner {
                 speaker: speaker,
                 text: segment.text,
                 start: start,
-                end: end
+                end: end,
+                words: segment.words.map { word in
+                    TranscriptWord(text: word.text, startMs: word.startMs + Int64((offset * 1000).rounded()),
+                                   endMs: min(Int64((utteranceEnd * 1000).rounded()), word.endMs + Int64((offset * 1000).rounded())))
+                }
             ))
         }
     }

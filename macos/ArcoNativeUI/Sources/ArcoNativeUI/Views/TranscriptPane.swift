@@ -44,6 +44,10 @@ public struct TranscriptPaneView: View {
     public var showHeader: Bool
     public var layout: TranscriptPaneLayout
     public var translate: ArcoTranslate
+    public var onLoadRecording: ((String) async throws -> MeetingRecording)?
+
+    @State private var playback = RecordingPlayback()
+    @State private var recordingError: String?
 
     @State private var followingLive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -55,7 +59,8 @@ public struct TranscriptPaneView: View {
         compact: Bool = false,
         showHeader: Bool = true,
         layout: TranscriptPaneLayout = .main,
-        translate: @escaping ArcoTranslate = ArcoTranslations.english
+        translate: @escaping ArcoTranslate = ArcoTranslations.english,
+        onLoadRecording: ((String) async throws -> MeetingRecording)? = nil
     ) {
         self.meeting = meeting
         self.capture = capture
@@ -64,6 +69,7 @@ public struct TranscriptPaneView: View {
         self.showHeader = showHeader
         self.layout = layout
         self.translate = translate
+        self.onLoadRecording = onLoadRecording
     }
 
     public var body: some View {
@@ -79,6 +85,28 @@ public struct TranscriptPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)
         .clipped()
+        .task(id: "\(meeting?.summary.id ?? "")-\(capture.phase.rawValue)-\(loading)") {
+            playback.clear(); recordingError = nil
+            guard !compact, !loading, let meeting, !meeting.summary.isLive, let onLoadRecording else { return }
+            do {
+                let recording = try await onLoadRecording(meeting.summary.id)
+                guard !Task.isCancelled else { return }
+                await playback.load(recording)
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .milliseconds(80))
+                    playback.tick()
+                }
+            } catch is CancellationError {} catch {
+                if !Task.isCancelled { recordingError = error.localizedDescription }
+            }
+        }
+        .onDisappear { playback.clear() }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "arco-audio", let ms = Int64(url.lastPathComponent), playback.duration > 0 else { return .systemAction }
+            playback.seek(Double(ms) / 1000)
+            if !playback.isPlaying { playback.toggle() }
+            return .handled
+        })
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             loading ? translate("transcript.loading", [:]) : translate("transcript.aria", [:])
@@ -158,6 +186,10 @@ public struct TranscriptPaneView: View {
 
         return VStack(spacing: 0) {
             if showHeader { header }
+            if !compact && !meeting.summary.isLive && onLoadRecording != nil {
+                RecordingPlayerBar(playback: playback, translate: translate)
+                if let recordingError { Text(recordingError).font(ArcoTypography.small).foregroundStyle(.red).padding(12) }
+            }
 
             GeometryReader { viewport in
                 ScrollViewReader { proxy in
@@ -201,6 +233,13 @@ public struct TranscriptPaneView: View {
                                 }
                         }
                         .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                    }
+                    .background(RecordingScrollObserver { playback.following = false })
+                    .onChange(of: playback.activeLine(in: meeting.lines)) {
+                        if playback.following, let id = playback.activeLine(in: meeting.lines) { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: playback.seekRevision) {
+                        if let id = playback.activeLine(in: meeting.lines) { proxy.scrollTo(id, anchor: .center) }
                     }
                     .coordinateSpace(name: "transcript-scroll")
                     .onPreferenceChange(TranscriptBottomPreferenceKey.self) { bottom in
@@ -282,7 +321,15 @@ public struct TranscriptPaneView: View {
                 .padding(.vertical, 10)
             } else {
                 HStack(alignment: .top, spacing: 12) {
-                    Text(line.timestamp)
+                    Button {
+                        if let time = line.timing, playback.duration > 0 {
+                            playback.seek(Double(time.startMs) / 1000)
+                            if !playback.isPlaying { playback.toggle() }
+                        }
+                    } label: { Text(line.timestamp) }
+                        .buttonStyle(.plain)
+                        .disabled(line.timing == nil || playback.duration == 0)
+                        .help(translate("playback.playFromHere", [:]))
                         .font(ArcoTypography.mono(12))
                         .foregroundStyle(ArcoNativeColors.inkMuted)
                         .frame(width: 64, alignment: .leading)
@@ -290,7 +337,8 @@ public struct TranscriptPaneView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         speakerLabel(line.speaker, compact: false)
-                        Text(line.text)
+                        Text(playbackText(line))
+                            .tint(ArcoNativeColors.inkStrong)
                             .font(ArcoTypography.body)
                             .foregroundStyle(ArcoNativeColors.inkStrong)
                             .lineSpacing(5.2)
@@ -304,8 +352,30 @@ public struct TranscriptPaneView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(playback.duration > 0 && playback.activeLine(in: meeting?.lines ?? []) == line.id ? ArcoNativeColors.surfaceSelected : Color.clear)
+        .id(line.id)
         .modifier(TranscriptHoverModifier())
         .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
+    }
+
+    private func playbackText(_ line: TranscriptLine) -> AttributedString {
+        var result = AttributedString(line.text)
+        guard let timing = line.timing, playback.duration > 0 else { return result }
+        result.link = URL(string: "arco-audio://seek/\(timing.startMs)")
+        var cursor = line.text.startIndex
+        let ms = Int64((playback.position * 1000).rounded())
+        for word in timing.words {
+            let token = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty, let range = line.text.range(of: token, options: [.caseInsensitive], range: cursor..<line.text.endIndex),
+                  let lower = AttributedString.Index(range.lowerBound, within: result),
+                  let upper = AttributedString.Index(range.upperBound, within: result) else { continue }
+            result[lower..<upper].link = URL(string: "arco-audio://seek/\(word.startMs)")
+            if word.startMs <= ms && ms < word.endMs {
+                result[lower..<upper].backgroundColor = ArcoNativeColors.action.opacity(0.22)
+            }
+            cursor = range.upperBound
+        }
+        return result
     }
 
     private func speakerLabel(_ speaker: String, compact: Bool) -> some View {

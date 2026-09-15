@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "arco-core"
-version = "0.3.26"
+version = "0.3.27"
 dependencies = [
  "base64",
  "chrono",
