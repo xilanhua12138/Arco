@@ -24,6 +24,7 @@ struct RecordingTests {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("arco-playback-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
+        try await verifyCenteredPlayback(folder)
         let file = folder.appendingPathComponent("tone.wav")
         try tone(file, seconds: 3)
         let recording = MeetingRecording(meetingId: "fixture", chunks: [
@@ -171,6 +172,61 @@ struct RecordingTests {
         assert(actual == expected)
         print("Transcript benchmark: 10,000 lines / 2,000 positions; linear \(linear), indexed \(indexed). Links built once across 12 ticks; container invalidations within a line: 0.")
     }
+    static func verifyCenteredPlayback(_ folder: URL) async throws {
+        // Actual AVFoundation decoding + playback mix: alternating sources,
+        // overlap at full scale, opposite polarity, silence, and legacy mono.
+        for channelCount: AVAudioChannelCount in [2, 1] {
+            let url = folder.appendingPathComponent("sources-\(channelCount).wav")
+            let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: channelCount)!
+            let cases: [(Float, Float)] = [(0.8, 0), (0, 0.6), (1, 1), (-1, -1), (0.7, -0.7), (0, 0)]
+            let block = 1600
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(cases.count * block))!
+            buffer.frameLength = buffer.frameCapacity
+            for (segment, samples) in cases.enumerated() {
+                for i in segment * block..<(segment + 1) * block {
+                    buffer.floatChannelData![0][i] = samples.0
+                    if channelCount == 2 { buffer.floatChannelData![1][i] = samples.1 }
+                }
+            }
+            do {
+                let file = try AVAudioFile(forWriting: url, settings: format.settings)
+                try file.write(from: buffer)
+            }
+            let asset = AVURLAsset(url: url)
+            let audio = try await asset.loadTracks(withMediaType: .audio).first!
+            let composition = AVMutableComposition()
+            let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            try track.insertTimeRange(CMTimeRange(start: .zero, duration: try await asset.load(.duration)), of: audio, at: .zero)
+            let reader = try AVAssetReader(asset: composition)
+            let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000,
+                AVNumberOfChannelsKey: channelCount, AVLinearPCMBitDepthKey: 32,
+                AVLinearPCMIsFloatKey: true, AVLinearPCMIsNonInterleaved: false
+            ])
+            output.audioMix = try RecordingAudioMix.make(for: track)
+            reader.add(output)
+            assert(reader.startReading())
+            var frame = 0
+            while let sample = output.copyNextSampleBuffer() {
+                let data = CMSampleBufferGetDataBuffer(sample)!
+                var bytes = [Float](repeating: 0, count: CMBlockBufferGetDataLength(data) / MemoryLayout<Float>.size)
+                let byteCount = bytes.count * MemoryLayout<Float>.size
+                let status = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(data, atOffset: 0, dataLength: byteCount, destination: $0.baseAddress!) }
+                assert(status == noErr)
+                for i in stride(from: 0, to: bytes.count, by: Int(channelCount)) {
+                    let source = cases[min(cases.count - 1, frame / block)]
+                    let expected = channelCount == 2 ? (source.0 + source.1) * 0.5 : source.0
+                    assert(abs(bytes[i] - expected) < 0.0001, "Playback mix lost a source or changed mono gain: frame \(frame), actual \(bytes[i]), expected \(expected)")
+                    if channelCount == 2 { assert(bytes[i] == bytes[i + 1], "Both ears must receive identical audio") }
+                    assert(abs(bytes[i]) <= 1, "Simultaneous sources must not clip")
+                    frame += 1
+                }
+            }
+            assert(reader.status == .completed && frame == Int(buffer.frameLength))
+        }
+        print("Centered playback: AVFoundation stereo source alternation, overlap, silence, full-scale headroom and legacy mono passed")
+    }
+
     static func tone(_ url: URL, seconds: Int) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
