@@ -512,12 +512,9 @@ private struct MeetingSummaryDocument: View {
                     summaryBlock(block)
                 }
             }
-            .frame(
-                maxWidth: ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 68),
-                alignment: .leading
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, compact ? 11 : 18)
+        .padding(.horizontal, compact ? 11 : 12)
         .padding(.top, compact ? 12 : 18)
         .padding(.bottom, compact ? 14 : 20)
         .frame(maxWidth: .infinity, alignment: .leading)
