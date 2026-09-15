@@ -78,7 +78,8 @@ async fn run() -> Result<(), String> {
         GptLiveRuntimeCommand::MeetingAudioStatus => {
             println!(
                 "{}",
-                json!({"ready": arco_gpt_live::meeting_route::available()})
+                json!({"ready": arco_gpt_live::meeting_route::available(),
+                    "microphoneUID": arco_gpt_live::meeting_route::physical_microphone_uid().ok()})
             );
             Ok(())
         }
