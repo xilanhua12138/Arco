@@ -63,14 +63,28 @@ public struct HistoryPageView: View {
                 emptyState
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(meetingGroups) { group in
-                            meetingGroup(group)
+                List {
+                    ForEach(meetingGroups) { group in
+                        Section {
+                            ForEach(group.meetings) { meeting in
+                                meetingRow(meeting, showsDivider: meeting.id != group.meetings.last?.id)
+                                    .listRowInsets(EdgeInsets())
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(ArcoNativeColors.surfaceDocument)
+                            }
+                        } header: {
+                            Text(translate(group.translationKey, [:]))
+                                .font(ArcoTypography.metadata)
+                                .foregroundStyle(ArcoNativeColors.ink)
+                                .frame(height: 42, alignment: .leading)
+                                .textCase(nil)
                         }
                     }
-                    .frame(maxWidth: .infinity)
                 }
+                .listStyle(.plain)
+                .contentMargins(0, for: .scrollContent)
+                .environment(\.defaultMinListRowHeight, 64)
+                .scrollContentBackground(.hidden)
                 .scrollIndicators(.automatic)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .accessibilityLabel(translate("history.results", [:]))
@@ -149,45 +163,25 @@ public struct HistoryPageView: View {
         .multilineTextAlignment(.center)
     }
 
-    @ViewBuilder
-    private func meetingGroup(_ group: MeetingGroup) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(translate(group.translationKey, [:]))
-                .font(ArcoTypography.metadata)
-                .foregroundStyle(ArcoNativeColors.ink)
-                .frame(height: 42, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
-
-            LazyVStack(spacing: 0) {
-                ForEach(group.meetings) { meeting in
-                    HistoryMeetingRow(
-                        meeting: meeting,
-                        isSelected: meeting.id == selectedMeetingID,
-                        time: meetingTime(meeting.startedAt),
-                        date: meetingDate(meeting.startedAt),
-                        duration: formattedDuration(meeting.durationLabel),
-                        lineCount: translate(
-                            meeting.utteranceCount == 1 ? "history.lineCountOne" : "history.lineCount",
-                            ["count": String(meeting.utteranceCount)]
-                        ),
-                        title: meetingTitle(meeting),
-                        preview: meeting.preview.isEmpty
-                            ? translate("history.previewFallback", [:])
-                            : meeting.preview,
-                        showMetadata: !compactLayout,
-                        showsDivider: meeting.id != group.meetings.last?.id,
-                        onSelect: { onSelectMeeting(meeting.id) }
-                    )
-                }
-            }
-            .background(ArcoNativeColors.surfaceDocument)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(ArcoNativeColors.lineThin, lineWidth: 1)
-            }
-        }
-        .padding(.bottom, 16)
+    private func meetingRow(_ meeting: MeetingSummary, showsDivider: Bool) -> some View {
+        HistoryMeetingRow(
+            meeting: meeting,
+            isSelected: meeting.id == selectedMeetingID,
+            time: meetingTime(meeting.startedAt),
+            date: meetingDate(meeting.startedAt),
+            duration: formattedDuration(meeting.durationLabel),
+            lineCount: translate(
+                meeting.utteranceCount == 1 ? "history.lineCountOne" : "history.lineCount",
+                ["count": String(meeting.utteranceCount)]
+            ),
+            title: meetingTitle(meeting),
+            preview: meeting.preview.isEmpty
+                ? translate("history.previewFallback", [:])
+                : meeting.preview,
+            showMetadata: !compactLayout,
+            showsDivider: showsDivider,
+            onSelect: { onSelectMeeting(meeting.id) }
+        )
     }
 
     private var groups: [MeetingGroup] {
