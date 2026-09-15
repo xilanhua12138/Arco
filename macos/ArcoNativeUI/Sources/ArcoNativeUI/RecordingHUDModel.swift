@@ -45,6 +45,7 @@ public final class RecordingHUDModel {
         error: nil,
         transcription: nil
     )
+    public var agentWindowVisible = false
     public private(set) var saving = false
     public private(set) var saved = false
     @ObservationIgnored public let elapsedClock = RecordingHUDElapsedClock()

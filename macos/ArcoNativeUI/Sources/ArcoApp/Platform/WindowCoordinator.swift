@@ -75,6 +75,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     var canShowAgent: @MainActor () -> Bool = { false }
     var onHUDPresented: @MainActor () -> Void = {}
     var onHUDHidden: @MainActor () -> Void = {}
+    var onAgentVisibilityChanged: @MainActor (Bool) -> Void = { _ in }
     var onAgentFocused: @MainActor () -> Void = {}
     var onMainWindowHidden: @MainActor () -> Void = {}
     var onSurfaceError: @MainActor (Error) -> Void = { _ in }
@@ -216,6 +217,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         onHUDHidden()
         hudWindow?.orderOut(nil)
         agentWindow?.orderOut(nil)
+        onAgentVisibilityChanged(false)
     }
 
     // MARK: - Agent overlay
@@ -243,11 +245,13 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
         NSApp.activate(ignoringOtherApps: true)
         agent.makeKeyAndOrderFront(nil)
+        onAgentVisibilityChanged(true)
         return true
     }
 
     func hideAgent() {
         agentWindow?.orderOut(nil)
+        onAgentVisibilityChanged(false)
     }
 
     // MARK: - Meeting prompt
@@ -331,7 +335,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
             return false
         }
         if sender === agentWindow {
-            sender.orderOut(nil)
+            hideAgent()
             return false
         }
         if sender === meetingPromptWindow {

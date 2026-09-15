@@ -111,8 +111,8 @@ expectTrue(
 
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
 expectTrue(
-    hud.contains(".frame(width: 520, height: 56)"),
-    "HUD must remain the source 520 by 56 point utility surface"
+    hud.contains(".frame(width: 328, height: 52)"),
+    "HUD must remain the source 328 by 52 point utility surface"
 )
 expectTrue(
     material.contains("case .hud: 14"),
@@ -420,7 +420,7 @@ expectTrue(
 
 // Read-only window lifecycle/geometry: source placement, resize, reuse, close.
 expectTrue(
-    geometry.contains("static let hudSize = CGSize(width: 520, height: 56)")
+    geometry.contains("static let hudSize = CGSize(width: 328, height: 52)")
         && geometry.contains("static let agentSize = CGSize(width: 960, height: 560)")
         && geometry.contains("static let collapsedAgentSize = CGSize(width: 720, height: 560)"),
     "Native windows must preserve the source HUD and expanded/collapsed Agent sizes"
