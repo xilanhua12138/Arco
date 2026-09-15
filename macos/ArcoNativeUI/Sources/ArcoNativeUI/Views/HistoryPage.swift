@@ -279,8 +279,6 @@ private struct HistoryMeetingRow: View {
     var onSelect: () -> Void
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 12) {
@@ -331,21 +329,22 @@ private struct HistoryMeetingRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .frame(minHeight: 64)
+            .frame(maxWidth: .infinity, minHeight: 64)
             .contentShape(Rectangle())
-            .background(
-                isSelected
-                    ? ArcoNativeColors.surfaceSelected
-                    : hovering ? ArcoNativeColors.surfaceHover : Color.clear
-            )
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected
+                          ? ArcoNativeColors.surfaceSelected
+                          : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+            }
             .overlay(alignment: .bottom) {
-                if showsDivider { ArcoNativeColors.lineThin.frame(height: 1) }
+                if showsDivider { ArcoNativeColors.lineThin.frame(height: 1).padding(.horizontal, 12) }
             }
         }
         .buttonStyle(HistoryMeetingRowButtonStyle())
-        .onHover { hovering = $0 }
-        .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovering)
-        .animation(accessibilityReduceMotion ? nil : ArcoMotion.state, value: isSelected)
+        .onHover { if hovering != $0 { hovering = $0 } }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

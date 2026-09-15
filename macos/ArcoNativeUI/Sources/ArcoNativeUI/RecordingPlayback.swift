@@ -9,6 +9,7 @@ public final class RecordingPlayback {
         didSet { updateTranscriptCursor() }
     }
     public private(set) var activeLineID: String?
+    public private(set) var hasWordTimings = false
     @ObservationIgnored private var transcriptIndex = RecordingTranscriptIndex(lines: [])
     public private(set) var duration: Double = 0
     public private(set) var isPlaying = false
@@ -28,6 +29,7 @@ public final class RecordingPlayback {
     public init() {}
 
     public func clear() {
+        hasWordTimings = false
         transcriptIndex = RecordingTranscriptIndex(lines: [])
         activeLineID = nil
         generation = UUID()
@@ -152,6 +154,7 @@ public final class RecordingPlayback {
     }
 
     public func setTranscript(_ lines: [TranscriptLine]) {
+        hasWordTimings = lines.contains { !($0.timing?.words.isEmpty ?? true) }
         transcriptIndex = RecordingTranscriptIndex(lines: lines)
         updateTranscriptCursor()
     }
