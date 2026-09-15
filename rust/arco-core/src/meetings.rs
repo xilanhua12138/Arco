@@ -251,6 +251,38 @@ pub fn parse_meeting(
         .or_else(|| parse_started_from_filename(path))
         .or_else(|| modified_at(path))
         .unwrap_or_else(Local::now);
+    // Every capture/reconnect has its own sample clock. Normalize saved origins
+    // onto the meeting clock, including sessions resumed after a pause.
+    let mut previous_clock_ms = 0i64;
+    for line in &mut lines {
+        let mut clock_ms = NaiveTime::parse_from_str(&line.timestamp, "%H:%M:%S")
+            .ok()
+            .map(|time| (time - started.time()).num_seconds() * 1000)
+            .unwrap_or(previous_clock_ms);
+        while clock_ms < previous_clock_ms - 43_200_000 {
+            clock_ms += 86_400_000;
+        }
+        previous_clock_ms = clock_ms;
+        if let Some(timing) = &mut line.timing {
+            let offset = timing
+                .origin_ms
+                .take()
+                .map(|origin| origin - started.timestamp_millis())
+                .unwrap_or_else(|| {
+                    if (clock_ms - timing.start_ms).abs() > 5000 {
+                        clock_ms - timing.start_ms / 1000 * 1000
+                    } else {
+                        0
+                    }
+                });
+            timing.start_ms = (timing.start_ms + offset).max(0);
+            timing.end_ms = (timing.end_ms + offset).max(timing.start_ms);
+            for word in &mut timing.words {
+                word.start_ms += offset;
+                word.end_ms += offset;
+            }
+        }
+    }
     let started_at = started.to_rfc3339();
     let title = parse_title(&raw_markdown);
     let active = active_path
@@ -320,6 +352,7 @@ fn append_live_transcript_lines(path: &Path, lines: &mut Vec<TranscriptLine>) {
                 speaker: line.speaker,
                 text: line.text.trim().to_string(),
                 sequence: first_sequence + offset,
+                timing: None,
             }),
     );
 }
@@ -331,18 +364,58 @@ pub fn parse_transcript_lines(markdown: &str) -> Vec<TranscriptLine> {
         )
         .expect("transcript regex is valid")
     });
-    markdown
-        .lines()
-        .filter_map(|line| pattern.captures(line))
-        .enumerate()
-        .map(|(sequence, captures)| TranscriptLine {
-            id: format!("line-{}", sequence + 1),
-            timestamp: captures["timestamp"].to_string(),
-            speaker: captures["speaker"].trim().to_string(),
-            text: captures["text"].trim().to_string(),
-            sequence,
-        })
-        .collect()
+    let mut lines: Vec<TranscriptLine> = Vec::new();
+    for raw in markdown.lines() {
+        if let Some(captures) = pattern.captures(raw) {
+            let sequence = lines.len();
+            lines.push(TranscriptLine {
+                id: format!("line-{}", sequence + 1),
+                timestamp: captures["timestamp"].to_owned(),
+                speaker: captures["speaker"].trim().to_owned(),
+                text: captures["text"].trim().to_owned(),
+                sequence,
+                timing: None,
+            });
+        } else if let Some(line) = lines.last_mut() {
+            let raw = raw.trim();
+            if let Some(json) = raw
+                .strip_prefix("<!-- arco-timing ")
+                .and_then(|v| v.strip_suffix(" -->"))
+            {
+                if let Ok(mut timing) =
+                    serde_json::from_str::<crate::models::TranscriptTiming>(json)
+                {
+                    if timing.start_ms >= 0 && timing.end_ms >= timing.start_ms {
+                        timing.words.retain(|w| {
+                            !w.text.trim().is_empty()
+                                && w.start_ms >= timing.start_ms
+                                && w.end_ms >= w.start_ms
+                                && w.end_ms <= timing.end_ms
+                        });
+                        line.timing = Some(timing);
+                    }
+                }
+            } else if raw.starts_with("<!-- arco ") && line.timing.is_none() {
+                let time = |key: &str| {
+                    raw.split_whitespace()
+                        .find_map(|p| p.strip_prefix(key)?.parse::<f64>().ok())
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                        .map(|v| (v * 1000.0).round() as i64)
+                };
+                if let (Some(start_ms), Some(end_ms)) = (time("start="), time("end=")) {
+                    if end_ms >= start_ms {
+                        line.timing = Some(crate::models::TranscriptTiming {
+                            start_ms,
+                            end_ms,
+                            words: vec![],
+                            origin_ms: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    lines
 }
 
 fn is_transcript_file(path: &Path) -> bool {

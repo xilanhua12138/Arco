@@ -131,6 +131,11 @@ impl Controller {
 
     pub fn dispatch(&self, command: &str, params: Value) -> Result<Value, String> {
         match command {
+            "meeting_recording" => {
+                let id: String = required(&params, "id")?;
+                let meeting = self.read_meeting(id)?;
+                self.audio_archive.recording(&meeting.summary)
+            }
             "audio_archive_settings" => value(self.audio_archive.settings()?),
             "set_audio_archive_settings" => {
                 let _guard = self

@@ -15,6 +15,7 @@ let package = Package(
     name: "ArcoNativeUI",
     platforms: [.macOS(.v14)],
     products: [
+        .executable(name: "ArcoRecordingPlaybackContractTests", targets: ["ArcoRecordingPlaybackContractTests"]),
         .executable(name: "ArcoSettingsControlContractTests", targets: ["ArcoSettingsControlContractTests"]),
         .executable(name: "ArcoAudioArchiveContractTests", targets: ["ArcoAudioArchiveContractTests"]),
         .executable(name: "ArcoProviderPresentationContractTests", targets: ["ArcoProviderPresentationContractTests"]),
@@ -35,6 +36,7 @@ let package = Package(
         .executable(name: "ArcoMeetingAwarenessContractTests", targets: ["ArcoMeetingAwarenessContractTests"]),
     ],
     targets: [
+        .executableTarget(name: "ArcoRecordingPlaybackContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoSettingsControlContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoAudioArchiveContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoProviderPresentationContractTests", dependencies: ["ArcoNativeUI"]),

@@ -523,7 +523,8 @@ public struct ArcoMainShellView: View {
             meeting: meeting,
             capture: controller.store.capture,
             loading: controller.store.loading,
-            translate: translate
+            translate: translate,
+            onLoadRecording: { id in try await controller.store.recording(for: id) }
         )
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }

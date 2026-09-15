@@ -35,6 +35,10 @@ Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.c
 
 The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Provider credentials are stored in a private local file; normal app use does not request Keychain access. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
 
+## Replay meeting recordings
+
+Play saved recordings from History. Click a word or sentence timestamp to seek, or drag the waveform to locate the corresponding transcript. Playback highlights and follows the current text, with 1× / 1.5× / 2× speed. Older records use their saved sentence timing; word timestamps are not retroactively generated. See [recording playback](docs/features/recording-playback.md).
+
 ## Invite Arco to your meeting
 
 > **Available in v0.3.25.** Actual app screenshots using a synthetic-voice demonstration meeting, with live transcription, generated answers, and Arco’s connected participant window.

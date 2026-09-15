@@ -1502,13 +1502,16 @@ fn safe_cli_args(
 
 fn build_prompt(question: &str, meeting: &MeetingDetail, context_scope: &str) -> String {
     let complete_meeting_output = context_scope == "meeting-output";
+    // Playback metadata can be larger than the spoken text. Keep it out of the
+    // model context before applying the transcript character budget.
+    let spoken_markdown = crate::transcript_timing::without_word_metadata(&meeting.raw_markdown);
     let transcript = if complete_meeting_output {
-        meeting.raw_markdown.as_str()
+        spoken_markdown.as_str()
     } else {
-        tail_chars(&meeting.raw_markdown, MAX_TRANSCRIPT_CHARS)
+        tail_chars(&spoken_markdown, MAX_TRANSCRIPT_CHARS)
     };
     let truncation_note =
-        if !complete_meeting_output && transcript.len() < meeting.raw_markdown.len() {
+        if !complete_meeting_output && transcript.len() < spoken_markdown.len() {
             "The transcript was long, so only its most recent section is included.\n"
         } else {
             ""

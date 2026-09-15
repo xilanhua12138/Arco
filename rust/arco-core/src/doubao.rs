@@ -386,6 +386,7 @@ pub enum ServerMessage {
 
 #[derive(Clone, Debug)]
 struct Segment {
+    pub words: Vec<crate::models::TimedWord>,
     channel: usize,
     speaker: i64,
     label: String,
@@ -808,6 +809,7 @@ impl TranscriptWriter {
                     segment.channel, segment.speaker, segment.start, segment.end,
                 )
             })
+            .and_then(|_| writeln!(file, "{}", crate::transcript_timing::comment(segment.start, segment.end, &segment.words, self.session_started_at)))
             .and_then(|_| file.flush())
             .map_err(|error| format!("could not write live Doubao transcript: {error}"))
     }
@@ -1092,6 +1094,7 @@ fn segments_from_payload(payload: &Value, channel: usize, include_tentative: boo
                 })
                 .unwrap_or(0);
             Some(Segment {
+                words: crate::transcript_timing::words(utterance.get("words"), true),
                 channel,
                 speaker,
                 label: format!(
@@ -1124,6 +1127,7 @@ fn segments_from_connection_payload(
         .map(|mut segment| {
             segment.start += connection_origin;
             segment.end += connection_origin;
+            crate::transcript_timing::shift(&mut segment.words, connection_origin);
             segment
         })
         .collect()
@@ -2967,6 +2971,7 @@ mod tests {
             .update_live(
                 0,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 0,
                     speaker: 0,
                     label: "Remote 1".into(),
@@ -2980,6 +2985,7 @@ mod tests {
             .update_live(
                 1,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 1,
                     speaker: 0,
                     label: "In room 1".into(),
@@ -3322,6 +3328,7 @@ mod tests {
         let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3332,6 +3339,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3359,6 +3367,7 @@ mod tests {
         writer.set_active_channels([true, true]);
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3424,6 +3433,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 3,
                 label: "In room 4".into(),
@@ -3434,6 +3444,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 1,
                 label: "Remote 2".into(),
@@ -3462,6 +3473,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3473,6 +3485,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3500,6 +3513,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3510,6 +3524,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3537,6 +3552,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3547,6 +3563,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3574,6 +3591,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3585,6 +3603,7 @@ mod tests {
         writer.advance(1, 125.0).unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3611,6 +3630,7 @@ mod tests {
             .update_live(
                 0,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 0,
                     speaker: 0,
                     label: "Remote 1".into(),
@@ -3625,6 +3645,7 @@ mod tests {
                 1,
                 &[
                     Segment {
+                        words: Vec::new(),
                         channel: 1,
                         speaker: 0,
                         label: "In room 1".into(),
@@ -3633,6 +3654,7 @@ mod tests {
                         end: 35.512,
                     },
                     Segment {
+                        words: Vec::new(),
                         channel: 1,
                         speaker: 0,
                         label: "In room 1".into(),
@@ -3660,6 +3682,7 @@ mod tests {
 
         for segment in [
             Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3668,6 +3691,7 @@ mod tests {
                 end: 11.5,
             },
             Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3697,6 +3721,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3707,6 +3732,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3733,6 +3759,7 @@ mod tests {
         let one_hour_frame = (SAMPLE_RATE * 60 * 60) as f64;
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -4576,6 +4603,7 @@ mod tests {
         writer.set_active_channels([true, false]);
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),

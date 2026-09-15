@@ -26,3 +26,5 @@ pub mod process;
 pub mod speaker_timeline;
 pub mod storage;
 pub mod transcription;
+
+pub mod transcript_timing;
