@@ -55,6 +55,7 @@ struct RecordingTests {
         playback.seek(5)
         assert(changes.count == 1 && playback.activeLineID == nil)
         verifyTranscriptPerformance(line)
+        verifyWordHitTesting()
         playback.seek(1); assert(playback.activeLine(in: [line]) == "one")
         playback.seek(5); assert(playback.activeLine(in: [line]) == nil)
         playback.clear(); assert(playback.duration == 0 && !playback.isPlaying)
@@ -81,6 +82,32 @@ struct RecordingTests {
         }
     }
 
+    @MainActor static func verifyWordHitTesting() {
+        let view = RecordingWordTextView(frame: NSRect(x: 0, y: 0, width: 180, height: 200))
+        view.textContainerInset = NSSize(width: 2, height: 2)
+        view.textContainer?.lineFragmentPadding = 0
+        let text = NSMutableAttributedString(string: "你好世界。\n第二行的文字", attributes: [.font: NSFont.systemFont(ofSize: 14), .link: URL(string: "arco-audio://seek/0")!])
+        text.addAttribute(NSAttributedString.Key("ArcoSeekWord"), value: 0, range: NSRange(location: 0, length: 2))
+        text.addAttribute(NSAttributedString.Key("ArcoSeekWord"), value: 1, range: NSRange(location: 2, length: 2))
+        text.addAttribute(.link, value: URL(string: "arco-audio://seek/1000")!, range: NSRange(location: 2, length: 2))
+        view.textStorage!.setAttributedString(text)
+        let manager = view.layoutManager!, container = view.textContainer!
+        manager.ensureLayout(for: container)
+        func center(_ index: Int) -> NSPoint {
+            let glyph = manager.glyphIndexForCharacter(at: index)
+            let rect = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+            return NSPoint(x: rect.midX + view.textContainerOrigin.x, y: rect.midY + view.textContainerOrigin.y)
+        }
+        assert(view.hoverTarget(at: center(0)) == NSRange(location: 0, length: 2))
+        assert(view.hoverTarget(at: center(1)) == NSRange(location: 0, length: 2))
+        assert(view.hoverTarget(at: center(2)) == NSRange(location: 2, length: 2))
+        assert(view.hoverTarget(at: NSPoint(x: 170, y: center(2).y)) == nil, "Trailing whitespace must not snap to the nearest word")
+        assert(view.hoverTarget(at: NSPoint(x: 100, y: 180)) == nil)
+        assert(view.hoverTarget(at: center(7)) != nil, "Wrapped/multiline text must remain interactive")
+        assert(view.attributedString().attribute(.link, at: 2, effectiveRange: nil) as? URL == URL(string: "arco-audio://seek/1000"))
+        print("Native word hit testing: word boundaries, multiline links and trailing whitespace passed")
+    }
+
     @MainActor static func verifyTranscriptPerformance(_ line: TranscriptLine) {
         let cache = RecordingTranscriptTextCache()
         for ms in stride(from: Int64(0), to: 960, by: 80) {
@@ -88,8 +115,12 @@ struct RecordingTests {
             assert(text.runs.contains { $0.link?.absoluteString == "arco-audio://seek/0" && $0.backgroundColor != nil })
         }
         assert(cache.linkBuildCount == 1 && cache.highlightBuildCount == 1)
+        assert(cache.wordRanges == [NSRange(location: 0, length: 2), NSRange(location: 2, length: 2)])
         let next = cache.text(for: line, seekable: true, positionMs: 1500)
         assert(next.runs.contains { $0.link?.absoluteString == "arco-audio://seek/1000" && $0.backgroundColor != nil })
+        let native = RecordingWordTextView.renderedText(next, wordRanges: cache.wordRanges)
+        assert(native.attribute(.backgroundColor, at: 2, effectiveRange: nil) is NSColor, "Playing-word highlight must bridge to TextKit")
+        assert(native.attribute(.backgroundColor, at: 0, effectiveRange: nil) == nil)
         let inactive = cache.text(for: line, seekable: true, positionMs: nil)
         assert(inactive.runs.allSatisfy { $0.backgroundColor == nil })
         assert(cache.linkBuildCount == 1 && cache.highlightBuildCount == 3)

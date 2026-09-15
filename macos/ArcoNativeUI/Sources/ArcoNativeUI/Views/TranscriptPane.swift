@@ -429,24 +429,28 @@ private struct TranscriptRowView: View {
             } else {
                 VStack(alignment: .leading, spacing: 3) {
                     speakerLabel(line.speaker, compact: false)
-                    Text(playbackText(line))
-                        .tint(ArcoNativeColors.inkStrong)
-                        .font(ArcoTypography.body)
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                        .lineSpacing(5.2)
-                        .padding(.leading, 25) // Match the 18pt avatar and 7pt label gap.
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                    if playback.duration > 0, line.timing != nil {
+                        let text = playbackText(line)
+                        RecordingTranscriptText(text: text, wordRanges: textCache.wordRanges, onSeek: { url in
+                            guard let ms = Double(url.lastPathComponent) else { return }
+                            playback.seek(ms / 1000)
+                            if !playback.isPlaying { playback.toggle() }
+                        }, onSeekLine: playLine)
+                        .padding(.leading, 23) // Include the native text container's 2pt inset.
+                    } else {
+                        Text(line.text)
+                            .font(ArcoTypography.body)
+                            .foregroundStyle(ArcoNativeColors.inkStrong)
+                            .lineSpacing(5.2)
+                            .padding(.leading, 25)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 76)
                 .overlay(alignment: .topLeading) {
-                    Button {
-                        if let time = line.timing, playback.duration > 0 {
-                            playback.seek(Double(time.startMs) / 1000)
-                            if !playback.isPlaying { playback.toggle() }
-                        }
-                    } label: { Text(line.timestamp) }
+                    Button(action: playLine) { Text(line.timestamp) }
                         .buttonStyle(.plain)
                         .disabled(line.timing == nil || playback.duration == 0)
                         .help(translate("playback.playFromHere", [:]))
@@ -459,11 +463,34 @@ private struct TranscriptRowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(playback.duration > 0 && playback.activeLineID == line.id
-                    ? ArcoNativeColors.surfaceSelected
-                    : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+        .background {
+            // The fallback hit target sits behind text selection and word links,
+            // so a precise word click never also seeks to the sentence start.
+            if !compact, line.timing != nil, playback.duration > 0 {
+                Button(action: playLine) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(translate("playback.playFromHere", [:]))
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(playback.duration > 0 && playback.activeLineID == line.id
+                      ? ArcoNativeColors.surfaceSelected
+                      : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+        }
         .onHover { if hovering != $0 { hovering = $0 } }
-        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
+        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1).padding(.horizontal, 12) }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func playLine() {
+        guard let time = line.timing, playback.duration > 0 else { return }
+        playback.seek(Double(time.startMs) / 1000)
+        if !playback.isPlaying { playback.toggle() }
     }
 
     private func playbackText(_ line: TranscriptLine) -> AttributedString {
