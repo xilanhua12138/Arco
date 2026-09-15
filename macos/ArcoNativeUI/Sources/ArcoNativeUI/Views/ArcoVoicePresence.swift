@@ -23,9 +23,12 @@ public struct ArcoVoicePresence: View {
                 .foregroundStyle(.white.opacity(0.5))
                 .padding(.top, 6)
             if let message = status.message, status.phase == .failed {
-                Text(message).font(ArcoTypography.sans(11))
+                Text(message.hasPrefix("No physical microphone is available.")
+                    ? translate("agent.microphoneUnavailable", [:]) : message)
+                    .font(ArcoTypography.sans(11))
                     .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(2).padding(.horizontal, 18).padding(.top, 8)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.center).padding(.horizontal, 18).padding(.top, 8)
             }
         }
         .accessibilityElement(children: .contain)

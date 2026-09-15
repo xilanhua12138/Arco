@@ -210,6 +210,9 @@ mod hardware {
             Err(format!("Could not connect meeting microphone ({status})"))
         }
     }
+    pub fn built_in(id: u32) -> bool {
+        read_u32(id, code(b"tran")).ok() == Some(code(b"bltn"))
+    }
     pub fn physical(id: u32) -> bool {
         let t = read_u32(id, code(b"tran")).unwrap_or(0);
         let mut a = address(code(b"stm#"));
@@ -243,6 +246,9 @@ mod hardware {
     }
     pub fn devices() -> Vec<u32> {
         vec![]
+    }
+    pub fn built_in(_: u32) -> bool {
+        false
     }
     pub fn physical(_: u32) -> bool {
         false
@@ -278,21 +284,57 @@ fn saved_uid() -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(&data).ok()?;
     value.get("originalUID")?.as_str().map(str::to_string)
 }
-pub fn physical_microphone_uid() -> Result<String, String> {
-    if let Ok(configured) = std::env::var("ARCO_MIC_DEVICE_ID") {
-        if hardware::find(&configured).is_some_and(hardware::physical) {
-            return Ok(configured);
+fn selected_uid() -> Option<String> {
+    let path = std::env::var_os("ARCO_MICROPHONE_SELECTION_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                PathBuf::from(home).join("Library/Application Support/Arco/microphone.json")
+            })
+        })?;
+    let data = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    value.get("id")?.as_str().map(str::to_string)
+}
+
+fn choose_microphone(devices: &[(String, bool)], preferred: &[String]) -> Option<String> {
+    for uid in preferred {
+        if devices.iter().any(|(available, _)| available == uid) {
+            return Some(uid.clone());
         }
     }
-    let current = hardware::default_input()?;
-    if hardware::physical(current) {
-        return hardware::uid(current);
-    }
-    if let Some(saved) = saved_uid().filter(|v| hardware::find(v).is_some_and(hardware::physical)) {
-        return Ok(saved);
-    }
-    Err("Select a physical microphone in macOS before inviting Arco.".into())
+    devices
+        .iter()
+        .find(|(_, built_in)| *built_in)
+        .or(devices.first())
+        .map(|(uid, _)| uid.clone())
 }
+
+pub fn physical_microphone_uid() -> Result<String, String> {
+    let devices = hardware::devices()
+        .into_iter()
+        .filter(|id| hardware::physical(*id))
+        .filter_map(|id| {
+            hardware::uid(id)
+                .ok()
+                .filter(|uid| uid != VIRTUAL_UID)
+                .map(|uid| (uid, hardware::built_in(id)))
+        })
+        .collect::<Vec<_>>();
+    let preferred = [
+        std::env::var("ARCO_MIC_DEVICE_ID").ok(),
+        selected_uid(),
+        hardware::default_input().and_then(hardware::uid).ok(),
+        saved_uid(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    choose_microphone(&devices, &preferred).ok_or_else(|| {
+        "No physical microphone is available. Choose a microphone in Arco settings.".into()
+    })
+}
+
 fn restore_saved() -> Result<(), String> {
     if let Some(device) = hardware::find(VIRTUAL_UID) {
         if let Ok(data) = std::fs::read(journal()?) {
@@ -334,7 +376,7 @@ pub fn recover_stale() -> Result<(), String> {
 
 pub struct MeetingRoute {
     _lock: File,
-    original: String,
+    microphone: String,
 }
 impl MeetingRoute {
     pub fn connect() -> Result<Self, String> {
@@ -344,9 +386,9 @@ impl MeetingRoute {
         }
         let current = hardware::default_input()?;
         let original = hardware::uid(current)?;
-        if !hardware::physical(current) {
-            return Err("A physical default microphone is required.".into());
-        }
+        // Capture pins the selected physical device directly. The user's default
+        // input may already be virtual; preserve it for restoration on departure.
+        let microphone = physical_microphone_uid()?;
         let target =
             hardware::find(VIRTUAL_UID).ok_or("Meeting audio component is not available")?;
         let tmp = journal()?.with_extension("tmp");
@@ -364,7 +406,7 @@ impl MeetingRoute {
         std::fs::rename(tmp, journal()?).map_err(|e| e.to_string())?;
         let route = Self {
             _lock: held,
-            original,
+            microphone,
         };
         hardware::keep_alerts_on_speakers();
         hardware::set_gain(target, true, 1.0);
@@ -373,7 +415,7 @@ impl MeetingRoute {
         Ok(route)
     }
     pub fn connected(&self) -> bool {
-        hardware::find(&self.original).is_some()
+        hardware::find(&self.microphone).is_some_and(hardware::physical)
             && hardware::default_input().and_then(hardware::uid).as_deref() == Ok(VIRTUAL_UID)
     }
 }
@@ -387,4 +429,37 @@ impl Drop for MeetingRoute {
 
 pub fn available() -> bool {
     hardware::find(VIRTUAL_UID).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn virtual_default_and_stale_preference_fall_back_to_built_in() {
+        let devices = vec![("usb".into(), false), ("built-in".into(), true)];
+        assert_eq!(
+            choose_microphone(&devices, &["gone".into(), VIRTUAL_UID.into()]),
+            Some("built-in".into())
+        );
+    }
+    #[test]
+    fn configured_microphone_wins_over_system_default() {
+        let devices = vec![("built-in".into(), true), ("usb".into(), false)];
+        assert_eq!(
+            choose_microphone(&devices, &["usb".into(), "built-in".into()]),
+            Some("usb".into())
+        );
+        assert_eq!(
+            choose_microphone(&devices, &["gone".into(), "usb".into()]),
+            Some("usb".into())
+        );
+    }
+    #[test]
+    fn supports_external_only_and_no_input_devices() {
+        assert_eq!(
+            choose_microphone(&[("usb".into(), false)], &[]),
+            Some("usb".into())
+        );
+        assert_eq!(choose_microphone(&[], &[]), None);
+    }
 }

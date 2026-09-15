@@ -92,6 +92,7 @@ public struct ArcoMicrophone: Codable, Equatable, Identifiable, Sendable {
         var value: Unmanaged<CFString>? = nil
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
-        return value?.takeUnretainedValue() as String?
+        // Core Audio transfers ownership of these CFString properties to the caller.
+        return value?.takeRetainedValue() as String?
     }
 }
