@@ -52,6 +52,7 @@ public final class RecordingTranscriptTextCache {
     private var words: [(range: Range<AttributedString.Index>, start: Int64, end: Int64)] = []
     private var activeWords: [Int] = []
     private var rendered = AttributedString()
+    public private(set) var wordRanges: [NSRange] = []
     public private(set) var linkBuildCount = 0
     public private(set) var highlightBuildCount = 0
 
@@ -60,7 +61,7 @@ public final class RecordingTranscriptTextCache {
     public func text(for line: TranscriptLine, seekable: Bool, positionMs: Int64?) -> AttributedString {
         if self.line != line || self.seekable != seekable {
             self.line = line; self.seekable = seekable
-            base = AttributedString(line.text); words = []; activeWords = []
+            base = AttributedString(line.text); words = []; wordRanges = []; activeWords = []
             if seekable, let timing = line.timing {
                 base.link = URL(string: "arco-audio://seek/\(timing.startMs)")
                 var cursor = line.text.startIndex
@@ -72,6 +73,7 @@ public final class RecordingTranscriptTextCache {
                           let upper = AttributedString.Index(range.upperBound, within: base) else { continue }
                     base[lower..<upper].link = URL(string: "arco-audio://seek/\(word.startMs)")
                     words.append((lower..<upper, word.startMs, word.endMs))
+                    wordRanges.append(NSRange(range, in: line.text))
                     cursor = range.upperBound
                 }
             }
