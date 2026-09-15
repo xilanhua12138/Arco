@@ -80,11 +80,14 @@ import ArcoNativeUI
         host.layoutSubtreeIfNeeded()
         guard window.childWindows?.isEmpty != false else { fatalError("Removing a field must dismiss its floating list") }
         guard let locked = descendants(host).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityRole() == .popUpButton }), !locked.isEnabled else { fatalError("Meeting type must stay disabled during capture") }
+        let lockedInputs = descendants(host).compactMap { $0 as? NSButton }.filter { $0.accessibilityRole() == .popUpButton }
+        guard lockedInputs.count == 2, lockedInputs.allSatisfy({ !$0.isEnabled }) else { fatalError("Meeting type and microphone must both be locked during capture") }
         locked.performClick(nil)
         guard window.childWindows?.isEmpty != false else { fatalError("Disabled choices must not open") }
         snapshot.audioModeLocked = false
         model.updateExternalSnapshot(snapshot)
         try await Task.sleep(for: .milliseconds(100))
+        try render(host, "-audio")
         locked.performClick(nil)
         guard let selectPanel = window.childWindows?.first,
               descendants(locked).compactMap({ $0 as? NSTextField }).allSatisfy(\.isHidden) else { fatalError("Finite choices must open without a text editor") }

@@ -22,9 +22,30 @@ private let realtimeBufferDuration = 0.5 // Bound stale raw capture to 500 ms.
 private let maxBufferedFrames = sampleRate * 3 // Hard 3-second FIFO per source.
 private let qualityLogIntervalTicks = 100 // 10 seconds at the 100 ms mix cadence.
 
-guard ["both", "system", "mic", "--self-test"].contains(mode) else {
+guard ["both", "system", "mic", "--self-test", "--check-microphone"].contains(mode) else {
     FileHandle.standardError.write(Data("invalid capture mode: \(mode)\n".utf8))
     exit(2)
+}
+
+private struct MicrophoneCandidate {
+    let id: AudioDeviceID
+    let uid: String
+    let transport: UInt32
+    let hasInput: Bool
+
+    var usable: Bool {
+        hasInput && uid != "BlackHole2ch_UID"
+            && transport != kAudioDeviceTransportTypeVirtual
+            && transport != kAudioDeviceTransportTypeAggregate
+    }
+}
+
+private func chooseMicrophone(preferredUIDs: [String], devices: [MicrophoneCandidate]) -> MicrophoneCandidate? {
+    let available = devices.filter(\.usable)
+    for uid in preferredUIDs where !uid.isEmpty {
+        if let match = available.first(where: { $0.uid == uid }) { return match }
+    }
+    return available.first(where: { $0.transport == kAudioDeviceTransportTypeBuiltIn }) ?? available.first
 }
 
 private struct AudioQualitySnapshot {
@@ -760,7 +781,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         }
     }
 
-    private func selectMicrophoneDevice() -> AudioDeviceID {
+    func selectMicrophoneDevice() -> AudioDeviceID {
         let environment = ProcessInfo.processInfo.environment
         var requestedID = (environment["ARCO_MIC_DEVICE_ID"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -770,13 +791,26 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             .appendingPathComponent(".arco/meeting-audio-route.json")
         let savedUID = (try? Data(contentsOf: savedRoute))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["originalUID"] as? String
-        let candidates = [requestedID, AVCaptureDevice.default(for: .audio)?.uniqueID, savedUID].compactMap { $0 }
-        guard let selected = candidates.first(where: { uid in
-            !uid.isEmpty && uid != "BlackHole2ch_UID"
-                && Self.audioDeviceID(forUID: uid).map(Self.isPhysicalAudioDevice) == true
-        }), let deviceID = Self.audioDeviceID(forUID: selected) else {
+        let selectionURL = environment["ARCO_MICROPHONE_SELECTION_FILE"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Arco/microphone.json")
+        let selectedUID = (try? Data(contentsOf: selectionURL))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["id"] as? String
+        let preferred = [requestedID, selectedUID, AVCaptureDevice.default(for: .audio)?.uniqueID, savedUID].compactMap { $0 }
+        let candidates = Self.audioDevices().compactMap { device -> MicrophoneCandidate? in
+            guard let uid = Self.stringProperty(kAudioDevicePropertyDeviceUID, device: device),
+                  let transport = Self.audioDeviceTransport(device) else { return nil }
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+            var size: UInt32 = 0
+            let hasInput = AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr && size > 0
+            return MicrophoneCandidate(id: device, uid: uid, transport: transport, hasInput: hasInput)
+        }
+        guard let microphone = chooseMicrophone(preferredUIDs: preferred, devices: candidates) else {
             fail("no physical microphone is connected; choose a microphone in macOS")
         }
+        let selected = microphone.uid
+        let deviceID = microphone.id
         if selected != requestedID && !requestedID.isEmpty {
             log("saved microphone unavailable; using the current physical microphone")
         }
@@ -1063,7 +1097,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         )
     }
 
-    private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+    private static func audioDevices() -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -1076,7 +1110,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             0,
             nil,
             &size
-        ) == noErr else { return nil }
+        ) == noErr else { return [] }
         let count = Int(size) / MemoryLayout<AudioDeviceID>.size
         var devices = [AudioDeviceID](repeating: 0, count: count)
         guard AudioObjectGetPropertyData(
@@ -1086,19 +1120,17 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             nil,
             &size,
             &devices
-        ) == noErr else { return nil }
-        return devices.first { device in
-            stringProperty(kAudioDevicePropertyDeviceUID, device: device) == uid
-        }
+        ) == noErr else { return [] }
+        return devices
     }
 
-    private static func isPhysicalAudioDevice(_ device: AudioDeviceID) -> Bool {
+    private static func audioDeviceTransport(_ device: AudioDeviceID) -> UInt32? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var transport: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr else { return false }
-        return transport != kAudioDeviceTransportTypeVirtual && transport != kAudioDeviceTransportTypeAggregate
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr else { return nil }
+        return transport
     }
 
     @available(macOS 14.2, *)
@@ -1518,6 +1550,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     private func fail(_ message: String) -> Never {
+        if let path = ProcessInfo.processInfo.environment["ARCO_RECORDER_ERROR_FILE"], !path.isEmpty {
+            try? Data(message.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
         log(message)
         stop()
         exit(1)
@@ -1659,6 +1694,14 @@ private func exerciseRustAudioRuntime() throws {
 
 private func runRecorderSelfTests() throws {
     try exerciseRustAudioRuntime()
+    let physical = MicrophoneCandidate(id: 1, uid: "built-in", transport: kAudioDeviceTransportTypeBuiltIn, hasInput: true)
+    let usb = MicrophoneCandidate(id: 2, uid: "usb", transport: kAudioDeviceTransportTypeUSB, hasInput: true)
+    let virtual = MicrophoneCandidate(id: 3, uid: "BlackHole2ch_UID", transport: kAudioDeviceTransportTypeVirtual, hasInput: true)
+    let output = MicrophoneCandidate(id: 4, uid: "speaker", transport: kAudioDeviceTransportTypeBuiltIn, hasInput: false)
+    try selfTestRequire(chooseMicrophone(preferredUIDs: ["gone", virtual.uid], devices: [virtual, output, usb, physical])?.id == physical.id, "virtual default must fall back to built-in microphone")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [usb.uid], devices: [physical, usb])?.id == usb.id, "explicit physical microphone must win")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [virtual.uid, usb.uid], devices: [virtual, usb, physical])?.id == usb.id, "saved physical route must beat generic fallback")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [], devices: [virtual, output]) == nil, "outputs and virtual devices must not qualify as microphones")
 
     try selfTestRequire(
         ParentAudioExclusionPolicy.parentPID(environment: [
@@ -1805,6 +1848,10 @@ if isSelfTest {
         FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_FAILED: \(error)\n".utf8))
         exit(1)
     }
+} else if mode == "--check-microphone" {
+    let recorder = Recorder()
+    let selected = recorder.selectMicrophoneDevice()
+    print("ARCO_MICROPHONE_CHECK_OK device=\(selected)")
 } else {
     let recorder = Recorder()
     recorder.start()

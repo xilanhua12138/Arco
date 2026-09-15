@@ -5,6 +5,14 @@ import Observation
 /// public so contract tests can prove both locales expose the same complete key set.
 public enum ArcoTranslations {
     public static let englishMessages: [String: String] = [
+        "settings.microphone": "Microphone",
+        "settings.microphone.automatic": "Automatic",
+        "settings.microphone.disconnected": "{{name}} (disconnected)",
+        "settings.microphone.unused": "Microphone is off in System audio only mode.",
+        "settings.microphone.fallback": "Selected device disconnected. Next recording will use {{name}}.",
+        "settings.microphone.next": "Next recording will use {{name}}.",
+        "settings.microphone.saveFailed": "Could not save the microphone. Please try again.",
+        "capture.microphoneUnavailable": "No microphone is available. Connect a microphone or choose System audio only.",
         "playback.recording": "RECORDING",
         "playback.followOn": "Following",
         "playback.loading": "Loading recording…",
@@ -770,6 +778,14 @@ public enum ArcoTranslations {
     ]
 
     public static let simplifiedChineseMessages: [String: String] = [
+        "settings.microphone": "麦克风",
+        "settings.microphone.automatic": "自动选择",
+        "settings.microphone.disconnected": "{{name}}（已断开）",
+        "settings.microphone.unused": "仅系统音频模式不使用麦克风。",
+        "settings.microphone.fallback": "所选设备已断开，下次录音将使用 {{name}}。",
+        "settings.microphone.next": "下次录音使用 {{name}}。",
+        "settings.microphone.saveFailed": "麦克风选择保存失败，请重试。",
+        "capture.microphoneUnavailable": "未找到可用麦克风。请连接麦克风，或选择“仅系统音频”。",
         "playback.recording": "录音",
         "playback.followOn": "跟随中",
         "playback.loading": "正在加载录音…",

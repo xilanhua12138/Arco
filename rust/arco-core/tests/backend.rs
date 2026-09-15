@@ -3257,6 +3257,21 @@ fn capture_surfaces_pre_ready_exit_instead_of_false_recording_state() {
 
 #[cfg(unix)]
 #[test]
+fn capture_surfaces_microphone_failure_before_downstream_clean_exit() {
+    let root = TempDir::new().unwrap();
+    let mut config = fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n");
+    config.recorder = RecorderSpec::Executable(executable_script(root.path(), "missing-microphone",
+        "#!/bin/sh\nprintf 'no physical microphone is connected; choose a microphone in macOS' > \"$ARCO_RECORDER_ERROR_FILE\"\nexit 1\n"));
+    config.requires_ready_signal = true;
+    let manager = CaptureManager::new(config);
+    let error = manager.start("both").unwrap_err();
+    assert!(error.contains("No physical microphone is available"), "{error}");
+    assert!(!error.contains("transcriber exited"), "{error}");
+    assert_eq!(manager.status().phase, "error");
+}
+
+#[cfg(unix)]
+#[test]
 fn capture_times_out_if_transcriber_never_becomes_ready() {
     let root = TempDir::new().unwrap();
     let mut config = fake_capture_config(&root, "#!/bin/sh\ncat >/dev/null\n");
