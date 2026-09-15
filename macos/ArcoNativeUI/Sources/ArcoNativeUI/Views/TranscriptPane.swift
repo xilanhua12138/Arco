@@ -195,113 +195,152 @@ public struct TranscriptPaneView: View {
                 if let recordingError { Text(recordingError).font(ArcoTypography.small).foregroundStyle(.red).padding(12) }
             }
 
-            GeometryReader { viewport in
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            if !generatedSummary.isEmpty {
-                                MeetingSummaryDocument(
-                                    summary: generatedSummary,
-                                    compact: compact,
-                                    translate: translate
-                                )
-                            }
-
-                            if meeting.lines.isEmpty {
-                                emptyTranscriptState(active: active)
-                            } else {
-                                LazyVStack(spacing: 0) {
-                                    ForEach(meeting.lines) { line in
-                                        TranscriptRowView(line: line, compact: compact, layout: layout, translate: translate, playback: playback)
-                                    }
-
-                                    if active && !compact {
-                                        ListeningIndicator(label: translate("common.listening", [:]))
-                                            .padding(12)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
+            if !meeting.summary.isLive && !compact {
+                historyTranscript(meeting, summary: generatedSummary)
+            } else {
+                GeometryReader { viewport in
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                if !generatedSummary.isEmpty {
+                                    MeetingSummaryDocument(
+                                        summary: generatedSummary,
+                                        compact: compact,
+                                        translate: translate
+                                    )
                                 }
-                                .padding(.bottom, compact ? 48 : 0)
-                            }
 
-                            Color.clear
-                                .frame(height: 1)
-                                .id("transcript-live-edge")
-                                .background {
-                                    if active {
-                                        GeometryReader { edge in
-                                            Color.clear.preference(
-                                                key: TranscriptBottomPreferenceKey.self,
-                                                value: edge.frame(in: .named("transcript-scroll")).maxY
-                                            )
+                                if meeting.lines.isEmpty {
+                                    emptyTranscriptState(active: active)
+                                } else {
+                                    LazyVStack(spacing: 0) {
+                                        ForEach(meeting.lines) { line in
+                                            TranscriptRowView(line: line, compact: compact, layout: layout, translate: translate, playback: playback)
+                                        }
+
+                                        if active && !compact {
+                                            ListeningIndicator(label: translate("common.listening", [:]))
+                                                .padding(12)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
                                         }
                                     }
+                                    .padding(.bottom, compact ? 48 : 0)
                                 }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
-                    }
-                    .background(RecordingScrollObserver { if playback.following { playback.following = false } })
-                    .onChange(of: playback.activeLineID) {
-                        if playback.following, let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
-                    }
-                    .onChange(of: playback.seekRevision) {
-                        if let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
-                    }
-                    .coordinateSpace(name: "transcript-scroll")
-                    .onPreferenceChange(TranscriptBottomPreferenceKey.self) { bottom in
-                        guard active else { return }
-                        let follows = bottom - viewport.size.height < 72
-                        if follows != followingLive { followingLive = follows }
-                    }
-                    .onAppear {
-                        guard active else { return }
-                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                    }
-                    .onChange(of: liveEdgeRevision) {
-                        guard TranscriptLiveFollowPolicy.shouldFollow(
-                            active: active,
-                            followingLive: followingLive
-                        ) else { return }
-                        if reduceMotion {
-                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                        } else {
-                            withAnimation(.easeOut(duration: 0.22)) {
-                                proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: active) {
-                        guard active && followingLive else { return }
-                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        if active && !followingLive {
-                            Button {
-                                if reduceMotion {
-                                    proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                                } else {
-                                    withAnimation(.easeOut(duration: 0.22)) {
-                                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("transcript-live-edge")
+                                    .background {
+                                        if active {
+                                            GeometryReader { edge in
+                                                Color.clear.preference(
+                                                    key: TranscriptBottomPreferenceKey.self,
+                                                    value: edge.frame(in: .named("transcript-scroll")).maxY
+                                                )
+                                            }
+                                        }
                                     }
-                                }
-                                followingLive = true
-                            } label: {
-                                HStack(spacing: 5) {
-                                    ArcoLucideIcon(.arrowDown, size: 14)
-                                    Text(translate("transcript.jumpToLive", [:]))
-                                }
-                                .font(ArcoTypography.sans(compact ? 10 : 12))
-                                .foregroundStyle(ArcoNativeColors.actionInk)
-                                .padding(.horizontal, compact ? 9 : 12)
-                                .padding(.vertical, compact ? 7 : 8)
-                                .background(ArcoNativeColors.action)
-                                .clipShape(Capsule(style: .continuous))
                             }
-                            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
-                            .padding(compact ? 10 : 16)
+                            .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                        }
+                        .background(RecordingScrollObserver { if playback.following { playback.following = false } })
+                        .onChange(of: playback.activeLineID) {
+                            if playback.following, let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+                        }
+                        .onChange(of: playback.seekRevision) {
+                            if let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+                        }
+                        .coordinateSpace(name: "transcript-scroll")
+                        .onPreferenceChange(TranscriptBottomPreferenceKey.self) { bottom in
+                            guard active else { return }
+                            let follows = bottom - viewport.size.height < 72
+                            if follows != followingLive { followingLive = follows }
+                        }
+                        .onAppear {
+                            guard active else { return }
+                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                        }
+                        .onChange(of: liveEdgeRevision) {
+                            guard TranscriptLiveFollowPolicy.shouldFollow(
+                                active: active,
+                                followingLive: followingLive
+                            ) else { return }
+                            if reduceMotion {
+                                proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                            } else {
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                }
+                            }
+                        }
+                        .onChange(of: active) {
+                            guard active && followingLive else { return }
+                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            if active && !followingLive {
+                                Button {
+                                    if reduceMotion {
+                                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                    } else {
+                                        withAnimation(.easeOut(duration: 0.22)) {
+                                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                        }
+                                    }
+                                    followingLive = true
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        ArcoLucideIcon(.arrowDown, size: 14)
+                                        Text(translate("transcript.jumpToLive", [:]))
+                                    }
+                                    .font(ArcoTypography.sans(compact ? 10 : 12))
+                                    .foregroundStyle(ArcoNativeColors.actionInk)
+                                    .padding(.horizontal, compact ? 9 : 12)
+                                    .padding(.vertical, compact ? 7 : 8)
+                                    .background(ArcoNativeColors.action)
+                                    .clipShape(Capsule(style: .continuous))
+                                }
+                                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
+                                .padding(compact ? 10 : 16)
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private func historyTranscript(_ meeting: MeetingDetail, summary: String) -> some View {
+        ScrollViewReader { proxy in
+            List {
+                if !summary.isEmpty {
+                    MeetingSummaryDocument(summary: summary, compact: false, translate: translate)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                if meeting.lines.isEmpty {
+                    emptyTranscriptState(active: false)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(meeting.lines) { line in
+                    TranscriptRowView(line: line, compact: false, layout: layout, translate: translate, playback: playback)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .listStyle(.plain)
+            .contentMargins(0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 64)
+            .scrollContentBackground(.hidden)
+            .background(RecordingScrollObserver { if playback.following { playback.following = false } })
+            .onChange(of: playback.activeLineID) {
+                if playback.following, let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+            }
+            .onChange(of: playback.seekRevision) {
+                if let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
@@ -364,6 +403,7 @@ private struct TranscriptRowView: View {
     let translate: ArcoTranslate
     let playback: RecordingPlayback
     @State private var textCache = RecordingTranscriptTextCache()
+    @State private var hovering = false
 
     var body: some View {
         Group {
@@ -419,8 +459,10 @@ private struct TranscriptRowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(playback.duration > 0 && playback.activeLineID == line.id ? ArcoNativeColors.surfaceSelected : Color.clear)
-        .id(line.id)
+        .background(playback.duration > 0 && playback.activeLineID == line.id
+                    ? ArcoNativeColors.surfaceSelected
+                    : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+        .onHover { if hovering != $0 { hovering = $0 } }
         .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
     }
 
