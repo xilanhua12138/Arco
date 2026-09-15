@@ -198,6 +198,7 @@ swift build --package-path macos/ArcoNativeUI
 swift run --package-path macos/ArcoNativeUI ArcoNativeUIContractTests
 swift run --package-path macos/ArcoNativeUI ArcoPreferencesContractTests
 swift run --package-path macos/ArcoNativeUI ArcoLocalizationContractTests
+./native/test-hud-window.sh
 ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
 ./native/package-local-app.sh
 ```
