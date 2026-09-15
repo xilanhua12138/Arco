@@ -69,7 +69,10 @@ public final class RecordingPlayback {
         guard let first = ranges.first, let last = ranges.last else { return }
         duration = last.upperBound
         hasGaps = failed || first.lowerBound > 0.1 || zip(ranges, ranges.dropFirst()).contains { $1.lowerBound - $0.upperBound > 0.1 }
-        player = AVPlayer(playerItem: AVPlayerItem(asset: composition))
+        let item = AVPlayerItem(asset: composition)
+        do { item.audioMix = try RecordingAudioMix.make(for: track) }
+        catch { self.error = error.localizedDescription; return }
+        player = AVPlayer(playerItem: item)
         seek(first.lowerBound)
         let length = duration
         let waveformTask = Task.detached(priority: .utility) { Self.sampleWaveform(recording.chunks, duration: length) }
