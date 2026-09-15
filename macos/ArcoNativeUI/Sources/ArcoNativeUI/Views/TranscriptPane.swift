@@ -174,6 +174,12 @@ public struct TranscriptPaneView: View {
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
+            if playback.duration > 0 && !playback.hasWordTimings {
+                Text(translate("playback.sentenceOnly", [:]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .help(translate("playback.sentenceOnlyHelp", [:]))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 24)

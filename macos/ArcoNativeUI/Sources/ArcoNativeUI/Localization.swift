@@ -17,6 +17,8 @@ public enum ArcoTranslations {
         "playback.partial": "Some audio is unavailable. Playback skips missing sections.",
         "playback.unavailable": "No saved recording is available for this meeting.",
         "playback.playFromHere": "Play from here",
+        "playback.sentenceOnly": "Sentence seeking",
+        "playback.sentenceOnlyHelp": "This recording has sentence timestamps only. Click to play from the start of the sentence.",
 
         "settings.openFolder": "Open",
         "settings.storageOptions": "Storage options",
@@ -780,6 +782,8 @@ public enum ArcoTranslations {
         "playback.partial": "部分录音缺失，播放时会跳过这些区间。",
         "playback.unavailable": "这场会议没有可用的已保存录音。",
         "playback.playFromHere": "从这里播放",
+        "playback.sentenceOnly": "按句跳转",
+        "playback.sentenceOnlyHelp": "这条录音仅有句子时间戳，点击后从本句开头播放。",
 
         "settings.openFolder": "打开",
         "settings.storageOptions": "存储选项",

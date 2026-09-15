@@ -51,8 +51,8 @@ public final class RecordingWordTextView: NSTextView, NSTextViewDelegate {
     static let wordKey = NSAttributedString.Key("ArcoSeekWord")
     var source: AttributedString?
     var wordRanges: [NSRange] = []
-    var onSeek: ((URL) -> Void)?
-    var onSeekLine: (() -> Void)?
+    public var onSeek: ((URL) -> Void)?
+    public var onSeekLine: (() -> Void)?
     private var hoverRange: NSRange?
     private var hoverTracking: NSTrackingArea?
 
@@ -110,7 +110,11 @@ public final class RecordingWordTextView: NSTextView, NSTextViewDelegate {
 
     public func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         guard let url = link as? URL, url.scheme == "arco-audio" else { return false }
-        onSeek?(url)
+        if let target = wordTarget(atCharacter: charIndex) {
+            onSeek?(target.url)
+        } else {
+            onSeekLine?()
+        }
         return true
     }
 
@@ -123,16 +127,19 @@ public final class RecordingWordTextView: NSTextView, NSTextViewDelegate {
         updateHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
-    public func hoverTarget(at point: NSPoint) -> NSRange? {
-        guard visibleRect.contains(point), let index = character(at: point), let storage = textStorage,
-              index < storage.length, storage.attribute(.link, at: index, effectiveRange: nil) != nil else {
-            return nil
-        }
+    /// Hover and click resolve the same timed-word span, even when adjacent links share a URL.
+    public func wordTarget(atCharacter index: Int) -> (range: NSRange, url: URL)? {
+        guard let storage = textStorage, index >= 0, index < storage.length else { return nil }
         var range = NSRange()
-        if storage.attribute(Self.wordKey, at: index, effectiveRange: &range) == nil {
-            _ = storage.attribute(.link, at: index, effectiveRange: &range)
-        }
-        return range
+        guard storage.attribute(Self.wordKey, at: index, longestEffectiveRange: &range,
+                                in: NSRange(location: 0, length: storage.length)) != nil,
+              let url = storage.attribute(.link, at: index, effectiveRange: nil) as? URL else { return nil }
+        return (range, url)
+    }
+
+    public func hoverTarget(at point: NSPoint) -> NSRange? {
+        guard visibleRect.contains(point), let index = character(at: point) else { return nil }
+        return wordTarget(atCharacter: index)?.range
     }
 
     private func updateHover(at point: NSPoint) { setHover(hoverTarget(at: point)) }
@@ -154,7 +161,9 @@ public final class RecordingWordTextView: NSTextView, NSTextViewDelegate {
     }
 
     public override func draw(_ dirtyRect: NSRect) {
-        if let hoverRange, let manager = layoutManager, let container = textContainer {
+        if let hoverRange, let manager = layoutManager, let container = textContainer,
+           NSIntersectionRange(hoverRange, selectedRange()).length == 0,
+           textStorage?.attribute(.backgroundColor, at: hoverRange.location, effectiveRange: nil) == nil {
             let glyphs = manager.glyphRange(forCharacterRange: hoverRange, actualCharacterRange: nil)
             NSColor(ArcoNativeColors.action.opacity(0.12)).setFill()
             manager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container) { rect, _ in

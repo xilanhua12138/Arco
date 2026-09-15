@@ -47,6 +47,7 @@ struct RecordingTests {
         let line = TranscriptLine(id: "one", timestamp: "12:00:00", speaker: "Remote 1", text: "你好世界。", sequence: 0,
                                   timing: TranscriptTiming(startMs: 0, endMs: 2500, words: [TranscriptWord(text: "你好", startMs: 0, endMs: 1000), TranscriptWord(text: "世界", startMs: 1000, endMs: 2500)]))
         playback.setTranscript([line])
+        assert(playback.hasWordTimings)
         playback.seek(0.1)
         let changes = CursorChanges()
         withObservationTracking { _ = playback.activeLineID } onChange: { changes.count += 1 }
@@ -58,7 +59,7 @@ struct RecordingTests {
         verifyWordHitTesting()
         playback.seek(1); assert(playback.activeLine(in: [line]) == "one")
         playback.seek(5); assert(playback.activeLine(in: [line]) == nil)
-        playback.clear(); assert(playback.duration == 0 && !playback.isPlaying)
+        playback.clear(); assert(playback.duration == 0 && !playback.isPlaying && !playback.hasWordTimings)
         let legacy = Data(#"{"id":"a","timestamp":"12:00:00","speaker":"Remote 1","text":"legacy","sequence":0}"#.utf8)
         let decoded = try JSONDecoder().decode(TranscriptLine.self, from: legacy)
         assert(decoded.timing == nil)
@@ -103,7 +104,18 @@ struct RecordingTests {
         assert(view.hoverTarget(at: center(2)) == NSRange(location: 2, length: 2))
         assert(view.hoverTarget(at: NSPoint(x: 170, y: center(2).y)) == nil, "Trailing whitespace must not snap to the nearest word")
         assert(view.hoverTarget(at: NSPoint(x: 100, y: 180)) == nil)
-        assert(view.hoverTarget(at: center(7)) != nil, "Wrapped/multiline text must remain interactive")
+        assert(view.hoverTarget(at: center(7)) == nil, "Sentence-only text must not advertise word precision")
+        var clickedWord: URL?
+        var sentenceClicks = 0
+        view.onSeek = { clickedWord = $0 }
+        view.onSeekLine = { sentenceClicks += 1 }
+        _ = view.textView(view, clickedOnLink: URL(string: "arco-audio://seek/0")!, at: 2)
+        assert(clickedWord == URL(string: "arco-audio://seek/1000"), "Click must resolve the hovered word instead of a coalesced sentence link")
+        _ = view.textView(view, clickedOnLink: URL(string: "arco-audio://seek/0")!, at: 7)
+        assert(sentenceClicks == 1)
+        text.addAttribute(NSAttributedString.Key("ArcoSeekWord"), value: 2, range: NSRange(location: 6, length: 3))
+        view.textStorage!.setAttributedString(text)
+        assert(view.hoverTarget(at: center(7)) == NSRange(location: 6, length: 3), "Timed words on subsequent lines must remain interactive")
         assert(view.attributedString().attribute(.link, at: 2, effectiveRange: nil) as? URL == URL(string: "arco-audio://seek/1000"))
         print("Native word hit testing: word boundaries, multiline links and trailing whitespace passed")
     }
