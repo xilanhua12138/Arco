@@ -6,7 +6,7 @@ enum ArcoWindowMetrics {
     static let mainSize = CGSize(width: 1_240, height: 820)
     static let mainMinimumSize = CGSize(width: 980, height: 680)
 
-    static let hudSize = CGSize(width: 368, height: 56)
+    static let hudSize = CGSize(width: 520, height: 56)
     static let meetingPromptSize = CGSize(width: 320, height: 112)
     static let agentSize = CGSize(width: 960, height: 560)
     static let collapsedAgentSize = CGSize(width: 720, height: 560)

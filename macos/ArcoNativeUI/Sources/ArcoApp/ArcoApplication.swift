@@ -427,6 +427,7 @@ private final class NativeApplicationRuntime {
                 }
                 return AnyView(RecordingHUDView(
                     model: recordingHUDModel,
+                    controller: shellController,
                     translate: translate,
                     onToggleAgent: actions.toggleAgent,
                     onError: { error in

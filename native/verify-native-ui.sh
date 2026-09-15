@@ -10,7 +10,7 @@ THEME="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/Views/Theme.swift"
 MAIN_SHELL="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoMainShellView.swift"
 SETTINGS_SHEET="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoSettingsSheetView.swift"
 WINDOW_COORDINATOR="$PLATFORM/WindowCoordinator.swift"
-HUD="$PLATFORM/RecordingHUD.swift"
+HUD="$SOURCES/ArcoNativeUI/Views/RecordingHUD.swift"
 AGENT="$PLATFORM/AgentOverlay.swift"
 
 if grep -R -E 'NSGlassEffectView|NSVisualEffectView' $PRODUCT_SOURCES >/dev/null; then

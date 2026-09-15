@@ -1111,7 +1111,7 @@ private func testHUDClockInvalidationIsScopedToStatusView() {
         encoding: .utf8
     )) ?? ""
     let viewSource = (try? String(
-        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoApp/Platform/RecordingHUD.swift"),
+        contentsOf: packageRoot.appendingPathComponent("Sources/ArcoNativeUI/Views/RecordingHUD.swift"),
         encoding: .utf8
     )) ?? ""
 
