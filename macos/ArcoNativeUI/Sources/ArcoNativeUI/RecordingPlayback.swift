@@ -5,7 +5,11 @@ import SwiftUI
 @MainActor
 @Observable
 public final class RecordingPlayback {
-    public private(set) var position: Double = 0
+    public private(set) var position: Double = 0 {
+        didSet { updateTranscriptCursor() }
+    }
+    public private(set) var activeLineID: String?
+    @ObservationIgnored private var transcriptIndex = RecordingTranscriptIndex(lines: [])
     public private(set) var duration: Double = 0
     public private(set) var isPlaying = false
     public private(set) var loading = false
@@ -24,6 +28,8 @@ public final class RecordingPlayback {
     public init() {}
 
     public func clear() {
+        transcriptIndex = RecordingTranscriptIndex(lines: [])
+        activeLineID = nil
         generation = UUID()
         seekID = UUID(); seeking = false
         player?.pause(); player = nil
@@ -143,6 +149,16 @@ public final class RecordingPlayback {
             guard let timing = line.timing else { return false }
             return timing.startMs <= ms && ms < timing.endMs
         }?.id
+    }
+
+    public func setTranscript(_ lines: [TranscriptLine]) {
+        transcriptIndex = RecordingTranscriptIndex(lines: lines)
+        updateTranscriptCursor()
+    }
+
+    private func updateTranscriptCursor() {
+        let next = transcriptIndex.lineID(at: Int64((position * 1000).rounded()))
+        if next != activeLineID { activeLineID = next }
     }
 
     @_spi(Testing) public func muteForTesting() { player?.isMuted = true }
