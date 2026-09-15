@@ -2,6 +2,12 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import Observation
+
+private final class CursorChanges: @unchecked Sendable {
+    // Observation callbacks in these tests run synchronously on the main actor.
+    var count = 0
+}
 
 @main
 struct RecordingTests {
@@ -40,6 +46,15 @@ struct RecordingTests {
         playback.updateRate(1.5); assert(playback.rate == 1.5)
         let line = TranscriptLine(id: "one", timestamp: "12:00:00", speaker: "Remote 1", text: "你好世界。", sequence: 0,
                                   timing: TranscriptTiming(startMs: 0, endMs: 2500, words: [TranscriptWord(text: "你好", startMs: 0, endMs: 1000), TranscriptWord(text: "世界", startMs: 1000, endMs: 2500)]))
+        playback.setTranscript([line])
+        playback.seek(0.1)
+        let changes = CursorChanges()
+        withObservationTracking { _ = playback.activeLineID } onChange: { changes.count += 1 }
+        for position in stride(from: 0.2, to: 2.0, by: 0.08) { playback.seek(position) }
+        assert(changes.count == 0, "Moving within a sentence must not invalidate the transcript container")
+        playback.seek(5)
+        assert(changes.count == 1 && playback.activeLineID == nil)
+        verifyTranscriptPerformance(line)
         playback.seek(1); assert(playback.activeLine(in: [line]) == "one")
         playback.seek(5); assert(playback.activeLine(in: [line]) == nil)
         playback.clear(); assert(playback.duration == 0 && !playback.isPlaying)
@@ -64,6 +79,54 @@ struct RecordingTests {
             print("WINDOW_ID=\(window.windowNumber)")
             while window.isVisible { try await Task.sleep(for: .milliseconds(200)) }
         }
+    }
+
+    @MainActor static func verifyTranscriptPerformance(_ line: TranscriptLine) {
+        let cache = RecordingTranscriptTextCache()
+        for ms in stride(from: Int64(0), to: 960, by: 80) {
+            let text = cache.text(for: line, seekable: true, positionMs: ms)
+            assert(text.runs.contains { $0.link?.absoluteString == "arco-audio://seek/0" && $0.backgroundColor != nil })
+        }
+        assert(cache.linkBuildCount == 1 && cache.highlightBuildCount == 1)
+        let next = cache.text(for: line, seekable: true, positionMs: 1500)
+        assert(next.runs.contains { $0.link?.absoluteString == "arco-audio://seek/1000" && $0.backgroundColor != nil })
+        let inactive = cache.text(for: line, seekable: true, positionMs: nil)
+        assert(inactive.runs.allSatisfy { $0.backgroundColor == nil })
+        assert(cache.linkBuildCount == 1 && cache.highlightBuildCount == 3)
+        let unavailable = cache.text(for: line, seekable: false, positionMs: 0)
+        assert(unavailable.runs.allSatisfy { $0.link == nil })
+        var revised = line
+        revised.text = "改写后的句子"
+        assert(String(cache.text(for: revised, seekable: true, positionMs: nil).characters) == revised.text)
+
+        // Unsorted, overlapping speaker intervals and half-open boundaries
+        // must keep the old first-transcript-row selection behavior.
+        let lines: [TranscriptLine] = (0..<10_000).map { (i: Int) -> TranscriptLine in
+            let start = Int64(i) * 1000
+            let timing = TranscriptTiming(startMs: start, endMs: start + 900)
+            return TranscriptLine(id: String(i), timestamp: "00:00", speaker: "Remote 1", text: "句子 \(i)", sequence: i, timing: timing)
+        }
+        var overlapping = Array(lines.prefix(20).reversed())
+        overlapping[3].timing = TranscriptTiming(startMs: 0, endMs: 18_000)
+        let overlapIndex = RecordingTranscriptIndex(lines: overlapping)
+        for ms in stride(from: Int64(-1), through: 21_000, by: 100) {
+            let expected = overlapping.first { $0.timing!.startMs <= ms && ms < $0.timing!.endMs }?.id
+            assert(overlapIndex.lineID(at: ms) == expected)
+        }
+        let index = RecordingTranscriptIndex(lines: lines)
+        let positions: [Int64] = (0..<2000).map { (i: Int) -> Int64 in
+            let ordinal: Int = (i * 7919) % 10_000
+            return Int64(ordinal) * 1000 + 500
+        }
+        let clock = ContinuousClock()
+        var expected: [String?] = []
+        let linear = clock.measure {
+            expected = positions.map { ms in lines.first { $0.timing!.startMs <= ms && ms < $0.timing!.endMs }?.id }
+        }
+        var actual: [String?] = []
+        let indexed = clock.measure { actual = positions.map { index.lineID(at: $0) } }
+        assert(actual == expected)
+        print("Transcript benchmark: 10,000 lines / 2,000 positions; linear \(linear), indexed \(indexed). Links built once across 12 ticks; container invalidations within a line: 0.")
     }
     static func tone(_ url: URL, seconds: Int) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
