@@ -387,7 +387,20 @@ private struct TranscriptRowView: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 10)
             } else {
-                HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    speakerLabel(line.speaker, compact: false)
+                    Text(playbackText(line))
+                        .tint(ArcoNativeColors.inkStrong)
+                        .font(ArcoTypography.body)
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                        .lineSpacing(5.2)
+                        .padding(.leading, 25) // Match the 18pt avatar and 7pt label gap.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 76)
+                .overlay(alignment: .topLeading) {
                     Button {
                         if let time = line.timing, playback.duration > 0 {
                             playback.seek(Double(time.startMs) / 1000)
@@ -401,19 +414,6 @@ private struct TranscriptRowView: View {
                         .foregroundStyle(ArcoNativeColors.inkMuted)
                         .frame(width: 64, alignment: .leading)
                         .padding(.top, 1)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        speakerLabel(line.speaker, compact: false)
-                        Text(playbackText(line))
-                            .tint(ArcoNativeColors.inkStrong)
-                            .font(ArcoTypography.body)
-                            .foregroundStyle(ArcoNativeColors.inkStrong)
-                            .lineSpacing(5.2)
-                            .padding(.leading, 25) // Match the 18pt avatar and 7pt label gap.
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(12)
             }
@@ -421,7 +421,6 @@ private struct TranscriptRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(playback.duration > 0 && playback.activeLineID == line.id ? ArcoNativeColors.surfaceSelected : Color.clear)
         .id(line.id)
-        .modifier(TranscriptHoverModifier())
         .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
     }
 
@@ -468,16 +467,6 @@ public typealias TranscriptPane = TranscriptPaneView
 private struct TranscriptBottomPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = .infinity
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct TranscriptHoverModifier: ViewModifier {
-    @State private var hovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .background(hovering ? ArcoNativeColors.surfaceHover : Color.clear)
-            .onHover { hovering = $0 }
-    }
 }
 
 private struct ListeningIndicator: View {
