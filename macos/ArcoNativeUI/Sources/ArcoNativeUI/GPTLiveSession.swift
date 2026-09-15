@@ -187,6 +187,12 @@ public enum GPTLiveButtonPresentation {
         }
     }
 
+    public static func maximumRevealWidth(translate: ArcoTranslate, compact: Bool = true) -> CGFloat {
+        [GPTLiveSessionPhase.idle, .connecting, .connected, .disconnecting, .failed]
+            .map { ArcoMeetingActionButton.labelRevealWidth(translate(labelKey(for: $0), [:]), compact: compact) }
+            .max() ?? 0
+    }
+
     public static func isEnabled(for phase: GPTLiveSessionPhase) -> Bool {
         phase != .disconnecting
     }
@@ -198,11 +204,15 @@ public struct GPTLiveBetaButton: View {
     public let translate: ArcoTranslate
     public let compact: Bool
     public let iconOnly: Bool
+    public let revealLabel: Bool
+    public let onRevealInteraction: (@MainActor (Bool) -> Void)?
     public let action: @MainActor () -> Void
 
     public init(status: GPTLiveSessionStatus, translate: @escaping ArcoTranslate = ArcoTranslations.english,
-                compact: Bool = false, iconOnly: Bool = false, action: @escaping @MainActor () -> Void) {
-        self.status = status; self.translate = translate; self.compact = compact; self.iconOnly = iconOnly; self.action = action
+                compact: Bool = false, iconOnly: Bool = false, revealLabel: Bool = false,
+                onRevealInteraction: (@MainActor (Bool) -> Void)? = nil, action: @escaping @MainActor () -> Void) {
+        self.status = status; self.translate = translate; self.compact = compact; self.iconOnly = iconOnly; self.revealLabel = revealLabel
+        self.onRevealInteraction = onRevealInteraction; self.action = action
     }
 
     public var body: some View {
@@ -213,7 +223,9 @@ public struct GPTLiveBetaButton: View {
             busy: status.phase == .connecting || status.phase == .disconnecting,
             failed: status.phase == .failed, compact: compact, iconOnly: iconOnly,
             statusBadge: status.phase == .connected ? "checkmark.circle.fill"
-                : (status.phase == .failed ? "exclamationmark.circle.fill" : nil), action: action
+                : (status.phase == .failed ? "exclamationmark.circle.fill" : nil),
+            revealLabel: revealLabel, revealWidth: GPTLiveButtonPresentation.maximumRevealWidth(translate: translate, compact: compact),
+            onRevealInteraction: onRevealInteraction, action: action
         )
         .disabled(!GPTLiveButtonPresentation.isEnabled(for: status.phase))
         .accessibilityIdentifier("arco-voice-entry")

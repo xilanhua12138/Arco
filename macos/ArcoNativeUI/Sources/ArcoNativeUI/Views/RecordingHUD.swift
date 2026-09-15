@@ -13,6 +13,13 @@ public struct RecordingHUDView: View {
     let controller: ArcoAppShellController
     @State private var voicePhase: GPTLiveSessionPhase
     @State private var voiceEnabled: Bool
+    private enum Action: Hashable { case ask, voice }
+    @State private var revealedActions: Set<Action> = []
+    @State private var interactingActions: Set<Action> = []
+    @State private var hovering = false
+    @State private var collapseTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let onWidthChange: @MainActor (CGFloat, Bool) -> Void
     let translate: ArcoTranslate
     let onToggleAgent: @MainActor () throws -> Bool
     let onError: @MainActor (Error) -> Void
@@ -22,6 +29,7 @@ public struct RecordingHUDView: View {
         controller: ArcoAppShellController,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onToggleAgent: @escaping @MainActor () throws -> Bool,
+        onWidthChange: @escaping @MainActor (CGFloat, Bool) -> Void = { _, _ in },
         onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
@@ -30,6 +38,7 @@ public struct RecordingHUDView: View {
         _voiceEnabled = State(initialValue: controller.gptLiveBetaEnabled)
         self.translate = translate
         self.onToggleAgent = onToggleAgent
+        self.onWidthChange = onWidthChange
         self.onError = onError
     }
 
@@ -64,7 +73,9 @@ public struct RecordingHUDView: View {
                 .accessibilityHidden(true)
 
             ArcoMeetingActionButton(title: translate("hud.askArco", [:]), symbol: model.agentWindowVisible ? "text.bubble.fill" : "text.bubble",
-                active: model.agentWindowVisible, compact: true, iconOnly: true) {
+                active: model.agentWindowVisible, compact: true, iconOnly: true,
+                revealLabel: revealedActions.contains(.ask),
+                onRevealInteraction: { interactionChanged(.ask, engaged: $0) }) {
                 do { _ = try onToggleAgent() }
                 catch { onError(error) }
             }
@@ -74,7 +85,9 @@ public struct RecordingHUDView: View {
             .disabled(model.controlsLocked || model.capture.phase != .recording)
 
             if voiceEnabled {
-                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true, iconOnly: true) {
+                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true, iconOnly: true,
+                    revealLabel: revealedActions.contains(.voice),
+                    onRevealInteraction: { interactionChanged(.voice, engaged: $0) }) {
                     Task { @MainActor in await controller.inviteArco() }
                 }
                 .disabled(model.controlsLocked || model.capture.phase != .recording)
@@ -83,7 +96,25 @@ public struct RecordingHUDView: View {
         }
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 12)
-        .frame(width: 328, height: 52)
+        .frame(width: expandedWidth, height: 52)
+        .animation(reduceMotion ? nil : ArcoMotion.hover, value: expandedWidth)
+        .onChange(of: expandedWidth) { _, width in onWidthChange(width, !reduceMotion) }
+        .onHover { inside in
+            hovering = inside
+            if inside { collapseTask?.cancel() } else { scheduleCollapse() }
+        }
+        .onChange(of: model.capture.phase) { _, phase in
+            if phase != .recording {
+                collapseTask?.cancel()
+                interactingActions.removeAll()
+                revealedActions.removeAll()
+            }
+        }
+        .onDisappear {
+            collapseTask?.cancel()
+            interactingActions.removeAll()
+            revealedActions.removeAll()
+        }
         .background(ArcoWindowDragRegion())
         // Audio level updates belong to the participant animation, not the HUD.
         .onReceive(controller.$gptLiveBetaEnabled.removeDuplicates()) { voiceEnabled = $0 }
@@ -93,6 +124,33 @@ public struct RecordingHUDView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
     }
+    private var expandedWidth: CGFloat {
+        328
+            + (revealedActions.contains(.ask) ? ArcoMeetingActionButton.labelRevealWidth(translate("hud.askArco", [:])) : 0)
+            + (revealedActions.contains(.voice) ? GPTLiveButtonPresentation.maximumRevealWidth(translate: translate) : 0)
+    }
+
+    private func interactionChanged(_ action: Action, engaged: Bool) {
+        if engaged {
+            collapseTask?.cancel()
+            interactingActions.insert(action)
+            revealedActions.insert(action)
+        } else {
+            interactingActions.remove(action)
+            scheduleCollapse()
+        }
+    }
+
+    private func scheduleCollapse() {
+        collapseTask?.cancel()
+        guard !hovering, interactingActions.isEmpty else { return }
+        collapseTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
+            guard !Task.isCancelled, !hovering, interactingActions.isEmpty else { return }
+            revealedActions.removeAll()
+        }
+    }
+
 }
 
 private struct RecordingHUDStatusState {
