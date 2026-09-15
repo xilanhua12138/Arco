@@ -1,7 +1,6 @@
 import AppKit
 import ArcoNativeUI
 import Observation
-import QuartzCore
 import SwiftUI
 
 enum WindowCoordinatorError: LocalizedError {
@@ -60,6 +59,14 @@ private final class AgentWindowState {
     }
 }
 
+@MainActor
+@Observable
+private final class HUDWindowLayoutState {
+    var width = ArcoWindowMetrics.hudSize.width
+    var animated = false
+    var presentation = 0
+}
+
 /// Owns Arco's native AppKit windows. Hidden capture surfaces remain
 /// strongly owned and are reused for the entire process lifetime; this is the
 /// native equivalent of overlay.rs's WindowServer leak prevention.
@@ -85,6 +92,8 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     private var factories: WindowContentFactories
     private let defaults: UserDefaults
     private let agentState: AgentWindowState
+    private let hudLayout = HUDWindowLayoutState()
+    private var hudResizeTask: Task<Void, Never>?
     private var hudExpansionOrigin: CGPoint?
     private var keyEventMonitor: Any?
 
@@ -204,20 +213,25 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         guard let screen = preferredScreen(for: hud) else {
             throw WindowCoordinatorError.noAvailableDisplay
         }
-        hudExpansionOrigin = nil
-        hud.setFrame(
-            ArcoWindowPlacement.hudFrame(in: ScreenWorkArea(screen)),
-            display: true
-        )
-        // Preserve show-without-focus behavior. The panel is still
-        // focusable and accepts its Stop / Ask Arco controls on first click.
         if !wasVisible {
+            hudResizeTask?.cancel()
+            hudExpansionOrigin = nil
+            hudLayout.animated = false
+            hudLayout.width = ArcoWindowMetrics.hudSize.width
+            hudLayout.presentation += 1
+            hud.setFrame(
+                ArcoWindowPlacement.hudFrame(in: ScreenWorkArea(screen)),
+                display: true
+            )
             onHUDPresented()
         }
+        // Repeated capture snapshots must preserve the current width, hover
+        // state and user-dragged position of an already visible HUD.
         hud.orderFrontRegardless()
     }
 
     func releaseCaptureSurfaces() {
+        hudResizeTask?.cancel()
         onHUDHidden()
         hudWindow?.orderOut(nil)
         agentWindow?.orderOut(nil)
@@ -390,25 +404,42 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     private func resizeHUD(width: CGFloat, animated: Bool) {
         guard let panel = hudWindow else { return }
+        let width = max(ArcoWindowMetrics.hudSize.width, min(width, 720))
+        guard width != hudLayout.width else { return }
+        hudResizeTask?.cancel()
+
+        // Reserve space before SwiftUI starts revealing content. AppKit never
+        // animates the window frame: only SwiftUI animates the capsule and its
+        // glass mask. Keep the larger canvas until a collapse has finished.
+        if width > panel.frame.width { setHUDFrame(width: width) }
+        hudLayout.animated = animated
+        hudLayout.width = width
+        if animated {
+            hudResizeTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard let self, !Task.isCancelled, self.hudLayout.width == width else { return }
+                self.setHUDFrame(width: width)
+                self.hudWindow?.invalidateShadow()
+            }
+        } else {
+            setHUDFrame(width: width)
+            panel.invalidateShadow()
+        }
+    }
+
+    private func setHUDFrame(width: CGFloat) {
+        guard let panel = hudWindow else { return }
         var frame = panel.frame
         let expanding = width > ArcoWindowMetrics.hudSize.width
         if expanding, hudExpansionOrigin == nil { hudExpansionOrigin = frame.origin }
         if let anchor = hudExpansionOrigin { frame.origin = anchor }
-        if !expanding { hudExpansionOrigin = nil }
-        frame.size.width = max(ArcoWindowMetrics.hudSize.width, min(width, 720))
+        frame.size.width = width
         if let screen = panel.screen {
-            frame.origin.x = min(frame.origin.x, screen.visibleFrame.maxX - frame.width)
+            frame.origin.x = max(screen.visibleFrame.minX,
+                min(frame.origin.x, screen.visibleFrame.maxX - frame.width))
         }
-        guard panel.frame != frame else { return }
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.16
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().setFrame(frame, display: true)
-            }
-        } else {
-            panel.setFrame(frame, display: true)
-        }
+        if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+        if !expanding { hudExpansionOrigin = nil }
     }
 
     private func ensureHUDWindow() throws -> NSPanel {
@@ -434,13 +465,24 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         panel.title = "Arco Recording"
         configureOverlay(panel, kind: .hud)
         panel.isMovableByWindowBackground = false
-        panel.contentMinSize = ArcoWindowMetrics.hudSize
-        panel.contentMaxSize = CGSize(width: 720, height: ArcoWindowMetrics.hudSize.height)
-        panel.contentView = FirstMouseHostingView(
+        let layout = hudLayout
+        let hostingView = FirstMouseHostingView(
             rootView: AnyView(
-                SwiftUIOverlayGlassSurface(kind: .hud) { content }
+                HUDWindowSurface(layout: layout, content: content)
             )
         )
+        // The coordinator owns window geometry. Hosting-view ideal-size
+        // constraints would otherwise fight the reserved animation canvas.
+        hostingView.sizingOptions = []
+        // Keep NSHostingView out of NSWindow's direct content-view role:
+        // even empty sizingOptions can clear the window's min/max on layout.
+        let canvas = NSView(frame: CGRect(origin: .zero, size: ArcoWindowMetrics.hudSize))
+        hostingView.frame = canvas.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        canvas.addSubview(hostingView)
+        panel.contentView = canvas
+        panel.contentMinSize = ArcoWindowMetrics.hudSize
+        panel.contentMaxSize = CGSize(width: 720, height: ArcoWindowMetrics.hudSize.height)
         hudWindow = panel
         return panel
     }
@@ -625,4 +667,20 @@ private final class OverlayPanel: NSPanel {
 
 private final class FirstMouseHostingView: NSHostingView<AnyView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private struct HUDWindowSurface: View {
+    let layout: HUDWindowLayoutState
+    let content: AnyView
+
+    var body: some View {
+        SwiftUIOverlayGlassSurface(kind: .hud) {
+            content.id(layout.presentation)
+                .frame(width: layout.width, height: ArcoWindowMetrics.hudSize.height)
+        }
+        .animation(layout.animated ? ArcoMotion.hover : nil, value: layout.width)
+        // Transparent spare canvas stays on the trailing edge; the visible
+        // capsule never recenters when AppKit reserves or releases space.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
 }

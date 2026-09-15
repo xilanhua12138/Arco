@@ -94,7 +94,6 @@ public struct RecordingHUDView: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 12)
         .frame(width: expandedWidth, height: 52)
-        .animation(reduceMotion ? nil : ArcoMotion.hover, value: expandedWidth)
         .onChange(of: expandedWidth) { _, width in onWidthChange(width, !reduceMotion) }
         .onChange(of: model.capture.phase) { _, phase in
             if phase != .recording {
@@ -113,17 +112,24 @@ public struct RecordingHUDView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
     }
-    private var expandedWidth: CGFloat {
+    private var expandedWidth: CGFloat { width(for: revealedActions) }
+
+    private func width(for actions: Set<Action>) -> CGFloat {
         328
-            + (revealedActions.contains(.ask) ? ArcoMeetingActionButton.labelRevealWidth(translate("hud.askArco", [:])) : 0)
-            + (revealedActions.contains(.voice) ? GPTLiveButtonPresentation.maximumRevealWidth(translate: translate) : 0)
+            + (actions.contains(.ask) ? ArcoMeetingActionButton.labelRevealWidth(translate("hud.askArco", [:])) : 0)
+            + (actions.contains(.voice) ? GPTLiveButtonPresentation.maximumRevealWidth(translate: translate) : 0)
     }
 
     private func interactionChanged(_ action: Action, engaged: Bool) {
         // Each capsule owns its reveal lifetime. Leaving it must start the
         // collapse even while the pointer remains elsewhere inside the HUD.
-        if engaged { revealedActions.insert(action) }
-        else { revealedActions.remove(action) }
+        var next = revealedActions
+        if engaged { next.insert(action) }
+        else { next.remove(action) }
+        guard next != revealedActions else { return }
+        // Reserve native canvas before changing the SwiftUI label layout.
+        onWidthChange(width(for: next), !reduceMotion)
+        revealedActions = next
     }
 
 }
