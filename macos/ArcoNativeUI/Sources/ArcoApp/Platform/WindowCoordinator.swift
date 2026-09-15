@@ -1,6 +1,7 @@
 import AppKit
 import ArcoNativeUI
 import Observation
+import QuartzCore
 import SwiftUI
 
 enum WindowCoordinatorError: LocalizedError {
@@ -21,6 +22,7 @@ enum WindowCoordinatorError: LocalizedError {
 }
 
 struct HUDWindowActions {
+    let resize: @MainActor (CGFloat, Bool) -> Void
     let toggleAgent: @MainActor () throws -> Bool
 }
 
@@ -83,6 +85,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
     private var factories: WindowContentFactories
     private let defaults: UserDefaults
     private let agentState: AgentWindowState
+    private var hudExpansionOrigin: CGPoint?
     private var keyEventMonitor: Any?
 
     init(
@@ -201,6 +204,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         guard let screen = preferredScreen(for: hud) else {
             throw WindowCoordinatorError.noAvailableDisplay
         }
+        hudExpansionOrigin = nil
         hud.setFrame(
             ArcoWindowPlacement.hudFrame(in: ScreenWorkArea(screen)),
             display: true
@@ -384,12 +388,37 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
 
     // MARK: - Window creation
 
+    private func resizeHUD(width: CGFloat, animated: Bool) {
+        guard let panel = hudWindow else { return }
+        var frame = panel.frame
+        let expanding = width > ArcoWindowMetrics.hudSize.width
+        if expanding, hudExpansionOrigin == nil { hudExpansionOrigin = frame.origin }
+        if let anchor = hudExpansionOrigin { frame.origin = anchor }
+        if !expanding { hudExpansionOrigin = nil }
+        frame.size.width = max(ArcoWindowMetrics.hudSize.width, min(width, 720))
+        if let screen = panel.screen {
+            frame.origin.x = min(frame.origin.x, screen.visibleFrame.maxX - frame.width)
+        }
+        guard panel.frame != frame else { return }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: true)
+        }
+    }
+
     private func ensureHUDWindow() throws -> NSPanel {
         if let hudWindow { return hudWindow }
         guard let factory = factories.hud else {
             throw WindowCoordinatorError.contentNotInstalled("recording HUD")
         }
-        let actions = HUDWindowActions(toggleAgent: { [weak self] in
+        let actions = HUDWindowActions(resize: { [weak self] width, animated in
+            self?.resizeHUD(width: width, animated: animated)
+        }, toggleAgent: { [weak self] in
             guard let self else {
                 throw WindowCoordinatorError.contentNotInstalled("agent")
             }
@@ -406,7 +435,7 @@ final class WindowCoordinator: NSObject, CaptureSurfaceCoordinating, NSWindowDel
         configureOverlay(panel, kind: .hud)
         panel.isMovableByWindowBackground = false
         panel.contentMinSize = ArcoWindowMetrics.hudSize
-        panel.contentMaxSize = ArcoWindowMetrics.hudSize
+        panel.contentMaxSize = CGSize(width: 720, height: ArcoWindowMetrics.hudSize.height)
         panel.contentView = FirstMouseHostingView(
             rootView: AnyView(
                 SwiftUIOverlayGlassSurface(kind: .hud) { content }

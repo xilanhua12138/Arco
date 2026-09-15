@@ -433,6 +433,7 @@ private final class NativeApplicationRuntime {
                     controller: shellController,
                     translate: translate,
                     onToggleAgent: actions.toggleAgent,
+                    onWidthChange: actions.resize,
                     onError: { error in
                         shellController.presentInterfaceError(error.localizedDescription)
                     }

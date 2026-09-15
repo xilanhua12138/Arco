@@ -8,7 +8,15 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
 }
 
 @main struct MeetingActionsCheck {
-    @MainActor static func main() async throws {
+    @MainActor static func main() {
+        _ = NSApplication.shared
+        Task { @MainActor in
+            do { try await run(); NSApp.terminate(nil) }
+            catch { print("Action checks failed: \(error)"); exit(1) }
+        }
+        NSApp.run()
+    }
+    @MainActor static func run() async throws {
         _ = NSApplication.shared
         let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ARCO_ACTIONS_SNAPSHOTS"] ?? "/tmp/arco-meeting-actions")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -35,6 +43,18 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
             .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 14)),
             to: directory.appendingPathComponent("hud-ask-open.png"))
         model.agentWindowVisible = false
+        for locale in [AppLocale.simplifiedChinese, .english] {
+            let t = ArcoTranslations.translator(for: locale)
+            let width = GPTLiveButtonPresentation.maximumRevealWidth(translate: t)
+            for phase in [GPTLiveSessionPhase.idle, .connecting, .connected, .failed, .disconnecting] {
+                precondition(width >= ArcoMeetingActionButton.labelRevealWidth(t(GPTLiveButtonPresentation.labelKey(for: phase), [:])))
+            }
+            try await render(HStack(spacing: 8) {
+                ArcoMeetingActionButton(title: t("hud.askArco", [:]), symbol: "text.bubble", compact: true,
+                    iconOnly: true, revealLabel: true) {}
+                GPTLiveBetaButton(status: .idle, translate: t, compact: true, iconOnly: true, revealLabel: true) {}
+            }.padding(16).background(Color.white), to: directory.appendingPathComponent("expanded-\(locale.rawValue).png"))
+        }
         for phase in [GPTLiveSessionPhase.idle, .connecting, .connected, .failed, .disconnecting] {
             let row = HStack(spacing: 8) {
                 ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble") {}
@@ -64,6 +84,23 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
         precondition(!GPTLiveButtonPresentation.isEnabled(for: .disconnecting), "Departure must prevent duplicate invitations")
         precondition(GPTLiveButtonPresentation.labelKey(for: .failed) == "agent.gptLiveRetry")
         print("PASS: participant entry states; rendered actual HUD and peer actions to \(directory.path)")
+        if Bundle.main.bundleIdentifier == "app.arco.hud-review" {
+            let panel = NSPanel(contentRect: NSRect(x: 300, y: 300, width: 328, height: 52),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            panel.title = "Arco hover review"
+            panel.contentView = NSHostingView(rootView: RecordingHUDView(model: model, controller: controller,
+                translate: translate, onToggleAgent: { true }, onWidthChange: { width, animated in
+                    var frame = panel.frame
+                    frame.size.width = width
+                    panel.setFrame(frame, display: true, animate: animated)
+                }).background(ArcoNativeColors.surfaceSubtle))
+            NSApp.setActivationPolicy(.regular)
+            panel.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            while panel.isVisible { try await Task.sleep(for: .milliseconds(200)) }
+        }
+
     }
     @MainActor static func render<V: View>(_ view: V, to url: URL) async throws {
         if url.lastPathComponent.hasPrefix("header-") {

@@ -111,7 +111,8 @@ expectTrue(
 
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
 expectTrue(
-    hud.contains(".frame(width: 328, height: 52)"),
+    hud.contains(".frame(width: expandedWidth, height: 52)")
+        && hud.contains("private var expandedWidth: CGFloat"),
     "HUD must remain the source 328 by 52 point utility surface"
 )
 expectTrue(
