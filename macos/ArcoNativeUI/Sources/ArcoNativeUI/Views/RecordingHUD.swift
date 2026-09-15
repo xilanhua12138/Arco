@@ -15,9 +15,6 @@ public struct RecordingHUDView: View {
     @State private var voiceEnabled: Bool
     private enum Action: Hashable { case ask, voice }
     @State private var revealedActions: Set<Action> = []
-    @State private var interactingActions: Set<Action> = []
-    @State private var hovering = false
-    @State private var collapseTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onWidthChange: @MainActor (CGFloat, Bool) -> Void
     let translate: ArcoTranslate
@@ -99,20 +96,12 @@ public struct RecordingHUDView: View {
         .frame(width: expandedWidth, height: 52)
         .animation(reduceMotion ? nil : ArcoMotion.hover, value: expandedWidth)
         .onChange(of: expandedWidth) { _, width in onWidthChange(width, !reduceMotion) }
-        .onHover { inside in
-            hovering = inside
-            if inside { collapseTask?.cancel() } else { scheduleCollapse() }
-        }
         .onChange(of: model.capture.phase) { _, phase in
             if phase != .recording {
-                collapseTask?.cancel()
-                interactingActions.removeAll()
                 revealedActions.removeAll()
             }
         }
         .onDisappear {
-            collapseTask?.cancel()
-            interactingActions.removeAll()
             revealedActions.removeAll()
         }
         .background(ArcoWindowDragRegion())
@@ -131,24 +120,10 @@ public struct RecordingHUDView: View {
     }
 
     private func interactionChanged(_ action: Action, engaged: Bool) {
-        if engaged {
-            collapseTask?.cancel()
-            interactingActions.insert(action)
-            revealedActions.insert(action)
-        } else {
-            interactingActions.remove(action)
-            scheduleCollapse()
-        }
-    }
-
-    private func scheduleCollapse() {
-        collapseTask?.cancel()
-        guard !hovering, interactingActions.isEmpty else { return }
-        collapseTask = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
-            guard !Task.isCancelled, !hovering, interactingActions.isEmpty else { return }
-            revealedActions.removeAll()
-        }
+        // Each capsule owns its reveal lifetime. Leaving it must start the
+        // collapse even while the pointer remains elsewhere inside the HUD.
+        if engaged { revealedActions.insert(action) }
+        else { revealedActions.remove(action) }
     }
 
 }

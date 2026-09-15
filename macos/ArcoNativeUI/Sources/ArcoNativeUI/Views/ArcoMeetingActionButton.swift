@@ -97,17 +97,45 @@ public struct ArcoMeetingActionButton: View {
     }
 }
 
+/// Keep keyboard disclosure available without letting mouse-acquired focus
+/// latch a hover label open after the pointer has left the button.
+@_spi(Testing) public struct ArcoActionRevealState {
+    public private(set) var hovering = false
+    private var focused = false
+    private var pointerAcquiredFocus = false
+
+    public init() {}
+    public var revealed: Bool { hovering || (focused && !pointerAcquiredFocus) }
+
+    public mutating func hoverChanged(_ inside: Bool) {
+        hovering = inside
+    }
+
+    public mutating func focusChanged(_ focused: Bool) {
+        if focused && !self.focused { pointerAcquiredFocus = hovering }
+        if !focused { pointerAcquiredFocus = false }
+        self.focused = focused
+    }
+}
+
 private struct ArcoRevealInteraction: ViewModifier {
     let onInteraction: (@MainActor (Bool) -> Void)?
-    @State private var hovering = false
+    @State private var interaction = ArcoActionRevealState()
     @FocusState private var focused: Bool
 
     @ViewBuilder func body(content: Content) -> some View {
         if let onInteraction {
             content
                 .focused($focused)
-                .onHover { hovering = $0 }
-                .onChange(of: hovering || focused) { _, engaged in onInteraction(engaged) }
+                .onHover { inside in
+                    interaction.hoverChanged(inside)
+                    onInteraction(interaction.revealed)
+                }
+                .onChange(of: focused) { _, value in
+                    interaction.focusChanged(value)
+                    onInteraction(interaction.revealed)
+                }
+                .onDisappear { onInteraction(false) }
         } else {
             content
         }
