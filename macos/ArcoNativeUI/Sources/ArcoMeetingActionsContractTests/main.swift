@@ -18,6 +18,31 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
     }
     @MainActor static func run() async throws {
         _ = NSApplication.shared
+        // Regression: a mouse click may focus the button, but leaving it
+        // must collapse the label without leaving the rest of the HUD.
+        var askReveal = ArcoActionRevealState()
+        var voiceReveal = ArcoActionRevealState()
+        askReveal.hoverChanged(true)
+        precondition(askReveal.revealed)
+        askReveal.focusChanged(true)
+        askReveal.hoverChanged(false)
+        precondition(!askReveal.revealed, "Mouse focus must not latch a departed button open")
+        voiceReveal.hoverChanged(true)
+        precondition(voiceReveal.revealed && !askReveal.revealed, "Moving to a peer must disclose only that hovered peer")
+        voiceReveal.hoverChanged(false)
+        precondition(!voiceReveal.revealed, "Moving onto HUD background must collapse the label")
+        askReveal.hoverChanged(true)
+        precondition(askReveal.revealed, "Re-entering during collapse must reveal again")
+        askReveal.hoverChanged(false)
+        askReveal.focusChanged(false)
+        askReveal.focusChanged(true)
+        precondition(askReveal.revealed, "Keyboard focus must disclose the action")
+        askReveal.hoverChanged(true)
+        askReveal.hoverChanged(false)
+        precondition(askReveal.revealed, "A keyboard-focused action remains readable until blur")
+        askReveal.focusChanged(false)
+        precondition(!askReveal.revealed)
+        print("PASS: individual hover exit, peer switching, mouse focus, re-entry and keyboard focus")
         let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ARCO_ACTIONS_SNAPSHOTS"] ?? "/tmp/arco-meeting-actions")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let translate = ArcoTranslations.translator(for: .simplifiedChinese)
