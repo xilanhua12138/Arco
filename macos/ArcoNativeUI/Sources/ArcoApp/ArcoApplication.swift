@@ -386,6 +386,9 @@ private final class NativeApplicationRuntime {
         windowCoordinator.onHUDHidden = { [weak recordingHUDModel] in
             recordingHUDModel?.stopMonitoring()
         }
+        windowCoordinator.onAgentVisibilityChanged = { [weak recordingHUDModel] visible in
+            recordingHUDModel?.agentWindowVisible = visible
+        }
         windowCoordinator.onAgentFocused = { [weak agentOverlayModel] in
             Task { @MainActor in await agentOverlayModel?.refresh() }
         }

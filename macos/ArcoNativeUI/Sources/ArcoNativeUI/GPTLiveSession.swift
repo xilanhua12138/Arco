@@ -197,25 +197,30 @@ public struct GPTLiveBetaButton: View {
     public let status: GPTLiveSessionStatus
     public let translate: ArcoTranslate
     public let compact: Bool
+    public let iconOnly: Bool
     public let action: @MainActor () -> Void
 
     public init(status: GPTLiveSessionStatus, translate: @escaping ArcoTranslate = ArcoTranslations.english,
-                compact: Bool = false, action: @escaping @MainActor () -> Void) {
-        self.status = status; self.translate = translate; self.compact = compact; self.action = action
+                compact: Bool = false, iconOnly: Bool = false, action: @escaping @MainActor () -> Void) {
+        self.status = status; self.translate = translate; self.compact = compact; self.iconOnly = iconOnly; self.action = action
     }
 
     public var body: some View {
         ArcoMeetingActionButton(
             title: translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]),
-            symbol: status.phase == .connected ? "checkmark.circle.fill" : "waveform",
+            symbol: "person.wave.2",
             active: status.phase == .connected,
             busy: status.phase == .connecting || status.phase == .disconnecting,
-            failed: status.phase == .failed, compact: compact, action: action
+            failed: status.phase == .failed, compact: compact, iconOnly: iconOnly,
+            statusBadge: status.phase == .connected ? "checkmark.circle.fill"
+                : (status.phase == .failed ? "exclamationmark.circle.fill" : nil), action: action
         )
         .disabled(!GPTLiveButtonPresentation.isEnabled(for: status.phase))
         .accessibilityIdentifier("arco-voice-entry")
+        .accessibilityLabel(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]))
         .accessibilityHint(translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
-        .help(translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
+        .help(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]) + "\n"
+            + translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
     }
 }
 

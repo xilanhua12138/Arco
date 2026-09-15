@@ -27,6 +27,14 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
         try await render(RecordingHUDView(model: model, controller: controller, translate: translate, onToggleAgent: { true })
             .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 14)),
             to: directory.appendingPathComponent("hud.png"))
+        try await render(RecordingHUDView(model: model, controller: controller, onToggleAgent: { true })
+            .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 14)),
+            to: directory.appendingPathComponent("hud-english.png"))
+        model.agentWindowVisible = true
+        try await render(RecordingHUDView(model: model, controller: controller, translate: translate, onToggleAgent: { false })
+            .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 14)),
+            to: directory.appendingPathComponent("hud-ask-open.png"))
+        model.agentWindowVisible = false
         for phase in [GPTLiveSessionPhase.idle, .connecting, .connected, .failed, .disconnecting] {
             let row = HStack(spacing: 8) {
                 ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble") {}
@@ -41,14 +49,14 @@ private final class EmptyBackend: BackendDispatching, @unchecked Sendable {
             let header = HStack(spacing: 12) {
                 TopBarView(meeting: summary, capture: capture, viewModel: TopBarViewModel(onRenameMeeting: { _, _ in true }), translate: translate)
                 HStack(spacing: 8) {
-                    ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble") {}
-                    GPTLiveBetaButton(status: .idle, translate: translate) {}
+                    ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble", iconOnly: width < 740) {}
+                    GPTLiveBetaButton(status: .idle, translate: translate, iconOnly: width < 740) {}
                 }
             }.frame(width: width).padding(16).background(Color.white)
             try await render(header, to: directory.appendingPathComponent("header-\(Int(width)).png"))
         }
         for phase in [GPTLiveSessionPhase.idle, .connecting, .connected, .failed] {
-            try await render(GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: phase), compact: true) {}
+            try await render(GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: phase), compact: true, iconOnly: true) {}
                 .padding(16).background(Color.white), to: directory.appendingPathComponent("english-\(phase.rawValue).png"))
         }
         precondition(GPTLiveButtonPresentation.isEnabled(for: .connected), "Connected entry must still open participant status")

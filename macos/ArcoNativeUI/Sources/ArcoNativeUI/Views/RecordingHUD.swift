@@ -45,40 +45,45 @@ public struct RecordingHUDView: View {
                 elapsedClock: model.elapsedClock,
                 translate: translate
             )
-            Spacer(minLength: 0)
+            Button {
+                Task { await model.stop() }
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(HUDButtonStyle(kind: .stop))
+            .padding(.leading, 4)
+            .disabled(model.controlsLocked)
+            .accessibilityLabel(translate("hud.stop", [:]))
+            .help(translate("hud.stop", [:]))
+
             Rectangle()
                 .fill(HUDSourcePalette.ink.opacity(0.09))
                 .frame(width: 1, height: 20)
                 .accessibilityHidden(true)
 
-            Button {
-                Task { await model.stop() }
-            } label: {
-                Label(translate("common.stop", [:]), systemImage: "stop.fill")
-                    .labelStyle(HUDLabelStyle(iconSize: 11))
-            }
-            .buttonStyle(HUDButtonStyle(kind: .stop))
-            .disabled(model.controlsLocked)
-            .accessibilityLabel(translate("hud.stop", [:]))
-
-            ArcoMeetingActionButton(title: translate("hud.askArco", [:]), symbol: "text.bubble", compact: true) {
+            ArcoMeetingActionButton(title: translate("hud.askArco", [:]), symbol: model.agentWindowVisible ? "text.bubble.fill" : "text.bubble",
+                active: model.agentWindowVisible, compact: true, iconOnly: true) {
                 do { _ = try onToggleAgent() }
                 catch { onError(error) }
             }
-            .help(translate("agent.askArcoHelp", [:]))
+            .help(translate(model.agentWindowVisible ? "hud.hideAskArco" : "hud.askArco", [:]) + "\n"
+                + translate("agent.askArcoHelp", [:]))
+            .accessibilityValue(model.agentWindowVisible ? translate("hud.askArcoOpen", [:]) : "")
             .disabled(model.controlsLocked || model.capture.phase != .recording)
 
             if voiceEnabled {
-                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true) {
+                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true, iconOnly: true) {
                     Task { @MainActor in await controller.inviteArco() }
                 }
                 .disabled(model.controlsLocked || model.capture.phase != .recording)
             }
 
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 11)
-        .frame(width: 520, height: 56)
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 12)
+        .frame(width: 328, height: 52)
         .background(ArcoWindowDragRegion())
         // Audio level updates belong to the participant animation, not the HUD.
         .onReceive(controller.$gptLiveBetaEnabled.removeDuplicates()) { voiceEnabled = $0 }
@@ -120,7 +125,7 @@ private struct RecordingHUDStatusView: View {
             Text(statusText)
                 .font(ArcoTypography.sans(12, weight: .semibold))
                 .foregroundStyle(HUDSourcePalette.ink)
-                                .lineLimit(1)
+                .lineLimit(1)
 
             if !model.saved,
                !model.saving,
@@ -129,7 +134,7 @@ private struct RecordingHUDStatusView: View {
                 Text(elapsed)
                     .font(ArcoTypography.mono(12))
                     .monospacedDigit()
-                    .foregroundStyle(HUDSourcePalette.ink.opacity(0.5))
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
                     .lineLimit(1)
                     .accessibilityLabel(elapsed)
             }
@@ -212,7 +217,7 @@ private struct HUDButtonStyleBody: View {
     private var background: Color {
         switch kind {
         case .stop:
-            ArcoNativeColors.record.opacity(hovering || configuration.isPressed ? 0.15 : 0.08)
+            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.09 : 0.04)
         case .agent:
             HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.11 : 0.07)
         }

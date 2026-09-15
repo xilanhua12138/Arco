@@ -337,7 +337,7 @@ public struct ArcoMainShellView: View {
     private func currentPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
             if controller.store.capture.phase == .recording {
-                meetingHeader(controller.currentMeeting, backToHistory: false)
+                meetingHeader(controller.currentMeeting, backToHistory: false, viewportWidth: viewportWidth)
             }
             if controller.store.capture.phase == .recording {
                 workspace(controller.currentMeeting, viewportWidth: viewportWidth)
@@ -390,7 +390,7 @@ public struct ArcoMainShellView: View {
 
     private func reviewPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
-            meetingHeader(controller.store.meeting, backToHistory: true)
+            meetingHeader(controller.store.meeting, backToHistory: true, viewportWidth: viewportWidth)
             if controller.reviewingWhileRecording { liveReviewBanner }
             workspace(controller.store.meeting, viewportWidth: viewportWidth)
         }
@@ -438,8 +438,9 @@ public struct ArcoMainShellView: View {
         .accessibilityLabel(translate("app.returnToLiveMeeting", ["title": title]))
     }
 
-    private func meetingHeader(_ meeting: MeetingDetail?, backToHistory: Bool) -> some View {
-        HStack(spacing: 12) {
+    private func meetingHeader(_ meeting: MeetingDetail?, backToHistory: Bool, viewportWidth: CGFloat) -> some View {
+        let compactActions = viewportWidth < 1080
+        return HStack(spacing: 12) {
             TopBarView(
                 meeting: meeting?.summary,
                 meetingDetail: meeting,
@@ -449,16 +450,17 @@ public struct ArcoMainShellView: View {
                 onBackToHistory: backToHistory ? { controller.requestPage(.history) } : nil
             )
             HStack(spacing: 8) {
-                ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble",
-                    active: controller.agentPanelExpanded) {
+                ArcoMeetingActionButton(title: translate("agent.askArco", [:]),
+                    symbol: controller.agentPanelExpanded ? "text.bubble.fill" : "text.bubble",
+                    active: controller.agentPanelExpanded, iconOnly: compactActions) {
                     setAgentExpanded(!controller.agentPanelExpanded)
                 }
                 .focused($agentTriggerFocused)
-                .help(translate("agent.askArcoHelp", [:]))
+                .help(translate("agent.askArco", [:]) + "\n" + translate("agent.askArcoHelp", [:]))
                 .accessibilityIdentifier("main-agent-toggle")
                 .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
                 if controller.gptLiveBetaEnabled {
-                    GPTLiveBetaButton(status: controller.voiceParticipantStatus, translate: translate) {
+                    GPTLiveBetaButton(status: controller.voiceParticipantStatus, translate: translate, iconOnly: compactActions) {
                         Task { @MainActor in await controller.inviteArco() }
                     }
                 }
