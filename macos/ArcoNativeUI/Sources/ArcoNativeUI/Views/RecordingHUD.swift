@@ -1,4 +1,3 @@
-import ArcoNativeUI
 import SwiftUI
 
 private enum HUDSourcePalette {
@@ -9,25 +8,32 @@ private enum HUDSourcePalette {
     )
 }
 
-struct RecordingHUDView: View {
+public struct RecordingHUDView: View {
     @Bindable var model: RecordingHUDModel
+    let controller: ArcoAppShellController
+    @State private var voicePhase: GPTLiveSessionPhase
+    @State private var voiceEnabled: Bool
     let translate: ArcoTranslate
     let onToggleAgent: @MainActor () throws -> Bool
     let onError: @MainActor (Error) -> Void
 
-    init(
+    public init(
         model: RecordingHUDModel,
+        controller: ArcoAppShellController,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onToggleAgent: @escaping @MainActor () throws -> Bool,
         onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
+        self.controller = controller
+        _voicePhase = State(initialValue: controller.voiceParticipantStatus.phase)
+        _voiceEnabled = State(initialValue: controller.gptLiveBetaEnabled)
         self.translate = translate
         self.onToggleAgent = onToggleAgent
         self.onError = onError
     }
 
-    var body: some View {
+    public var body: some View {
         HStack(spacing: 8) {
             RecordingHUDStatusView(
                 model: RecordingHUDStatusState(
@@ -55,26 +61,30 @@ struct RecordingHUDView: View {
             .disabled(model.controlsLocked)
             .accessibilityLabel(translate("hud.stop", [:]))
 
-            Button {
-                do {
-                    _ = try onToggleAgent()
-                } catch {
-                    onError(error)
-                }
-            } label: {
-                Label { Text(translate("hud.askArco", [:])) } icon: {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable().scaledToFit().frame(width: 15, height: 15)
-                }
-                    .labelStyle(HUDLabelStyle(iconSize: 14))
+            ArcoMeetingActionButton(title: translate("hud.askArco", [:]), symbol: "text.bubble", compact: true) {
+                do { _ = try onToggleAgent() }
+                catch { onError(error) }
             }
-            .buttonStyle(HUDButtonStyle(kind: .agent))
+            .help(translate("agent.askArcoHelp", [:]))
             .disabled(model.controlsLocked || model.capture.phase != .recording)
+
+            if voiceEnabled {
+                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true) {
+                    Task { @MainActor in await controller.inviteArco() }
+                }
+                .disabled(model.controlsLocked || model.capture.phase != .recording)
+            }
+
         }
         .padding(.leading, 14)
         .padding(.trailing, 11)
-        .frame(width: 368, height: 56)
+        .frame(width: 520, height: 56)
         .background(ArcoWindowDragRegion())
+        // Audio level updates belong to the participant animation, not the HUD.
+        .onReceive(controller.$gptLiveBetaEnabled.removeDuplicates()) { voiceEnabled = $0 }
+        .onReceive(controller.$voiceInvitationPreparing.combineLatest(
+            controller.gptLiveSession.$status.map(\.phase).removeDuplicates()
+        ).map { preparing, phase in preparing ? .connecting : phase }.removeDuplicates()) { voicePhase = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
     }

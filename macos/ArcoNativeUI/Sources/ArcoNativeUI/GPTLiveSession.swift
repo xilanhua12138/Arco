@@ -192,103 +192,30 @@ public enum GPTLiveButtonPresentation {
     }
 }
 
-/// Compact, explicit opt-in control shared by the docked and floating Ask Arco
-/// surfaces. Merely opening either surface never starts a voice session.
+/// The voice entry opens the participant; leaving remains a separate action.
 public struct GPTLiveBetaButton: View {
     public let status: GPTLiveSessionStatus
     public let translate: ArcoTranslate
+    public let compact: Bool
     public let action: @MainActor () -> Void
 
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    public init(
-        status: GPTLiveSessionStatus,
-        translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        action: @escaping @MainActor () -> Void
-    ) {
-        self.status = status
-        self.translate = translate
-        self.action = action
+    public init(status: GPTLiveSessionStatus, translate: @escaping ArcoTranslate = ArcoTranslations.english,
+                compact: Bool = false, action: @escaping @MainActor () -> Void) {
+        self.status = status; self.translate = translate; self.compact = compact; self.action = action
     }
 
     public var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                if status.phase == .connecting || status.phase == .disconnecting {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(foreground)
-                        .frame(width: 13, height: 13)
-                } else {
-                    ArcoLucideIcon(.audioLines, size: 13, strokeWidth: 2.2)
-                        .frame(width: 13, height: 13)
-                }
-                Text(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]))
-                    .font(ArcoTypography.sans(11, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(border, lineWidth: 0.75)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.96))
+        ArcoMeetingActionButton(
+            title: translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]),
+            symbol: status.phase == .connected ? "checkmark.circle.fill" : "waveform",
+            active: status.phase == .connected,
+            busy: status.phase == .connecting || status.phase == .disconnecting,
+            failed: status.phase == .failed, compact: compact, action: action
+        )
         .disabled(!GPTLiveButtonPresentation.isEnabled(for: status.phase))
-        .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovering)
-        .animation(reduceMotion ? nil : ArcoMotion.state, value: status.phase)
-        .accessibilityLabel(
-            translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:])
-        )
-        .accessibilityHint(
-            status.message
-                ?? translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:])
-        )
-        .help(
-            status.message
-                ?? translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:])
-        )
-    }
-
-    private var foreground: Color {
-        switch status.phase {
-        case .connected:
-            ArcoNativeColors.actionInk
-        case .failed:
-            ArcoNativeColors.warning
-        case .idle, .connecting, .disconnecting:
-            ArcoNativeColors.inkStrong
-        }
-    }
-
-    private var background: Color {
-        switch status.phase {
-        case .connected:
-            hovering ? ArcoNativeColors.actionHover : ArcoNativeColors.action
-        case .failed:
-            ArcoNativeColors.warning.opacity(hovering ? 0.15 : 0.10)
-        case .connecting, .disconnecting:
-            ArcoNativeColors.brandSoft.opacity(hovering ? 1.0 : 0.78)
-        case .idle:
-            hovering ? ArcoNativeColors.surfaceHover : ArcoNativeColors.surfaceSubtle
-        }
-    }
-
-    private var border: Color {
-        switch status.phase {
-        case .connected:
-            Color.clear
-        case .failed:
-            ArcoNativeColors.warning.opacity(0.28)
-        case .idle, .connecting, .disconnecting:
-            ArcoNativeColors.line
-        }
+        .accessibilityIdentifier("arco-voice-entry")
+        .accessibilityHint(translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
+        .help(translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
     }
 }
 

@@ -448,29 +448,22 @@ public struct ArcoMainShellView: View {
                 translate: translate,
                 onBackToHistory: backToHistory ? { controller.requestPage(.history) } : nil
             )
-            Button {
-                setAgentExpanded(!controller.agentPanelExpanded)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable().scaledToFit().frame(width: 16, height: 16)
-                        .accessibilityHidden(true)
-                    Text(translate(controller.agentPanelExpanded ? "agent.collapse" : "agent.askArco", [:]))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                    if controller.store.agentRunning {
-                        Circle().fill(ArcoNativeColors.action).frame(width: 5, height: 5)
+            HStack(spacing: 8) {
+                ArcoMeetingActionButton(title: translate("agent.askArco", [:]), symbol: "text.bubble",
+                    active: controller.agentPanelExpanded) {
+                    setAgentExpanded(!controller.agentPanelExpanded)
+                }
+                .focused($agentTriggerFocused)
+                .help(translate("agent.askArcoHelp", [:]))
+                .accessibilityIdentifier("main-agent-toggle")
+                .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
+                if controller.gptLiveBetaEnabled {
+                    GPTLiveBetaButton(status: controller.voiceParticipantStatus, translate: translate) {
+                        Task { @MainActor in await controller.inviteArco() }
                     }
                 }
-                .foregroundStyle(ArcoNativeColors.inkStrong)
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .background(controller.agentPanelExpanded ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
-                            in: RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(ArcoPressFeedbackButtonStyle())
-            .focused($agentTriggerFocused)
-            .accessibilityIdentifier("main-agent-toggle")
-            .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
+
         }
         .zIndex(1)
     }
@@ -556,7 +549,7 @@ public struct ArcoMainShellView: View {
             workspace: controller.agentWorkspace,
             attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
-            gptLiveBetaEnabled: controller.gptLiveBetaEnabled,
+            gptLiveBetaEnabled: false,
             gptLiveStatus: controller.voiceParticipantStatus,
             showHeader: true,
             streamingTurn: controller.store.agentStreamingTurn,
