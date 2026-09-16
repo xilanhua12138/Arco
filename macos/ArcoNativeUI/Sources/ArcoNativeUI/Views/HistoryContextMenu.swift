@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// AppKit owns menu tracking, keyboard navigation, dismissal, and accessibility.
+/// The shared opaque menu owns tracking, keyboard navigation and dismissal.
 /// The transparent view only intercepts a secondary click, leaving row scrolling,
 /// selection, and hover to the native List.
 struct HistoryContextMenu: NSViewRepresentable {
@@ -31,6 +31,11 @@ final class HistoryMenuTarget: NSView {
         return super.hitTest(point)
     }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { ArcoMenuPresentation.shared.dismiss(ifSource: self) }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func rightMouseDown(with event: NSEvent) { showMenu(event) }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) { showMenu(event) }
@@ -38,7 +43,8 @@ final class HistoryMenuTarget: NSView {
     }
 
     private func showMenu(_ event: NSEvent) {
-        let menu = ArcoMenuPresentation.menu(actions: actions)
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        guard let window else { return }
+        ArcoMenuPresentation.shared.show(actions: actions, from: self,
+            screenPoint: window.convertPoint(toScreen: event.locationInWindow))
     }
 }

@@ -41,6 +41,8 @@ import ArcoNativeUI
             return
         }
 
+        try await verifyMenus(store: store)
+
         let archived = await store.manageMeeting(id, archived: true)
         precondition(archived && store.meetings.isEmpty && store.archivedMeetings.count == 1)
         precondition(store.selectedMeetingId == nil && store.meeting == nil)
@@ -79,6 +81,98 @@ import ArcoNativeUI
         print("Meeting management UI + Rust integration checks passed: archive, reload, mounted restore, failure preservation, delete")
         store.dispose(); reloaded.dispose()
     }
+
+    @MainActor static func verifyMenus(store: ArcoStore) async throws {
+        var archiveClicks = 0
+        var selectedClicks = 0
+        let history = HistoryPageView(meetings: store.meetings, selectedMeetingID: nil, query: .constant(""), viewportWidth: 1160,
+            translate: ArcoTranslations.simplifiedChinese, onSelectMeeting: { _ in selectedClicks += 1 },
+            onArchiveMeeting: { _ in archiveClicks += 1 })
+        let host = NSHostingView(rootView: history)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1160, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let target = descendants(host).first(where: { String(describing: type(of: $0)) == "HistoryMenuTarget" }) else {
+            fatalError("Every realized history row must have a context-menu target")
+        }
+        func openMenu() -> NSWindow {
+            let point = target.convert(NSPoint(x: target.bounds.midX, y: target.bounds.midY), to: nil)
+            let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            target.rightMouseDown(with: event)
+            guard let popup = window.childWindows?.first else { fatalError("Right click must open our opaque menu") }
+            return popup
+        }
+        let popup = openMenu()
+        let surface = popup.contentView!
+        let rows = descendants(surface).compactMap { $0 as? NSButton }
+        precondition(rows.map(\.title) == ["归档", "删除…"], "Menu labels must stay localized")
+        precondition(popup.frame.width >= 240 && descendants(surface).allSatisfy { !($0 is NSVisualEffectView) })
+        func bitmap(_ view: NSView) -> NSBitmapImageRep {
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            return bitmap
+        }
+        let snapshot = bitmap(surface)
+        if let path = ProcessInfo.processInfo.environment["ARCO_MENU_SNAPSHOT"] {
+            try snapshot.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
+        }
+        // Rendered-pixel assertion catches missing SF Symbols even when the model contains a symbol name.
+        for row in rows {
+            let image = bitmap(row)
+            let scale = CGFloat(image.pixelsWide) / row.bounds.width
+            var ink = 0
+            for x in Int(12 * scale)..<Int(31 * scale) {
+                for y in Int(7 * scale)..<Int(25 * scale) {
+                    if let c = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), c.alphaComponent > 0.9 && c.redComponent < 0.65 { ink += 1 }
+                }
+            }
+            precondition(ink > 10, "Each menu row must visibly render its icon")
+        }
+        let center = snapshot.colorAt(x: snapshot.pixelsWide / 2, y: snapshot.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+        precondition(center.alphaComponent > 0.99 && center.redComponent > 0.95, "Menu surface must be opaque light paint")
+        let hover = NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: popup.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+        rows[0].mouseMoved(with: hover)
+        if let path = ProcessInfo.processInfo.environment["ARCO_MENU_SNAPSHOT"] {
+            let highlightedPath = URL(fileURLWithPath: path).deletingPathExtension().path + "-highlighted.png"
+            try bitmap(surface).representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: highlightedPath))
+        }
+        rows[0].performClick(nil)
+        precondition(archiveClicks == 1 && selectedClicks == 0 && window.childWindows?.isEmpty != false,
+                     "Action must run once after dismissal, without opening the meeting")
+        let reopened = openMenu()
+        precondition(reopened !== popup && window.childWindows?.count == 1)
+        func key(_ code: UInt16) async throws {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+                isARepeat: false, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await key(125)
+        try await key(36)
+        precondition(archiveClicks == 2 && window.childWindows?.isEmpty != false, "Down and Return must choose the first action")
+        _ = openMenu()
+        try await key(53)
+        precondition(archiveClicks == 2 && window.childWindows?.isEmpty != false, "Escape must dismiss without selecting")
+        _ = openMenu()
+        let outside = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 1, y: 1), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        NSApp.postEvent(outside, atStart: false)
+        try await Task.sleep(for: .milliseconds(100))
+        precondition(window.childWindows?.isEmpty != false, "An outside click must dismiss")
+        _ = openMenu()
+        // Detaching the source must release the popup and its event monitor.
+        window.contentView = NSView()
+        precondition(window.childWindows?.isEmpty != false)
+        print("PASS: history action menu has rendered icons, opaque background, readable width, single action and teardown")
+    }
+
 }
 
 private struct ManagementPreview: View {
