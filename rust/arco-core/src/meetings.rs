@@ -147,6 +147,22 @@ impl MeetingStore {
         Ok((revision, Some(parse_meeting(&path, &source, active_path)?)))
     }
 
+    pub fn deletion_paths(&self, id: &str, active_path: Option<&Path>) -> Result<Vec<PathBuf>, String> {
+        let (_, path) = self.resolve_path(id)?;
+        if active_path.is_some_and(|active| paths_refer_to_same_file(active, &path)) {
+            return Err("Stop recording before deleting this meeting".into());
+        }
+        if fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_symlink() {
+            return Err("Linked transcripts cannot be deleted from Arco".into());
+        }
+        let mut paths = Vec::new();
+        let live = live_transcript_path(&path);
+        if live.symlink_metadata().is_ok() { paths.push(live); }
+        // Keep the transcript until all associated files have moved successfully.
+        paths.push(path);
+        Ok(paths)
+    }
+
     fn resolve_path(&self, id: &str) -> Result<(String, PathBuf), String> {
         let (source, file_name) = id
             .split_once(':')

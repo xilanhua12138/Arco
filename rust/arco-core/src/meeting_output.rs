@@ -193,6 +193,19 @@ pub fn list_meetings_with_artifacts(
     Ok(summaries)
 }
 
+pub fn list_meetings_in_archive(
+    meetings: &MeetingStore,
+    meeting_state: &MeetingStateStore,
+    query: Option<&str>,
+    active_path: Option<&Path>,
+    archived: bool,
+) -> Result<Vec<MeetingSummary>, String> {
+    let mut summaries = list_meetings_with_artifacts(meetings, meeting_state, query, active_path)?;
+    // A damaged sidecar must not hide the transcript itself.
+    summaries.retain(|summary| meeting_state.archived(&summary.id).unwrap_or(false) == archived);
+    Ok(summaries)
+}
+
 fn sanitize_output(kind: &str, answer: &str) -> Result<String, String> {
     match kind {
         "title" => sanitize_title(answer),

@@ -20,6 +20,10 @@ public struct HistoryPageView: View {
     public var now: Date
     public var viewportWidth: CGFloat
 
+    public var onArchiveMeeting: (String) -> Void
+    public var onDeleteMeeting: (String) -> Void
+    public var managementBusy: Bool
+    @State private var deletionCandidate: MeetingSummary?
     @FocusState private var searchFocused: Bool
 
     public init(
@@ -30,7 +34,10 @@ public struct HistoryPageView: View {
         locale: Locale = .current,
         now: Date = Date(),
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        onSelectMeeting: @escaping (String) -> Void
+        onSelectMeeting: @escaping (String) -> Void,
+        managementBusy: Bool = false,
+        onArchiveMeeting: @escaping (String) -> Void = { _ in },
+        onDeleteMeeting: @escaping (String) -> Void = { _ in }
     ) {
         self.meetings = meetings
         self.selectedMeetingID = selectedMeetingID
@@ -40,6 +47,9 @@ public struct HistoryPageView: View {
         self.now = now
         self.translate = translate
         self.onSelectMeeting = onSelectMeeting
+        self.managementBusy = managementBusy
+        self.onArchiveMeeting = onArchiveMeeting
+        self.onDeleteMeeting = onDeleteMeeting
     }
 
     public var body: some View {
@@ -68,6 +78,15 @@ public struct HistoryPageView: View {
                         Section {
                             ForEach(group.meetings) { meeting in
                                 meetingRow(meeting, showsDivider: meeting.id != group.meetings.last?.id)
+                                    .contextMenu {
+                                        Button { onArchiveMeeting(meeting.id) } label: {
+                                            Label(translate("history.archive", [:]), systemImage: "archivebox")
+                                        }.disabled(meeting.isLive || managementBusy)
+                                        Divider()
+                                        Button(role: .destructive) { deletionCandidate = meeting } label: {
+                                            Label(translate("history.delete", [:]), systemImage: "trash")
+                                        }.disabled(meeting.isLive || managementBusy)
+                                    }
                                     .listRowInsets(EdgeInsets())
                                     .listRowSeparator(.hidden)
                                     .listRowBackground(ArcoNativeColors.surfaceDocument)
@@ -98,6 +117,19 @@ public struct HistoryPageView: View {
         .padding(.bottom, 16)
         .frame(maxWidth: 1080, maxHeight: .infinity)
         .background(Color.clear)
+        .alert(translate("history.deleteTitle", [:]), isPresented: Binding(
+            get: { deletionCandidate != nil },
+            set: { if !$0 { deletionCandidate = nil } }
+        ), presenting: deletionCandidate) { meeting in
+            Button(translate("common.cancel", [:]), role: .cancel) { deletionCandidate = nil }
+            Button(translate("history.delete", [:]), role: .destructive) {
+                onDeleteMeeting(meeting.id)
+                deletionCandidate = nil
+            }
+        } message: { meeting in
+            Text(translate("history.deleteMessage", ["title": meetingTitle(meeting)]))
+        }
+
     }
 
     private var searchField: some View {

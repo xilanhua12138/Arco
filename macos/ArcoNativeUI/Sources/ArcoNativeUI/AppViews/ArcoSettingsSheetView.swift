@@ -7,17 +7,20 @@ public struct ArcoSettingsSheetView: View {
     private let translate: ArcoTranslate
     private let providerViewModel: ProviderSetupViewModel?
     private let meetingAudioSetup: MeetingAudioSetupModel?
+    private let meetingStore: ArcoStore?
 
 
     public init(
         viewModel: SettingsSheetViewModel,
         providerViewModel: ProviderSetupViewModel? = nil,
         meetingAudioSetup: MeetingAudioSetupModel? = nil,
+        meetingStore: ArcoStore? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english
     ) {
         self.viewModel = viewModel
         self.providerViewModel = providerViewModel
         self.meetingAudioSetup = meetingAudioSetup
+        self.meetingStore = meetingStore
         self.translate = translate
     }
 
@@ -1112,44 +1115,47 @@ public struct ArcoSettingsSheetView: View {
     }
 
     private var privacyPage: some View {
-        SettingsSection(title: translate("settings.group.storage", [:]), symbol: "internaldrive") {
-            AudioArchiveSettingsView(viewModel: viewModel, translate: translate)
-            SettingsStorageLocationRow(title: translate("settings.meetingTranscripts", [:]),
-                detail: translate("settings.meetingTranscriptsValue", [:]),
-                directory: viewModel.snapshot.transcriptStorage.selectedDirectory,
-                usingDefault: viewModel.snapshot.transcriptStorage.usingDefault,
-                locked: viewModel.snapshot.audioModeLocked || viewModel.snapshot.transcriptStorageChanging,
-                translate: translate,
-                choose: { await viewModel.chooseTranscriptDirectory() },
-                reset: { await viewModel.resetTranscriptDirectory() })
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel(translate("settings.transcriptStorage", [:]))
-            if viewModel.snapshot.audioModeLocked {
-                Text(translate("settings.storageLocked", [:]))
-                    .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 12)
+        VStack(alignment: .leading, spacing: 28) {
+            if let meetingStore {
+                ArchivedMeetingsSettingsView(store: meetingStore, translate: translate)
             }
-            DisclosureGroup(translate("settings.storageDetails", [:])) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(translate("audioArchive.formatDetails", [:]))
-                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
-                    Text(translate("settings.storageLocationHelp", [:]))
-                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
-                    SettingsStorageLocationRow(title: translate("settings.notes", [:]),
-                        detail: translate("settings.previousNotesHelp", [:]),
-                        directory: viewModel.snapshot.notesStorage.selectedDirectory,
-                        usingDefault: true, locked: false, translate: translate)
-                    privacyRow("folder", "settings.legacyImport", "settings.legacyImportValue")
-                    privacyRow("command", "settings.nativeConversations", "settings.nativeConversationsValue")
-                    privacyRow("internaldrive", "settings.linksCacheNotes", "settings.linksCacheNotesValue")
-                    privacyRow("checkmark.shield", "settings.questionContext", "settings.questionContextValue")
-                }.padding(.top, 12)
+            SettingsSection(title: translate("settings.group.storage", [:]), symbol: "internaldrive") {
+                AudioArchiveSettingsView(viewModel: viewModel, translate: translate)
+                SettingsStorageLocationRow(title: translate("settings.meetingTranscripts", [:]),
+                    detail: translate("settings.meetingTranscriptsValue", [:]),
+                    directory: viewModel.snapshot.transcriptStorage.selectedDirectory,
+                    usingDefault: viewModel.snapshot.transcriptStorage.usingDefault,
+                    locked: viewModel.snapshot.audioModeLocked || viewModel.snapshot.transcriptStorageChanging,
+                    translate: translate,
+                    choose: { await viewModel.chooseTranscriptDirectory() },
+                    reset: { await viewModel.resetTranscriptDirectory() })
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(translate("settings.transcriptStorage", [:]))
+                if viewModel.snapshot.audioModeLocked {
+                    Text(translate("settings.storageLocked", [:]))
+                        .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 12)
+                }
+                DisclosureGroup(translate("settings.storageDetails", [:])) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(translate("audioArchive.formatDetails", [:]))
+                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                        Text(translate("settings.storageLocationHelp", [:]))
+                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                        SettingsStorageLocationRow(title: translate("settings.notes", [:]),
+                            detail: translate("settings.previousNotesHelp", [:]),
+                            directory: viewModel.snapshot.notesStorage.selectedDirectory,
+                            usingDefault: true, locked: false, translate: translate)
+                        privacyRow("folder", "settings.legacyImport", "settings.legacyImportValue")
+                        privacyRow("command", "settings.nativeConversations", "settings.nativeConversationsValue")
+                        privacyRow("internaldrive", "settings.linksCacheNotes", "settings.linksCacheNotesValue")
+                        privacyRow("checkmark.shield", "settings.questionContext", "settings.questionContextValue")
+                    }.padding(.top, 12)
+                }
+                .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                .padding(.top, 20)
             }
-            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
-            .padding(.top, 20)
         }
     }
-
-
 
     private func providerConfigurationRow(_ title: String, value: String, muted: Bool) -> some View {
         HStack {

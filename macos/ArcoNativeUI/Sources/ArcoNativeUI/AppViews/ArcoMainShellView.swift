@@ -105,6 +105,7 @@ public struct ArcoMainShellView: View {
                     viewModel: controller.settingsViewModel(),
                     providerViewModel: controller.providerViewModel(),
                     meetingAudioSetup: controller.meetingAudioSetup,
+                    meetingStore: controller.store,
                     translate: translate
                 )
                 .transition(
@@ -381,7 +382,10 @@ public struct ArcoMainShellView: View {
             viewportWidth: viewportWidth,
             locale: Locale(identifier: controller.locale.rawValue),
             translate: translate,
-            onSelectMeeting: { id in Task { await controller.selectMeeting(id) } }
+            onSelectMeeting: { id in Task { await controller.selectMeeting(id) } },
+            managementBusy: controller.store.meetingManagementBusy,
+            onArchiveMeeting: { id in Task { await controller.store.manageMeeting(id, archived: true) } },
+            onDeleteMeeting: { id in Task { await controller.store.manageMeeting(id) } }
         )
         .padding(.top, 0)
     }
