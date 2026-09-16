@@ -406,8 +406,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var hasStopped = false
     private let archive = AsyncMeetingAudioArchive(environment: ProcessInfo.processInfo.environment)
     private let output = FileHandle.standardOutput
-    private let outputQueue = DispatchQueue(label: "app.arco.recorder.stdout")
-    private let outputWriteGate = DispatchSemaphore(value: 1)
+    private var pcmOutput: RecorderPCMOutput?
 
     override init() {
         super.init()
@@ -416,6 +415,15 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
     func start() {
         installTerminationHandlers()
+        do {
+            pcmOutput = try RecorderPCMOutput(descriptor: output.fileDescriptor) { [weak self] reason in
+                self?.lifecycleQueue.async { [weak self] in
+                    self?.stopAndExit(1, reason: reason)
+                }
+            }
+        } catch {
+            stopAndExit(1, reason: "could not initialize audio output: \(error)")
+        }
         startParentMonitor()
         configureEchoCancellation()
         startMixTimer()
@@ -1158,28 +1166,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
         // Emit even during silence so channel alignment remains stable from
         // process start through permission prompts and transient device gaps.
-        guard outputWriteGate.wait(timeout: .now()) == .success else {
-            lifecycleQueue.async { [weak self] in
-                self?.stopAndExit(1, reason: "audio consumer stopped draining; stopping native recorder")
-            }
-            return
-        }
-        let payload = interleavedOutput.withUnsafeBytes { Data($0) }
-        outputQueue.async { [weak self] in
-            guard let self else { return }
-            let emitted = payload.withUnsafeBytes { bytes in
-                self.writeAll(bytes)
-            }
-            self.archive?.append(rawPayload)
-            self.outputWriteGate.signal()
-            guard !emitted else { return }
-            self.lifecycleQueue.async { [weak self] in
-                self?.stopAndExit(
-                    0,
-                    reason: "audio consumer closed; stopping native recorder"
-                )
-            }
-        }
+        // Archive on the capture clock, independently of stdout backpressure.
+        archive?.append(rawPayload)
+        pcmOutput?.enqueue(interleavedOutput.withUnsafeBytes { Data($0) })
     }
 
     private func logQuality(
@@ -1201,25 +1190,6 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 aec ? "on" : "off"
             )
         )
-    }
-
-    private func writeAll(_ bytes: UnsafeRawBufferPointer) -> Bool {
-        guard var pointer = bytes.baseAddress else { return true }
-        var remaining = bytes.count
-        let descriptor = output.fileDescriptor
-        while remaining > 0 {
-            let written = Darwin.write(descriptor, pointer, remaining)
-            if written > 0 {
-                remaining -= written
-                pointer = pointer.advanced(by: written)
-                continue
-            }
-            if written < 0, errno == EINTR {
-                continue
-            }
-            return false
-        }
-        return true
     }
 
     func stream(
@@ -1580,11 +1550,6 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         systemAudioConsumer = nil
         microphoneAudioConsumer = nil
 
-        let ownsOutputGate = outputWriteGate.wait(timeout: .now() + 1) == .success
-        if !ownsOutputGate {
-            log("could not acquire stdout for the recorder shutdown tail")
-        }
-
         if !systemCallbacksQuiesced {
             log("leaving Rust audio runtime handles for system to process teardown")
         } else if let systemProducer {
@@ -1625,11 +1590,11 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             }
         }
 
-        if ownsOutputGate {
-            if !emitRemainingPCM() {
-                log("recorder shutdown tail output was incomplete")
-            }
-            outputWriteGate.signal()
+        if !emitRemainingPCM() {
+            log("recorder shutdown tail output was incomplete; raw audio was submitted to the archive")
+        }
+        if pcmOutput?.finish() == false {
+            log("audio output did not drain before shutdown; transcription tail may be incomplete")
         }
 
         if systemCallbacksQuiesced {
@@ -1690,6 +1655,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     private func emitRemainingPCM() -> Bool {
+        var complete = true
         while let chunk = drainAlignedPCMChunk(
             systemBuffer: &systemBuffer,
             microphoneBuffer: &micBuffer,
@@ -1716,15 +1682,11 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             archive?.append(chunk.samples.withUnsafeBytes { Data($0) })
             var processedSamples = chunk.samples
             applyEchoCancellation(to: &processedSamples)
-            let emitted = processedSamples.withUnsafeBytes { bytes in
-                writeAll(bytes)
-            }
-            guard emitted else {
-                log("could not write recorder shutdown tail to stdout: errno=\(errno)")
-                return false
+            if pcmOutput?.enqueue(processedSamples.withUnsafeBytes { Data($0) }) != true {
+                complete = false
             }
         }
-        return true
+        return complete
     }
 
     @available(macOS 14.2, *)

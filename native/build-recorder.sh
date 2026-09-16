@@ -42,7 +42,7 @@ fi
 
 COMBINED_SOURCE=$(mktemp "${TMPDIR:-/tmp}/arco-recorder.XXXXXX.swift")
 trap 'rm -f "$COMBINED_SOURCE"' EXIT HUP INT TERM
-cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" > "$COMBINED_SOURCE"
+cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" "$NATIVE_DIR/RecorderOutput.swift" > "$COMBINED_SOURCE"
 swiftc -O "$COMBINED_SOURCE" \
   -import-objc-header "$AUDIO_RUNTIME_HEADER" \
   "$AUDIO_RUNTIME_ARCHIVE" \
@@ -67,6 +67,7 @@ if [ "$OUTPUT" = "$NATIVE_DIR/recorder" ]; then
   RUNTIME_DIR="$NATIVE_DIR/runtime"
   mkdir -p "$RUNTIME_DIR"
   cp "$OUTPUT" "$RUNTIME_DIR/recorder"
+  cp "$NATIVE_DIR/RecorderOutput.swift" "$RUNTIME_DIR/RecorderOutput.swift"
   cp "$NATIVE_DIR/AudioArchive.swift" "$RUNTIME_DIR/AudioArchive.swift"
   cp "$NATIVE_DIR/recorder.swift" "$RUNTIME_DIR/recorder.swift"
   cp "$NATIVE_DIR/recorder-Info.plist" "$RUNTIME_DIR/recorder-Info.plist"

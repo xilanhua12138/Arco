@@ -1172,14 +1172,20 @@ fn is_fatal_channel_error(error: &str) -> bool {
         || (lowercase.contains("http") && (lowercase.contains("401") || lowercase.contains("403")))
 }
 
-// Only credential problems are unrecoverable. Session-level provider errors
-// like 45000081 (packet-wait timeout) or 55000031 (server busy) are exactly
-// what the reconnect path exists for.
+// Keep authentication failures terminal even if a provider uses a generic code.
 fn is_provider_auth_rejection(lowercase_error: &str) -> bool {
     lowercase_error.contains("doubao transcription failed (")
         && (lowercase_error.contains("access token")
             || lowercase_error.contains("(401")
             || lowercase_error.contains("(403"))
+}
+
+fn provider_error(code: u32, message: &str) -> String {
+    // Server failures and packet-wait timeouts can recover on a new session.
+    // Preserve terminal handling for other request/configuration rejections.
+    let retryable = (55_000_000..56_000_000).contains(&code) || code == 45_000_081;
+    let prefix = if retryable { "" } else { FATAL_ERROR_PREFIX };
+    format!("{prefix}Doubao transcription failed ({code}): {message}")
 }
 
 fn apply_server_confirmation(
@@ -1294,9 +1300,7 @@ async fn wait_for_initialization(socket: &mut DoubaoSocket) -> Result<(), String
     loop {
         match receive_protocol_message(socket.next().await).await? {
             Some(ServerMessage::Error { code, message }) => {
-                return Err(format!(
-                    "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
-                ));
+                return Err(provider_error(code, &message));
             }
             Some(ServerMessage::Result { .. } | ServerMessage::Acknowledgement { .. }) => {
                 return Ok(());
@@ -1635,9 +1639,7 @@ async fn stream_connected_channel(
                         )
                         .await
                         .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
-                        return Err(format!(
-                            "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
-                        ));
+                        return Err(provider_error(code, &message));
                     }
                     ServerMessage::Acknowledgement { .. } => {
                         writer
@@ -2519,6 +2521,101 @@ mod tests {
             data: vec![byte; SAMPLE_RATE * MONO_FRAME_BYTES / 10],
             start_frame,
         }
+    }
+
+    fn server_error_message(code: u32, message: &str) -> Message {
+        let mut packet = vec![0x11, 0xf0, 0x10, 0x00];
+        packet.extend_from_slice(&code.to_be_bytes());
+        packet.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        packet.extend_from_slice(message.as_bytes());
+        Message::Binary(packet.into())
+    }
+
+    #[tokio::test]
+    async fn initialization_classifies_actual_provider_error_packets_for_retry() {
+        for (code, message, fatal) in [
+            (55000000, "read result timeout", false),
+            (55000031, "server busy", false),
+            (45000081, "waiting next packet timeout", false),
+            (45000000, "invalid access token", true),
+            (45000001, "invalid audio format", true),
+        ] {
+            let (mut socket, mut server) = local_websocket_pair().await;
+            server.send(server_error_message(code, message)).await.unwrap();
+            let error = tokio::time::timeout(
+                Duration::from_secs(1), wait_for_initialization(&mut socket),
+            ).await.unwrap().unwrap_err();
+            assert_eq!(is_fatal_channel_error(&error), fatal, "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn server_timeout_reconnect_preserves_unconfirmed_and_new_audio_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(4);
+        let chunks = [
+            tenth_second_chunk(0, 3),
+            tenth_second_chunk(SAMPLE_RATE / 10, 4),
+            tenth_second_chunk(SAMPLE_RATE / 5, 5),
+        ];
+        sender.send(chunks[0].clone()).await.unwrap();
+        sender.send(chunks[1].clone()).await.unwrap();
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.enable_disk_recovery().unwrap();
+        state.connection_id = 1;
+        let (socket, mut server) = local_websocket_pair().await;
+        let provider = async move {
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            server.send(server_error_message(55000000, "read result timeout")).await.unwrap();
+            // Keep the transport open until the client processes the error.
+            let _ = server.next().await;
+        };
+        let attempt = stream_connected_channel(
+            socket, &mut receiver, &writer, None, &ready, "combined", None, &mut state,
+        );
+        let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(attempt, provider)
+        }).await.unwrap();
+        let error = result.unwrap_err();
+        assert!(!is_fatal_channel_error(&error), "actual stream error must enter retry: {error}");
+        assert!(!sender.is_closed(), "provider failure must not close capture input");
+
+        // New capture continues during backoff; the retry must retain both
+        // previously sent/unconfirmed audio and the held lookahead before it.
+        sender.send(chunks[2].clone()).await.unwrap();
+        wait_before_retry(Duration::from_millis(10), &mut receiver, &mut state).await.unwrap();
+        drop(sender);
+        state.connection_id += 1;
+        let (socket, mut server) = local_websocket_pair().await;
+        let provider = async move {
+            for chunk in chunks {
+                let Some(Ok(Message::Binary(packet))) = server.next().await else {
+                    panic!("expected replayed audio");
+                };
+                assert_eq!(&packet[..4], &[0x11, 0x21, 0x01, 0x00]);
+                assert_eq!(gunzip(&packet[12..]).unwrap(), chunk.data);
+            }
+            let Some(Ok(Message::Binary(packet))) = server.next().await else {
+                panic!("expected EOF flush");
+            };
+            assert_eq!(&packet[..4], &[0x11, 0x22, 0x01, 0x00]);
+            server.send(result_message(-1, true, json!({"result": {}}))).await.unwrap();
+            let _ = server.next().await;
+        };
+        let attempt = stream_connected_channel(
+            socket, &mut receiver, &writer, None, &ready, "combined", None, &mut state,
+        );
+        let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(attempt, provider)
+        }).await.unwrap();
+        assert_eq!(result, Ok(true));
+        assert!(state.pending.is_empty());
     }
 
     #[test]
