@@ -49,7 +49,7 @@ import ArcoNativeUI
         field.performClick(nil)
         guard let popup = window.childWindows?.first, let surface = popup.contentView,
               let editor = descendants(field).compactMap({ $0 as? NSTextField }).first else { fatalError("Click must open an anchored list and editable search field") }
-        guard abs(popup.frame.width - field.bounds.width) < 1, !editor.isHidden else { fatalError("List must match field width and support typing") }
+        guard popup.frame.width >= max(240, field.bounds.width), !editor.isHidden else { fatalError("List must have a readable minimum width and support typing") }
         let anchor = window.convertToScreen(field.convert(field.bounds, to: nil))
         guard abs(popup.frame.minX - anchor.minX) < 1, abs(popup.frame.maxY - (anchor.minY - 8)) < 1 else { fatalError("List must anchor directly below the field") }
         let rows = descendants(surface).compactMap { $0 as? NSButton }

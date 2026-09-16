@@ -346,10 +346,10 @@ public struct ProviderSetupView: View {
         SettingsSelect(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
             noResults: translate("common.noOptions", [:]),
             selection: selection?.rawValue ?? "none",
-            options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]))] : [])
+            options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]), symbol: "minus.circle")] : [])
                 + ProviderID.allCases.map { provider in
                     SettingsSelectOption(id: provider.rawValue, label: provider.displayName,
-                        enabled: viewModel.runtime(for: provider)?.available == true && (!secondary || provider != viewModel.primary))
+                        enabled: viewModel.runtime(for: provider)?.available == true && (!secondary || provider != viewModel.primary), symbol: "terminal")
                 }, onSelect: { value in
                     if secondary { viewModel.changeSecondary(ProviderID(rawValue: value)) }
                     else if let provider = ProviderID(rawValue: value) { viewModel.changePrimary(provider) }
@@ -435,17 +435,12 @@ public struct ProviderSetupView: View {
                 .font(ArcoTypography.sans(30, weight: .semibold))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
             Spacer()
-            Picker(translate("settings.appLanguage", [:]), selection: $locale) {
-                Text("简体中文").tag("zh-CN")
-                Text("English").tag("en")
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .font(ArcoTypography.sans(12))
-            .frame(minWidth: 112)
-            .frame(height: 32)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineThin))
+            SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
+                selection: locale,
+                options: [SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
+                          SettingsSelectOption(id: "en", label: "English", symbol: "globe")],
+                onSelect: { locale = $0 })
+                .frame(width: 144)
             if let onCancel {
                 Button(action: onCancel) { Image(systemName: "xmark").font(.system(size: 18)).frame(width: 34, height: 34) }
                     .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))

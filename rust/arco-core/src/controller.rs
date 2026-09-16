@@ -177,6 +177,24 @@ impl Controller {
                 Ok(Value::Null)
             }
             "list_meetings" => value(self.list_meetings(optional::<String>(&params, "query")?)?),
+            "list_archived_meetings" => value(crate::meeting_output::list_meetings_in_archive(
+                &self.meetings, &self.meeting_state, None, self.capture.active_transcript_path().as_deref(), true,
+            )?),
+            "set_meeting_archived" => {
+                let id: String = required(&params, "id")?;
+                let _storage = self.storage_change_lock.lock().map_err(|_| "Storage is busy")?;
+                let _capture = self.capture_commands.commit.lock().map_err(|_| "Capture is busy")?;
+                let active = self.capture.active_transcript_path();
+                let detail = self.meetings.read(&id, active.as_deref())?;
+                let status = self.capture.status();
+                if detail.summary.is_live || (status.active_meeting_id.as_deref() == Some(&id) && matches!(status.phase.as_str(), "starting" | "recording" | "stopping")) { return Err("Stop recording before archiving this meeting".into()); }
+                self.meeting_state.set_archived(&id, required(&params, "archived")?)?;
+                Ok(Value::Null)
+            }
+            "delete_meeting" => {
+                self.delete_meeting(required(&params, "id")?)?;
+                Ok(Value::Null)
+            }
             "read_meeting" => value(self.read_meeting(required(&params, "id")?)?),
             "poll_live_meeting" => value(self.poll_live_meeting(
                 required(&params, "meetingId")?,
@@ -432,12 +450,43 @@ impl Controller {
         query: Option<String>,
     ) -> Result<Vec<crate::models::MeetingSummary>, String> {
         let active = self.capture.active_transcript_path();
-        list_meetings_with_artifacts(
+        crate::meeting_output::list_meetings_in_archive(
             &self.meetings,
             &self.meeting_state,
             query.as_deref(),
             active.as_deref(),
+            false,
         )
+    }
+
+    fn delete_meeting(&self, id: String) -> Result<(), String> {
+        let _storage = self.storage_change_lock.lock().map_err(|_| "Storage is busy")?;
+        let _capture = self.capture_commands.commit.lock().map_err(|_| "Capture is busy")?;
+        let _agent = self.agent_run_lock.try_lock().map_err(|_| "Wait for Arco to finish its answer before deleting")?;
+        let _output = self.output_run_lock.try_lock().map_err(|_| "Wait for the meeting summary to finish before deleting")?;
+        let _notes = self.notes_change_lock.lock().map_err(|_| "Notes are busy")?;
+        let status = self.capture.status();
+        if status.active_meeting_id.as_deref() == Some(&id) && matches!(status.phase.as_str(), "starting" | "recording" | "stopping") {
+            return Err("Stop recording before deleting this meeting".into());
+        }
+        let active = self.capture.active_transcript_path();
+        let meeting = self.meetings.read(&id, active.as_deref())?;
+        let transcripts = self.meetings.deletion_paths(&id, active.as_deref())?;
+        let mut paths = self.audio_archive.deletion_paths(&meeting.summary)?;
+        if let Some(path) = self.meeting_state.deletion_path(&id)? { paths.push(path); }
+        paths.extend(transcripts);
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            let mut context = trash::TrashContext::new();
+            context.set_delete_method(DeleteMethod::NsFileManager);
+            for path in paths {
+                context.delete(&path).map_err(|e| format!("Could not move all meeting files to Trash: {e}. The transcript remains available; retry to finish."))?;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        return Err("Moving meetings to Trash is available on macOS".into());
+        Ok(())
     }
 
     fn read_meeting(&self, id: String) -> Result<crate::models::MeetingDetail, String> {

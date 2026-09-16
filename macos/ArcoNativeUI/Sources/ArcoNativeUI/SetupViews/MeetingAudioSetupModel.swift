@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreAudio
 import CryptoKit
 import Foundation
 
@@ -82,24 +83,28 @@ private enum MeetingAudioInstaller {
     static let packageURL = URL(string: "https://existential.audio/downloads/BlackHole2ch-0.7.1.pkg")!
 
     static func detect() -> MeetingAudioSetupModel.State {
-        let bundled = Bundle.main.resourceURL?.appendingPathComponent("native/arco-gpt-live")
-        let development = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("rust/arco-gpt-live/target/debug/arco-gpt-live")
-        let override = ProcessInfo.processInfo.environment["ARCO_GPT_LIVE_BIN"].map { URL(fileURLWithPath: $0) }
-        if let worker = [override, bundled, development].compactMap({ $0 }).first(where: {
-            FileManager.default.isExecutableFile(atPath: $0.path)
-        }) {
-            let process = Process(); let output = Pipe()
-            process.executableURL = worker; process.arguments = ["meeting-audio-status"]
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = output; process.standardError = FileHandle.nullDevice
-            do {
-                try process.run(); process.waitUntilExit()
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                if process.terminationStatus == 0,
-                   let status = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   status["ready"] as? Bool == true { return .ready }
-            } catch { }
+        // This model can be created while SwiftUI evaluates a view. Spawning a
+        // process and waitUntilExit() here pumps the main run loop, re-enters
+        // layout and can abort AttributeGraph during an accessibility action.
+        // Match the worker's availability check by querying device UIDs directly.
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        if AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 {
+            var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+            if AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr {
+                for device in devices {
+                    var uidAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+                    var uid: Unmanaged<CFString>?
+                    var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+                    if AudioObjectGetPropertyData(device, &uidAddress, 0, nil, &uidSize, &uid) == noErr,
+                       let value = uid?.takeRetainedValue(), value as String == "BlackHole2ch_UID" {
+                        return .ready
+                    }
+                }
+            }
         }
         return FileManager.default.fileExists(atPath: "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver")
             ? .restartRequired : .missing

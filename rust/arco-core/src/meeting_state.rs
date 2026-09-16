@@ -32,6 +32,8 @@ struct MeetingStateFile {
     schema_version: u32,
     meeting_id: String,
     #[serde(default)]
+    archived: bool,
+    #[serde(default)]
     sessions: Vec<AgentSessionBinding>,
     #[serde(default)]
     artifacts: MeetingArtifacts,
@@ -54,6 +56,7 @@ impl MeetingStateFile {
         Self {
             schema_version: SCHEMA_VERSION,
             meeting_id: meeting_id.to_string(),
+            archived: false,
             sessions: Vec::new(),
             artifacts: MeetingArtifacts::default(),
             manual_title: None,
@@ -75,6 +78,25 @@ impl MeetingStateStore {
             root,
             lock: Mutex::new(()),
         }
+    }
+
+    pub fn archived(&self, meeting_id: &str) -> Result<bool, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let _guard = self.acquire_lock()?;
+        Ok(self.read_state(meeting_id, &path)?.archived)
+    }
+
+    pub fn set_archived(&self, meeting_id: &str, archived: bool) -> Result<(), String> {
+        let path = self.sidecar_path(meeting_id)?;
+        let _guard = self.acquire_lock()?;
+        let mut state = self.read_state(meeting_id, &path)?;
+        state.archived = archived;
+        self.write_state(&path, &state)
+    }
+
+    pub fn deletion_path(&self, meeting_id: &str) -> Result<Option<PathBuf>, String> {
+        let path = self.sidecar_path(meeting_id)?;
+        Ok(path.symlink_metadata().ok().map(|_| path))
     }
 
     pub fn list(&self, meeting_id: &str) -> Result<Vec<PersistedAgentTurn>, String> {

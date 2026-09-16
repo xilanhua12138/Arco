@@ -171,6 +171,34 @@ impl AudioArchiveStorage {
         Ok(serde_json::json!({ "meetingId": meeting.id, "chunks": chunks }))
     }
 
+    pub fn deletion_paths(&self, meeting: &crate::models::MeetingSummary) -> Result<Vec<PathBuf>, String> {
+        let mut folders = Vec::new();
+        for root in self.directories() {
+            let entries = match fs::read_dir(root) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("Could not read recordings: {e}")),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+                let marker = entry.path().join("recording.json");
+                if !fs::symlink_metadata(&marker).is_ok_and(|m| m.file_type().is_file()) { continue; }
+                let Some(meta) = fs::read(marker).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue; };
+                if meta["owner"] != "app.arco.audio-archive" { continue; }
+                // Prefer the full transcript path; IDs can be duplicated across imported roots.
+                let matches = if let Some(path) = meta["transcript"].as_str() {
+                    path == meeting.path || Path::new(path).canonicalize().ok()
+                        .zip(Path::new(&meeting.path).canonicalize().ok()).is_some_and(|(a,b)| a == b)
+                } else { meta["meetingID"] == meeting.id };
+                if matches { folders.push(entry.path()); }
+            }
+        }
+        folders.sort();
+        folders.dedup();
+        Ok(folders)
+    }
+
     pub fn update(
         &self,
         enabled: bool,

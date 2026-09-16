@@ -443,18 +443,13 @@ public struct OnboardingView: View {
                             .font(ArcoTypography.small)
                             .foregroundStyle(ArcoNativeColors.inkMuted)
                         Spacer()
-                        Picker("", selection: Binding(
-                            get: { viewModel.secondary },
-                            set: { viewModel.selectSecondary($0) }
-                        )) {
-                            Text(translate("common.none", [:])).tag(ProviderID?.none)
-                            ForEach(ProviderID.allCases.filter { $0 != viewModel.primary && viewModel.runtime(for: $0)?.available == true }, id: \.self) { provider in
-                                Text(provider.displayName).tag(Optional(provider))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 160)
-                        .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                        SettingsSelect(title: translate("onboarding.secondary", [:]), noResults: translate("common.noOptions", [:]),
+                            selection: viewModel.secondary?.rawValue ?? "none",
+                            options: [SettingsSelectOption(id: "none", label: translate("common.none", [:]), symbol: "minus.circle")]
+                                + ProviderID.allCases.filter { $0 != viewModel.primary && viewModel.runtime(for: $0)?.available == true }
+                                    .map { SettingsSelectOption(id: $0.rawValue, label: $0.displayName, symbol: "terminal") },
+                            onSelect: { viewModel.selectSecondary(ProviderID(rawValue: $0)) })
+                            .frame(width: 160)
                     }
                     .padding(.top, 9)
                 }
@@ -477,16 +472,14 @@ public struct OnboardingView: View {
             HStack {
                 Text(translate("settings.language", [:])).font(ArcoTypography.metadata)
                 Spacer()
-                Picker("", selection: Binding(
-                    get: { viewModel.transcription.asr.language },
-                    set: { viewModel.changeLanguage($0) }
-                )) {
-                    Text("简体中文").tag("zh-CN")
-                    Text("English").tag("en-US")
-                    Text(translate("common.automatic", [:])).tag("auto")
-                }
-                .labelsHidden().frame(width: 150)
-                .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                SettingsSelect(title: translate("settings.language", [:]), noResults: translate("common.noOptions", [:]),
+                    selection: viewModel.transcription.asr.language,
+                    options: [
+                        SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
+                        SettingsSelectOption(id: "en-US", label: "English", symbol: "globe"),
+                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:]), symbol: "globe"),
+                    ], onSelect: { viewModel.changeLanguage($0) })
+                    .frame(width: 180)
             }
             .padding(.top, 18)
 
@@ -567,16 +560,11 @@ public struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 12) {
                     Text(translate(titleKey, [:])).font(ArcoTypography.sans(11, weight: .semibold)).frame(width: 142, alignment: .leading)
-                    Picker("", selection: Binding(get: { selectedID }, set: { value in
-                        onSelect(value)
-                    })) {
-                        ForEach(models) { model in
-                            Text([model.label, model.downloadSize].compactMap { $0 }.joined(separator: " · ")).tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(minWidth: 220)
-                    .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                    SettingsSelect(title: translate(titleKey, [:]), noResults: translate("common.noOptions", [:]),
+                        selection: selectedID, options: models.map {
+                            SettingsSelectOption(id: $0.id, label: [$0.label, $0.downloadSize].compactMap { $0 }.joined(separator: " · "), symbol: "cpu")
+                        }, onSelect: onSelect)
+                        .frame(minWidth: 220)
                     }
                     Text(translate(selected.detailKey, [:]))
                         .font(ArcoTypography.tiny)
@@ -834,18 +822,12 @@ public struct OnboardingView: View {
     }
 
     private var languagePicker: some View {
-        Picker(translate("settings.appLanguage", [:]), selection: $locale) {
-            Text("简体中文").tag("zh-CN")
-            Text("English").tag("en")
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .font(ArcoTypography.sans(12))
-        .frame(minWidth: 112)
-        .frame(minHeight: 34)
-        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 48 / 255, green: 58 / 255, blue: 66 / 255).opacity(0.10)))
-        .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 9), interactive: true)
+        SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
+            selection: locale,
+            options: [SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
+                      SettingsSelectOption(id: "en", label: "English", symbol: "globe")],
+            onSelect: { locale = $0 })
+            .frame(width: 144)
     }
 
     private var stepKeys: [String] {
