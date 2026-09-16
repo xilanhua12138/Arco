@@ -46,24 +46,22 @@ struct SettingsLocationMenu: View {
     var reset: (() async -> Void)? = nil
 
     var body: some View {
-        Menu {
-            Text(directory)
-            Divider()
-            Button(translate("audioArchive.choose", [:])) { Task { await choose() } }
-                .disabled(locked)
-            if let reset {
-                Button(translate("settings.restoreDefault", [:])) { Task { await reset() } }
-                    .disabled(locked || usingDefault)
-            }
-        } label: {
-            Label(translate("settings.storageOptions", [:]), systemImage: "ellipsis")
-                .labelStyle(.iconOnly)
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 30)
-                .contentShape(Rectangle())
+        ArcoActionMenuButton(title: translate("settings.storageOptions", [:]), actions: actions)
+            .frame(width: 28, height: 30)
+            .help(directory)
+    }
+
+    private var actions: [ArcoMenuAction] {
+        var entries: [ArcoMenuAction] = [
+            .init(title: directory, symbol: "folder", enabled: false),
+            .divider,
+            .init(title: translate("audioArchive.choose", [:]), symbol: "folder", enabled: !locked,
+                  perform: { Task { await choose() } }),
+        ]
+        if let reset {
+            entries.append(.init(title: translate("settings.restoreDefault", [:]), symbol: "arrow.uturn.backward",
+                enabled: !locked && !usingDefault, perform: { Task { await reset() } }))
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .accessibilityLabel(translate("settings.storageOptions", [:]))
-        .help(directory)
+        return entries
     }
 }

@@ -78,14 +78,21 @@ public struct HistoryPageView: View {
                         Section {
                             ForEach(group.meetings) { meeting in
                                 meetingRow(meeting, showsDivider: meeting.id != group.meetings.last?.id)
-                                    .contextMenu {
-                                        Button { onArchiveMeeting(meeting.id) } label: {
-                                            Label(translate("history.archive", [:]), systemImage: "archivebox")
-                                        }.disabled(meeting.isLive || managementBusy)
-                                        Divider()
-                                        Button(role: .destructive) { deletionCandidate = meeting } label: {
-                                            Label(translate("history.delete", [:]), systemImage: "trash")
-                                        }.disabled(meeting.isLive || managementBusy)
+                                    .overlay {
+                                        HistoryContextMenu(
+                                            archiveTitle: translate("history.archive", [:]),
+                                            deleteTitle: translate("history.delete", [:]),
+                                            enabled: !meeting.isLive && !managementBusy,
+                                            archive: { onArchiveMeeting(meeting.id) },
+                                            delete: { deletionCandidate = meeting }
+                                        )
+                                        .accessibilityHidden(true)
+                                    }
+                                    .accessibilityAction(named: translate("history.archive", [:])) {
+                                        if !meeting.isLive && !managementBusy { onArchiveMeeting(meeting.id) }
+                                    }
+                                    .accessibilityAction(named: translate("history.delete", [:])) {
+                                        if !meeting.isLive && !managementBusy { deletionCandidate = meeting }
                                     }
                                     .listRowInsets(EdgeInsets())
                                     .listRowSeparator(.hidden)
