@@ -256,7 +256,7 @@ final class SettingsChoiceButton: NSButton, NSTextFieldDelegate {
                 ((option.detail ?? "") as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width)
         }.max() ?? 0
         let available = max(80, screen.width - 16)
-        let width = min(available, max(bounds.width, min(480, max(ArcoMenuMetrics.minimumWidth, ceil(widest) + 84))))
+        let width = min(available, max(bounds.width, min(480, max(ArcoMenuMetrics.minimumWidth, ceil(widest) + 58))))
         let rowWidth = width - 12
         let heights = filtered.map { SettingsChoiceRow.height(title: $0.label, detail: $0.detail, width: rowWidth) }
         let listHeight = max(44, heights.reduce(0, +))
@@ -279,7 +279,6 @@ final class SettingsChoiceButton: NSButton, NSTextFieldDelegate {
             let row = SettingsChoiceRow(frame: NSRect(x: 0, y: y, width: rowWidth, height: heights[index]))
             if index == activeIndex { activeRect = row.frame }
             y += heights[index]
-            row.symbol = option.symbol
             row.title = option.label
             row.detail = option.detail
             row.isEnabled = option.enabled
@@ -324,7 +323,6 @@ private final class SettingsChoiceRow: NSButton {
     var onChoose: () -> Void = {}
     var activeRow = false
     var detail: String?
-    var symbol = "waveform"
     private var hovered = false
     private var tracking: NSTrackingArea?
     override init(frame: NSRect) {
@@ -350,7 +348,7 @@ private final class SettingsChoiceRow: NSButton {
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height)
     }
     static func height(title: String, detail: String?, width: CGFloat) -> CGFloat {
-        let textWidth = width - ArcoMenuMetrics.textInset - ArcoMenuMetrics.trailingInset
+        let textWidth = width - 14 - ArcoMenuMetrics.trailingInset
         let titleHeight = textHeight(title, font: .systemFont(ofSize: ArcoMenuMetrics.fontSize), width: textWidth)
         let detailHeight = detail.map { textHeight($0, font: .systemFont(ofSize: 12), width: textWidth) + 3 } ?? 0
         return max(34, titleHeight + detailHeight + 16)
@@ -365,7 +363,7 @@ private final class SettingsChoiceRow: NSButton {
         let color = ink.withAlphaComponent(isEnabled ? 1 : 0.4)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byWordWrapping
-        let textWidth = max(1, bounds.width - ArcoMenuMetrics.textInset - ArcoMenuMetrics.trailingInset)
+        let textWidth = max(1, bounds.width - 14 - ArcoMenuMetrics.trailingInset)
         let font = NSFont.systemFont(ofSize: ArcoMenuMetrics.fontSize)
         let titleHeight = Self.textHeight(title, font: font, width: textWidth)
         let detailHeight = detail.map { Self.textHeight($0, font: .systemFont(ofSize: 12), width: textWidth) } ?? 0
@@ -373,14 +371,13 @@ private final class SettingsChoiceRow: NSButton {
         let bottom = (bounds.height - total) / 2
         let titleY = isFlipped ? bottom : bottom + (detail == nil ? 0 : detailHeight + 3)
         let detailY = isFlipped ? bottom + titleHeight + 3 : bottom
-        (title as NSString).draw(in: NSRect(x: ArcoMenuMetrics.textInset, y: titleY, width: textWidth, height: titleHeight),
+        (title as NSString).draw(in: NSRect(x: 14, y: titleY, width: textWidth, height: titleHeight),
             withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
         if let detail {
-            (detail as NSString).draw(in: NSRect(x: ArcoMenuMetrics.textInset, y: detailY, width: textWidth, height: detailHeight),
+            (detail as NSString).draw(in: NSRect(x: 14, y: detailY, width: textWidth, height: detailHeight),
                 withAttributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: highlighted ? ink : NSColor.secondaryLabelColor,
                                  .paragraphStyle: paragraph])
         }
-        drawSymbol(symbol, in: NSRect(x: 12, y: (bounds.height - 18) / 2, width: 18, height: 18), color: color)
         if state == .on {
             drawSymbol("checkmark", in: NSRect(x: bounds.width - 24, y: (bounds.height - 12) / 2, width: 12, height: 12), color: color)
         }

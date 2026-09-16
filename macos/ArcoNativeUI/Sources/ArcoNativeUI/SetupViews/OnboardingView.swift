@@ -445,9 +445,9 @@ public struct OnboardingView: View {
                         Spacer()
                         SettingsSelect(title: translate("onboarding.secondary", [:]), noResults: translate("common.noOptions", [:]),
                             selection: viewModel.secondary?.rawValue ?? "none",
-                            options: [SettingsSelectOption(id: "none", label: translate("common.none", [:]), symbol: "minus.circle")]
+                            options: [SettingsSelectOption(id: "none", label: translate("common.none", [:]))]
                                 + ProviderID.allCases.filter { $0 != viewModel.primary && viewModel.runtime(for: $0)?.available == true }
-                                    .map { SettingsSelectOption(id: $0.rawValue, label: $0.displayName, symbol: "terminal") },
+                                    .map { SettingsSelectOption(id: $0.rawValue, label: $0.displayName) },
                             onSelect: { viewModel.selectSecondary(ProviderID(rawValue: $0)) })
                             .frame(width: 160)
                     }
@@ -475,9 +475,9 @@ public struct OnboardingView: View {
                 SettingsSelect(title: translate("settings.language", [:]), noResults: translate("common.noOptions", [:]),
                     selection: viewModel.transcription.asr.language,
                     options: [
-                        SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
-                        SettingsSelectOption(id: "en-US", label: "English", symbol: "globe"),
-                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:]), symbol: "globe"),
+                        SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                        SettingsSelectOption(id: "en-US", label: "English"),
+                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:])),
                     ], onSelect: { viewModel.changeLanguage($0) })
                     .frame(width: 180)
             }
@@ -562,7 +562,7 @@ public struct OnboardingView: View {
                     Text(translate(titleKey, [:])).font(ArcoTypography.sans(11, weight: .semibold)).frame(width: 142, alignment: .leading)
                     SettingsSelect(title: translate(titleKey, [:]), noResults: translate("common.noOptions", [:]),
                         selection: selectedID, options: models.map {
-                            SettingsSelectOption(id: $0.id, label: [$0.label, $0.downloadSize].compactMap { $0 }.joined(separator: " · "), symbol: "cpu")
+                            SettingsSelectOption(id: $0.id, label: [$0.label, $0.downloadSize].compactMap { $0 }.joined(separator: " · "))
                         }, onSelect: onSelect)
                         .frame(minWidth: 220)
                     }
@@ -824,8 +824,8 @@ public struct OnboardingView: View {
     private var languagePicker: some View {
         SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
             selection: locale,
-            options: [SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
-                      SettingsSelectOption(id: "en", label: "English", symbol: "globe")],
+            options: [SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                      SettingsSelectOption(id: "en", label: "English")],
             onSelect: { locale = $0 })
             .frame(width: 144)
     }

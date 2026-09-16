@@ -346,10 +346,10 @@ public struct ProviderSetupView: View {
         SettingsSelect(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
             noResults: translate("common.noOptions", [:]),
             selection: selection?.rawValue ?? "none",
-            options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]), symbol: "minus.circle")] : [])
+            options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]))] : [])
                 + ProviderID.allCases.map { provider in
                     SettingsSelectOption(id: provider.rawValue, label: provider.displayName,
-                        enabled: viewModel.runtime(for: provider)?.available == true && (!secondary || provider != viewModel.primary), symbol: "terminal")
+                        enabled: viewModel.runtime(for: provider)?.available == true && (!secondary || provider != viewModel.primary))
                 }, onSelect: { value in
                     if secondary { viewModel.changeSecondary(ProviderID(rawValue: value)) }
                     else if let provider = ProviderID(rawValue: value) { viewModel.changePrimary(provider) }
@@ -437,8 +437,8 @@ public struct ProviderSetupView: View {
             Spacer()
             SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
                 selection: locale,
-                options: [SettingsSelectOption(id: "zh-CN", label: "简体中文", symbol: "globe"),
-                          SettingsSelectOption(id: "en", label: "English", symbol: "globe")],
+                options: [SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                          SettingsSelectOption(id: "en", label: "English")],
                 onSelect: { locale = $0 })
                 .frame(width: 144)
             if let onCancel {

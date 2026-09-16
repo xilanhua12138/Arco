@@ -51,7 +51,7 @@ struct AudioArchiveSettingsView: View {
                             noResults: translate("common.noOptions", [:]),
                             selection: String(settings.maxBytes),
                             options: Array(Set([1, 5, 10, 20, 50, 100].map { UInt64($0) * 1_000_000_000 } + [settings.maxBytes])).sorted().map { bytes in
-                                SettingsSelectOption(id: String(bytes), label: "\(bytes / 1_000_000_000) GB", symbol: "externaldrive")
+                                SettingsSelectOption(id: String(bytes), label: "\(bytes / 1_000_000_000) GB")
                             }, onSelect: { value in
                                 guard let limit = UInt64(value) else { return }
                                 Task { await viewModel.actions.onChangeAudioArchive(settings.enabled, settings.directory, limit) }
