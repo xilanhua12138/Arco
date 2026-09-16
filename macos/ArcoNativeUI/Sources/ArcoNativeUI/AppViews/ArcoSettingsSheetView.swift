@@ -199,8 +199,8 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                         selection: viewModel.snapshot.locale,
                         options: [
-                            SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: "简体中文", detail: translate("common.chineseSimplified", [:]), symbol: "globe"),
-                            SettingsSelectOption(id: AppLocale.english.rawValue, label: "English", detail: translate("common.english", [:]), symbol: "globe"),
+                            SettingsSelectOption(id: AppLocale.simplifiedChinese.rawValue, label: "简体中文", detail: translate("common.chineseSimplified", [:])),
+                            SettingsSelectOption(id: AppLocale.english.rawValue, label: "English", detail: translate("common.english", [:])),
                         ],
                         onSelect: { viewModel.setLocale($0) }
                     )
@@ -376,7 +376,7 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.audioMode.rawValue,
                     options: [AudioMode.both, .system, .mic].map {
-                        SettingsSelectOption(id: $0.rawValue, label: audioScenarioTitle($0), symbol: $0 == .system ? "video" : $0 == .mic ? "person.2" : "waveform")
+                        SettingsSelectOption(id: $0.rawValue, label: audioScenarioTitle($0))
                     }, onSelect: { if let mode = AudioMode(rawValue: $0) { viewModel.setAudioMode(mode) } })
                     .disabled(viewModel.snapshot.audioModeLocked)
             }
@@ -407,11 +407,11 @@ public struct ArcoSettingsSheetView: View {
     }
 
     private var microphoneOptions: [SettingsSelectOption] {
-        var options = [SettingsSelectOption(id: "", label: translate("settings.microphone.automatic", [:]), symbol: "mic")]
-        options += microphones.devices.map { SettingsSelectOption(id: $0.id, label: $0.name, symbol: "mic") }
+        var options = [SettingsSelectOption(id: "", label: translate("settings.microphone.automatic", [:]))]
+        options += microphones.devices.map { SettingsSelectOption(id: $0.id, label: $0.name) }
         if microphones.selectionUnavailable, let selected = microphones.selected {
             options.append(SettingsSelectOption(id: selected.id,
-                label: translate("settings.microphone.disconnected", ["name": selected.name]), symbol: "mic.slash"))
+                label: translate("settings.microphone.disconnected", ["name": selected.name])))
         }
         return options
     }
@@ -441,7 +441,7 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.provider.rawValue,
                     options: [TranscriptionProvider.doubao, .deepgram, .elevenlabs, .local].map {
-                        SettingsSelectOption(id: $0.rawValue, label: providerName($0), symbol: $0 == .local ? "desktopcomputer" : "cloud")
+                        SettingsSelectOption(id: $0.rawValue, label: providerName($0))
                     }, onSelect: { if let provider = TranscriptionProvider(rawValue: $0) { viewModel.changeEngine(provider) } })
                     .disabled(viewModel.snapshot.audioModeLocked)
             }
@@ -474,7 +474,7 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.model,
                     options: arcoLocalASRModels.map {
-                        SettingsSelectOption(id: $0.id, label: "\($0.label) · \($0.downloadSize ?? "")", symbol: "cpu")
+                        SettingsSelectOption(id: $0.id, label: "\($0.label) · \($0.downloadSize ?? "")")
                     },
                     onSelect: { viewModel.setASRModel($0) }
                 )
@@ -496,9 +496,9 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.asr.language,
                     options: [
-                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:]), symbol: "globe"),
-                        SettingsSelectOption(id: "zh-CN", label: translate("common.chineseSimplified", [:]), symbol: "globe"),
-                        SettingsSelectOption(id: "en-US", label: translate("common.english", [:]), symbol: "globe"),
+                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:])),
+                        SettingsSelectOption(id: "zh-CN", label: translate("common.chineseSimplified", [:])),
+                        SettingsSelectOption(id: "en-US", label: translate("common.english", [:])),
                     ],
                     onSelect: { viewModel.setLanguage($0) }
                 )
@@ -524,10 +524,10 @@ public struct ArcoSettingsSheetView: View {
                     noResults: translate("common.noOptions", [:]),
                     selection: viewModel.snapshot.transcriptionConfiguration.diarization.provider.rawValue,
                     options: [
-                        SettingsSelectOption(id: DiarizationProvider.doubao.rawValue, label: "Doubao", symbol: "cloud"),
-                        SettingsSelectOption(id: DiarizationProvider.deepgram.rawValue, label: "Deepgram", symbol: "cloud"),
-                        SettingsSelectOption(id: DiarizationProvider.local.rawValue, label: translate("settings.onDevice", [:]), symbol: "desktopcomputer"),
-                        SettingsSelectOption(id: DiarizationProvider.none.rawValue, label: translate("common.off", [:]), symbol: "speaker.slash")
+                        SettingsSelectOption(id: DiarizationProvider.doubao.rawValue, label: "Doubao"),
+                        SettingsSelectOption(id: DiarizationProvider.deepgram.rawValue, label: "Deepgram"),
+                        SettingsSelectOption(id: DiarizationProvider.local.rawValue, label: translate("settings.onDevice", [:])),
+                        SettingsSelectOption(id: DiarizationProvider.none.rawValue, label: translate("common.off", [:]))
                     ], onSelect: { value in
                         if value == DiarizationProvider.local.rawValue { viewModel.changeDiarizationLocation("local") }
                         else if value == DiarizationProvider.none.rawValue { viewModel.changeDiarizationLocation("off") }
@@ -1250,7 +1250,6 @@ struct SettingsSelectOption: Identifiable {
     let label: String
     var detail: String? = nil
     var enabled = true
-    var symbol = "waveform"
 }
 
 struct SettingsControlRow<LabelContent: View, ControlContent: View>: View {
