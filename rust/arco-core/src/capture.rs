@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(3);
+// Cover capture shutdown, two resampler drains, the bounded PCM flush and
+// archive finalization before resorting to SIGKILL.
+const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(6);
 const TRANSCRIBER_FINALIZATION_GRACE: Duration = Duration::from_secs(6);
 const STARTUP_CANCELLED: &str = "capture startup cancelled";
 
@@ -1568,6 +1570,7 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                         .unwrap()
                         .join("AudioArchive.swift")
                         .as_path(),
+                    source.parent().unwrap().join("RecorderOutput.swift").as_path(),
                     audio_runtime_archive.as_path(),
                     audio_runtime_header.as_path(),
                 ]
@@ -1601,9 +1604,11 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                     .map_err(|e| format!("Could not stage recorder source: {e}"))?;
                 let archive_source = source.parent().unwrap().join("AudioArchive.swift");
                 let combined = format!(
-                    "{}\n{}",
+                    "{}\n{}\n{}",
                     fs::read_to_string(source).map_err(|e| e.to_string())?,
-                    fs::read_to_string(archive_source).map_err(|e| e.to_string())?
+                    fs::read_to_string(archive_source).map_err(|e| e.to_string())?,
+                    fs::read_to_string(source.parent().unwrap().join("RecorderOutput.swift"))
+                        .map_err(|e| e.to_string())?
                 );
                 fs::write(combined_source.path(), combined).map_err(|e| e.to_string())?;
                 let mut build_command = Command::new(swiftc);
@@ -1953,8 +1958,8 @@ mod tests {
     #[test]
     fn recorder_grace_covers_screen_capture_kit_shutdown() {
         assert!(
-            RECORDER_TERMINATION_GRACE >= Duration::from_secs(3),
-            "the host must cover ScreenCaptureKit's one-second stop wait plus stdout and two resampler-tail drains"
+            RECORDER_TERMINATION_GRACE >= Duration::from_secs(6),
+            "the host must cover capture shutdown, PCM flush, resampler tails and archive finalization"
         );
     }
 
@@ -2086,8 +2091,9 @@ mod tests {
         assert!(!mixer.contains("lock.lock()"));
         assert!(!mixer.contains("removeFirst"));
         assert!(!mixer.contains("var interleaved = [Int16]("));
-        assert!(mixer.contains("outputWriteGate.wait(timeout: .now())"));
-        assert!(mixer.contains("outputQueue.async"));
+        assert!(mixer.find("archive?.append(rawPayload)").unwrap()
+            < mixer.find("pcmOutput?.enqueue").unwrap());
+        assert!(!mixer.contains("outputWriteGate"));
         assert!(mixer.contains("drainAudioRuntime()"));
     }
 
@@ -2143,8 +2149,8 @@ mod tests {
         assert!(runtime.contains("fifo: &systemBuffer"));
         assert!(runtime.contains("fifo: &micBuffer"));
         assert!(runtime.contains("emitRemainingPCM()"));
-        assert!(runtime.contains("outputWriteGate.wait(timeout: .now() + 1)"));
-        assert!(runtime.contains("writeAll(bytes)"));
+        assert!(runtime.contains("pcmOutput?.finish()"));
+        assert!(runtime.contains("pcmOutput?.enqueue"));
         assert!(runtime.contains("Rust audio runtime drain failed during shutdown"));
         assert!(runtime.contains("shutdown PCM FIFO overflow"));
         assert!(
