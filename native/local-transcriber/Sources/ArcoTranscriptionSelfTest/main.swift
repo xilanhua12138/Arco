@@ -223,12 +223,15 @@ struct ArcoTranscriptionSelfTest {
         let writer = TranscriptWriter(path: transcript, sessionStartedAt: Date(timeIntervalSince1970: 43_200))
         try writer.append(TranscriptSegment(channel: 1, speaker: 2, text: "  hello  ", start: 2, end: 3.5, words: [TranscriptWord(text: "hello", startMs: 2000, endMs: 3500)]))
         let output = try String(contentsOf: transcript, encoding: .utf8)
-        try require(output.contains("arco-timing") && output.contains("\"startMs\":2000") && output.contains("\"originMs\":43200000"), "word timing persistence")
-        try require(output.contains("In room 3:** hello"), "location speaker label")
+        try require(!output.contains("arco-timing"), "word timing must stay out of Markdown")
+        try require(!output.contains("<!-- arco "), "provider timing must stay out of Markdown")
+        let timingPath = URL(fileURLWithPath: transcript.path + ".timing.json")
+        let timingOutput = try String(contentsOf: timingPath, encoding: .utf8)
         try require(
-            output.contains("channel=1 speaker=2 stream=local start=2.000 end=3.500"),
-            "timing metadata"
+            timingOutput.contains("\"line\":0") && timingOutput.contains("\"startMs\":2000") && timingOutput.contains("\"originMs\":43200000"),
+            "word timing sidecar persistence"
         )
+        try require(output.contains("In room 3:** hello"), "location speaker label")
     }
 
     private static func testSlidingWindowDiarizer() throws {

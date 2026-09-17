@@ -14,7 +14,7 @@
 | Nemotron Speech 3.5 本地模型 | FluidAudio 0.15.5 `finishWithTokenTimings()` | token 发射帧时间，约 80ms；子词不等于完整汉字/单词，也不是精确声学边界 |
 | Whisper Tiny/Base/Small/Medium/Large v3 本地模型 | SwiftWhisper/whisper.cpp `token_timestamps`、`max_len=1`、`split_on_word` | 模型估计时间；正文重新合并，保留字词分段用于跳转 |
 
-所有时间统一到会议起始点。云端重连、续录、本地 VAD 分段均加回音频偏移。新的隐藏 `arco-timing` JSON 注释保存时间与词语，保留旧 `arco` 注释兼容原有消费方。历史文件已有的句级时间仍可跳转；没有保存的词时间不会凭空补齐。
+所有时间统一到会议起始点。云端重连、续录、本地 VAD 分段均加回音频偏移。新录音把句级和词级时间写入 `transcript.md.timing.json`，Markdown 只保留正文；旧 `arco`/`arco-timing` 注释仍可解析，历史文件已有的句级时间仍可跳转；没有保存的词时间不会凭空补齐。
 
 ## 归档与播放器
 

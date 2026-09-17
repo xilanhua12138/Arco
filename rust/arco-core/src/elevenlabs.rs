@@ -390,16 +390,23 @@ impl TranscriptWriter {
             "**[{timestamp}] {}:** {}\n",
             segment.label, segment.text
         )
-        .and_then(|_| {
-            writeln!(
-                file,
-                "<!-- arco channel={} speaker={} stream=elevenlabs-realtime start={:.3} end={:.3} -->\n",
-                segment.channel, segment.speaker, segment.start, segment.end,
-            )
-        })
-        .and_then(|_| writeln!(file, "{}", crate::transcript_timing::comment(segment.start, segment.end, &segment.words, self.session_started_at)))
         .and_then(|_| file.flush())
-        .map_err(|error| format!("could not write live ElevenLabs transcript: {error}"))
+        .map_err(|error| format!("could not write live ElevenLabs transcript: {error}"))?;
+        let raw_markdown = fs::read_to_string(&self.path)
+            .map_err(|error| format!("could not count transcript lines: {error}"))?;
+        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
+            .len()
+            .checked_sub(1)
+            .ok_or("could not identify the appended transcript line")?;
+        crate::transcript_timing::append_line(
+            &crate::transcript_timing::sidecar_path(&self.path),
+            line_index,
+            segment.start,
+            segment.end,
+            &segment.words,
+            self.session_started_at,
+        )
+        .map_err(|error| format!("could not append ElevenLabs timing sidecar: {error}"))
     }
 }
 
