@@ -9,6 +9,12 @@ public final class MeetingOutputSettingsViewModel: ObservableObject {
     @Published public var draftPrompt = ""
 
     private let onSave: (GenerationSettings) -> Void
+    private struct Draft {
+        var enabled: Bool
+        var custom: Bool
+        var prompt: String
+    }
+    private var drafts: [MeetingOutputRuleKey: Draft] = [:]
 
     public init(settings: GenerationSettings, onSave: @escaping (GenerationSettings) -> Void) {
         self.settings = settings
@@ -22,12 +28,25 @@ public final class MeetingOutputSettingsViewModel: ObservableObject {
     public func open(_ rule: MeetingOutputRuleKey) {
         let current = rule == .title ? settings.title : settings.summary
         detail = rule
+        if let draft = drafts[rule] {
+            draftEnabled = draft.enabled
+            useCustomPrompt = draft.custom
+            draftPrompt = draft.prompt
+            return
+        }
         draftEnabled = current.enabled
         useCustomPrompt = current.promptOverride != nil
         draftPrompt = current.promptOverride ?? defaultPrompt(for: rule)
     }
 
+    public func suspend() {
+        guard let detail else { return }
+        drafts[detail] = Draft(enabled: draftEnabled, custom: useCustomPrompt, prompt: draftPrompt)
+        self.detail = nil
+    }
+
     public func cancel() {
+        if let detail { drafts.removeValue(forKey: detail) }
         detail = nil
     }
 
@@ -36,6 +55,7 @@ public final class MeetingOutputSettingsViewModel: ObservableObject {
     /// transition so unsaved drafts cannot leak across sections.
     public func teardown() {
         detail = nil
+        drafts.removeAll()
         draftEnabled = true
         useCustomPrompt = false
         draftPrompt = ""
@@ -64,6 +84,7 @@ public final class MeetingOutputSettingsViewModel: ObservableObject {
         if detail == .title { next.title = rule } else { next.summary = rule }
         settings = next
         onSave(next)
+        drafts.removeValue(forKey: detail)
         self.detail = nil
     }
 
@@ -148,7 +169,7 @@ public struct MeetingOutputSettingsView: View {
 
     private func detailView(_ detail: MeetingOutputRuleKey) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Button { viewModel.cancel() } label: {
+            Button { viewModel.suspend() } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "chevron.left").font(.system(size: 14))
                     Text(translate("settings.output", [:]))

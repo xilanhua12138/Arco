@@ -232,79 +232,6 @@ private func completionError(from model: OnboardingViewModel) async -> String? {
 }
 
 @MainActor
-private func testNotesTitleUsesHTMLMaxLengthSemantics() {
-    let model = NotesPageViewModel(
-        notes: [],
-        meetings: [],
-        onQueryChange: { _ in },
-        onOpenMeeting: { _ in },
-        onSaveNote: { _ in nil },
-        onDeleteNote: { _ in false }
-    )
-    model.updateTitle(String(repeating: "😀", count: 100))
-    expect(model.visibleDraft?.title.utf16.count, 120, "Notes title preserves HTML maxLength UTF-16 units")
-    expect(model.visibleDraft?.title.count, 60, "Notes title truncates emoji at the source maxLength boundary")
-}
-
-@MainActor
-private func testNotesCreateNewIsImmediateAndRequiresAMeeting() {
-    let sourceMeeting = meeting("meeting-for-note")
-    let model = NotesPageViewModel(
-        notes: [],
-        meetings: [sourceMeeting],
-        onQueryChange: { _ in },
-        onOpenMeeting: { _ in },
-        onSaveNote: { _ in nil },
-        onDeleteNote: { _ in false }
-    )
-
-    model.createNew()
-
-    expect(
-        model.visibleDraft,
-        NoteDraft.empty(meetingId: sourceMeeting.id),
-        "New note creates its empty draft synchronously and binds the first meeting"
-    )
-    expectTrue(!model.dirty, "Opening a fresh note does not mark untouched content dirty")
-
-    let modelWithoutMeetings = NotesPageViewModel(
-        notes: [],
-        meetings: [],
-        onQueryChange: { _ in },
-        onOpenMeeting: { _ in },
-        onSaveNote: { _ in nil },
-        onDeleteNote: { _ in false }
-    )
-
-    modelWithoutMeetings.createNew()
-
-    expect(modelWithoutMeetings.visibleDraft, nil, "New note is a no-op when no meeting can own it")
-    expectTrue(!modelWithoutMeetings.canCreateNote, "No-meeting state explicitly disables note creation")
-}
-
-@MainActor
-private func testNotesFormattingMatchesTextareaSelectionLogic() {
-    let model = NotesPageViewModel(
-        notes: [],
-        meetings: [meeting()],
-        onQueryChange: { _ in },
-        onOpenMeeting: { _ in },
-        onSaveNote: { _ in nil },
-        onDeleteNote: { _ in false }
-    )
-    model.updateBody("alpha\nbeta")
-    model.setBodySelection(NSRange(location: 6, length: 4))
-    model.apply(.bold, textPlaceholder: "text", codePlaceholder: "code")
-    expect(model.visibleDraft?.body, "alpha\n**beta**", "Inline formatting replaces the exact textarea selection")
-    expect(model.bodySelection, NSRange(location: 8, length: 4), "Inline formatting restores selection inside its markers")
-
-    model.updateBody("alpha\n- beta")
-    model.setBodySelection(NSRange(location: 0, length: 12))
-    model.apply(.quote, textPlaceholder: "text", codePlaceholder: "code")
-    expect(model.visibleDraft?.body, "> alpha\n> beta", "Line formatting strips an existing source block marker on every selected line")
-}
-
-@MainActor
 private func testMeetingOutputDraftAndSaveSemantics() {
     var saved: GenerationSettings?
     var settings = GenerationSettings.default
@@ -453,37 +380,6 @@ private func testSettingsFocusRestoreGenerationOnlyTracksExplicitClose() {
 
 @MainActor
 private func testSourceParityHooks() {
-    let notesView = source("ArcoNativeUI/SetupViews/NotesPageView.swift")
-    expectTrue(
-        notesView.contains("modifiers: [.command]") && notesView.contains("modifiers: [.control]"),
-        "Notes registers both Command-S and Control-S like the React form"
-    )
-    expectTrue(
-        notesView.contains("accessibilityReduceMotion") && notesView.contains("TimelineView"),
-        "Notes loading skeleton animates unless Reduce Motion is enabled"
-    )
-    expectTrue(
-        notesView.contains("notes.agentNote") && notesView.contains("notes.markdownFile"),
-        "Notes receipt preserves the source document-kind label"
-    )
-    expectTrue(
-        notesView.contains("interactive: viewModel.canCreateNote")
-            && notesView.contains("Button { viewModel.createNew() }")
-            && notesView.contains(".frame(minHeight: 36)")
-            && notesView.contains(".disabled(!viewModel.canCreateNote)")
-            && notesView.contains(".opacity(viewModel.canCreateNote ? 1 : 0.42)")
-            && notesView.contains(".allowsHitTesting(viewModel.canCreateNote)"),
-        "Notes empty-state New note keeps the React action geometry and behavior on native regular glass"
-    )
-    let nativeToolbarActionCount = max(
-        0,
-        notesView.components(separatedBy: "ArcoNativeActionButton(").count - 1
-    )
-    expectTrue(
-        nativeToolbarActionCount >= 2
-            && !notesView.contains("private struct NotesGlassToolbarButton"),
-        "Notes list toggle and New note must reuse the shared fixed-hit-target native action instead of a private glass button"
-    )
     let theme = source("ArcoNativeUI/Views/Theme.swift")
     expectTrue(
         theme.contains(
@@ -501,12 +397,7 @@ private func testSourceParityHooks() {
             .count - 1 >= 2,
         "Toolbar action labels must own the full 40 by 40 circular hit shape so PlainButtonStyle cannot collapse clicks back to the opaque glyph"
     )
-    expectTrue(
-        notesView.contains("ArcoNativeActionButton")
-            && notesView.contains("ArcoGlassSurface")
-            && notesView.contains(".background(ArcoNativeColors.surfaceDocument)"),
-        "Notes keeps Liquid Glass on functional controls and a stable document reading surface"
-    )
+
 
     let onboarding = source("ArcoNativeUI/SetupViews/OnboardingView.swift")
     expectTrue(
@@ -556,9 +447,59 @@ private func testSourceParityHooks() {
     )
 }
 
-testNotesTitleUsesHTMLMaxLengthSemantics()
-testNotesCreateNewIsImmediateAndRequiresAMeeting()
-testNotesFormattingMatchesTextareaSelectionLogic()
+@MainActor
+private func testProviderResultsCannotCrossConfigurationChanges() async throws {
+    for staleFailure in [false, true] {
+        var pending: [ProviderID: CheckedContinuation<ProviderConnectionTest, Error>] = [:]
+        var saved: [ProviderConfiguration] = []
+        let model = ProviderSetupViewModel(runtimes: [runtime(.codex), runtime(.claude)],
+            initialConfiguration: ProviderConfiguration(setupComplete: true, primary: .codex),
+            onTest: { provider in try await withCheckedThrowingContinuation { pending[provider] = $0 } },
+            onComplete: { saved.append($0) })
+        let first = Task { await model.runPrimaryTest() }
+        while pending[.codex] == nil { await Task.yield() }
+        model.changePrimary(.claude)
+        let second = Task { await model.runPrimaryTest() }
+        while pending[.claude] == nil { await Task.yield() }
+        if staleFailure {
+            pending[.claude]!.resume(returning: try providerTest(.claude, ok: true, message: "ready"))
+            await second.value
+            pending[.codex]!.resume(throwing: CocoaError(.fileReadUnknown))
+            await first.value
+            expect(model.testState, .passed, "Old failure cannot overwrite the current successful test")
+            expect(model.testError, nil, "Old error cannot leak into the current connection")
+        } else {
+            pending[.codex]!.resume(returning: try providerTest(.codex, ok: true, message: "ready"))
+            await first.value
+            expect(model.testState, .working, "Old success cannot complete the new provider test")
+            expect(model.primaryTestPassed, false, "Current provider remains unverified")
+            model.finish()
+            expect(saved.count, 0, "Old success cannot save the unverified provider")
+            pending[.claude]!.resume(returning: try providerTest(.claude, ok: true, message: "ready"))
+            await second.value
+        }
+        model.finish()
+        expect(saved, [ProviderConfiguration(setupComplete: true, primary: .claude)], "Only the verified current configuration can be saved")
+    }
+}
+
+@MainActor
+private func testMeetingAttachmentCallbacksRemainWired() {
+    let surfaces = [
+        ("ArcoNativeUI/AppViews/ArcoMainShellView.swift", "controller"),
+        ("ArcoApp/Platform/AgentOverlay.swift", "model")
+    ]
+    for (file, owner) in surfaces {
+        let text = source(file)
+        expectTrue(text.contains("onChooseWorkspace: {"), "Workspace callback remains wired in \(file)")
+        expectTrue(text.contains("onAttachDocument: { meetingID in"), "Attachment creation remains wired in \(file)")
+        expectTrue(text.contains("onRemoveAttachment: { meetingID, attachmentID in"), "Attachment removal remains wired in \(file)")
+        expectTrue(text.contains("await \(owner).attachDocument(to: meetingID)"), "Attachment action reaches the correct owner in \(file)")
+    }
+}
+
+try await testProviderResultsCannotCrossConfigurationChanges()
+testMeetingAttachmentCallbacksRemainWired()
 testMeetingOutputDraftAndSaveSemantics()
 testResumedOnboardingPersistsDerivedProviderFallbacks()
 await testShortcutRemainsControlledDuringRecording()

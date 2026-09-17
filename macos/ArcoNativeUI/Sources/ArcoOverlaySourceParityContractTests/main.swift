@@ -223,10 +223,10 @@ expectTrue(
     "Collapsed Agent chrome must keep the transcript action accessible without repeating a visible Transcript label beside the title"
 )
 expectTrue(
-    collapsedAgentHeader.contains("HStack(spacing: 10)")
+    collapsedAgentHeader.contains("HStack(spacing: 8)")
         && collapsedAgentHeader.contains(".padding(.leading, 16)")
         && collapsedAgentHeader.contains(".padding(.trailing, 11)"),
-    "Collapsed Agent chrome must preserve the source 10-point title rhythm and 16/11-point insets"
+    "Collapsed Agent chrome must preserve the 8-point Arco icon/title spacing and 16/11-point insets"
 )
 expectTrue(
     collapsedAgentHeader.contains("if live, gptLiveBetaEnabled")
@@ -268,7 +268,7 @@ expectTrue(
     closeAction.contains("AgentHeaderCloseButton(")
         && !closeAction.contains(".padding(.leading, 7)")
         && !closeAction.contains("frame(width: 1, height: 20)"),
-    "Close must remain a dedicated circular window action without the obsolete leading divider"
+    "Close must remain a dedicated window action without the obsolete leading divider"
 )
 let headerIconButton = sourceSection(
     agent,
@@ -299,10 +299,10 @@ expectTrue(
 )
 expectTrue(
     headerCloseButton.contains(".frame(width: 30, height: 30)")
-        && headerCloseButton.contains(".contentShape(Circle())")
+        && headerCloseButton.contains(".contentShape(RoundedRectangle(cornerRadius: 8")
         && headerCloseButton.contains(".accessibilityLabel(label)")
         && headerCloseButton.contains(".help(label)"),
-    "Close must expose a visible 30-point circular action with an accessible name and pointer help"
+    "Close must expose a visible 30-point rounded action with an accessible name and pointer help"
 )
 expectTrue(
     headerToggleStyle.contains("RoundedRectangle(cornerRadius: 8")
@@ -311,12 +311,13 @@ expectTrue(
     "Transcript toggle must retain the source transparent 8-radius treatment without nested glass"
 )
 expectTrue(
-    headerCloseStyle.contains("let shape = Circle()")
-        && headerCloseStyle.contains("Color.white.opacity(0.36)")
-        && headerCloseStyle.contains("ArcoNativeColors.line")
-        && headerCloseStyle.contains("strokeBorder")
+    headerCloseStyle.contains("RoundedRectangle(cornerRadius: 8")
+        && headerCloseStyle.contains("ArcoNativeColors.inkMuted")
+        && headerCloseStyle.contains("ArcoNativeColors.surfaceHover")
+        && headerCloseStyle.contains("Color.clear")
+        && !headerCloseStyle.contains("strokeBorder")
         && !headerCloseStyle.contains(".glassEffect("),
-    "Close must render a clearly visible circular material edge instead of disappearing into the glass"
+    "Close must keep a visible label and rounded hover target without a second border or glass layer"
 )
 let insightPanelBody = sourceSection(
     insight,
@@ -324,9 +325,9 @@ let insightPanelBody = sourceSection(
     until: "private var header: some View"
 )
 expectTrue(
-    insightPanelBody.contains("Color.white.opacity(0.32)")
+    insightPanelBody.contains("layout == .agentOverlay ? ArcoNativeColors.surfaceDocument : ArcoNativeColors.surfaceSubtle")
         && !insightPanelBody.contains("Color.white.opacity(0.92)"),
-    "Agent overlay content must reveal the outer Liquid Glass instead of covering it with an opaque white sheet"
+    "Floating Agent reading content is white without changing the main panel background"
 )
 let primaryOverlayStyle = agent.range(
     of: "private struct AgentPrimaryOverlayButtonStyle: ButtonStyle"
@@ -368,7 +369,7 @@ expect(
     "Toggling the transcript must keep one stable Agent panel identity so draft questions and context state survive"
 )
 expectTrue(
-    agentWorkspace.contains(".background(ArcoNativeColors.surfaceDocument.opacity(0.92))"),
+    agentWorkspace.contains(".background(ArcoNativeColors.surfaceDocument)"),
     "Agent workspace must keep one high-opacity reading substrate when the floating panel loses focus"
 )
 let contextMenu = sourceSection(

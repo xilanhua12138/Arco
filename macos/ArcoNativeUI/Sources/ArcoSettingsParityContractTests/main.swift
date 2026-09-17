@@ -57,7 +57,7 @@ private func testLeavingGeneralUnmountsShortcutRecorder() async {
 }
 
 @MainActor
-private func testLeavingOutputDiscardsComponentLocalDraft() {
+private func testLeavingOutputPreservesDraftWithinSettings() {
     let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
     let model = makeSettingsModel(shortcut: shortcut)
     model.page = .output
@@ -68,23 +68,64 @@ private func testLeavingOutputDiscardsComponentLocalDraft() {
 
     model.page = .agent
 
-    expect(model.outputViewModel.detail, nil, "Leaving Output returns the remounted source component to its list")
-    expect(model.outputViewModel.draftEnabled, true, "Leaving Output discards its enabled draft")
-    expect(model.outputViewModel.useCustomPrompt, false, "Leaving Output discards custom-prompt draft state")
-    expect(model.outputViewModel.draftPrompt, "", "Leaving Output discards the unsaved prompt")
+    expect(model.outputViewModel.detail, .summary, "Switching settings sections preserves the open summary editor")
+    expect(model.outputViewModel.draftEnabled, false, "Switching sections preserves the draft toggle")
+    expect(model.outputViewModel.useCustomPrompt, true, "Switching sections preserves custom prompt choice")
+    expect(model.outputViewModel.draftPrompt, "Unsaved draft", "Switching sections preserves the unsaved prompt")
 }
 
 @MainActor
-private func testReturningToAudioRemountsOpenDisclosure() {
+private func testSettingsDetailsReturnToTheirParent() {
     let shortcut = ShortcutRecorderViewModel(value: .default, onChange: { _ in true })
     let model = makeSettingsModel(shortcut: shortcut)
-    model.page = .audio
-    model.recognitionExpanded = false
+    for detail in [SettingsPage.recognition, .output, .agentConnection, .gptLive] {
+        model.page = detail
+        let expected: SettingsPage = [.recognition, .output].contains(detail) ? .audio : .agent
+        expect(model.page.section, expected, "Detail keeps its parent selected")
+        model.goBack()
+        expect(model.page, expected, "Back returns to the owning section")
+    }
+    model.page = .output
+    model.outputViewModel.open(.summary)
+    model.outputViewModel.draftPrompt = "Draft retained after back"
+    model.goBack()
+    expect(model.page, .output, "Back from prompt editor first returns to output rules")
+    expect(model.outputViewModel.detail, nil, "Back closes the prompt editor")
+    model.outputViewModel.open(.summary)
+    expect(model.outputViewModel.draftPrompt, "Draft retained after back", "Back and reopen retain the same prompt draft")
+    model.goBack()
+    model.goBack()
+    expect(model.page, .audio, "The next back returns to listening")
+    model.goBack()
+    expect(model.page, .audio, "Back on a root section does nothing")
+    let output = model.outputViewModel
+    output.open(.summary)
+    output.draftPrompt = "Summary draft"
+    output.suspend()
+    output.open(.title)
+    output.draftPrompt = "Title draft"
+    output.suspend()
+    output.open(.summary)
+    expect(output.draftPrompt, "Summary draft", "Title and summary drafts remain separate")
+    output.cancel()
+    output.open(.summary)
+    expect(output.draftPrompt, output.defaultPrompt(for: .summary), "Explicit cancel discards that draft")
+    output.cancel()
+    output.open(.title)
+    expect(output.draftPrompt, "Title draft", "Cancelling summary does not discard title")
+    output.useCustomPrompt = true
+    output.save()
+    output.open(.title)
+    expect(output.draftPrompt, "Title draft", "Saved prompt is restored from settings")
+    output.cancel()
 
-    model.page = .privacy
-    model.page = .audio
-
-    expect(model.recognitionExpanded, true, "Returning to Audio restores the source <details open> state")
+    model.page = .recognition
+    model.deepgramAPIKey = "unsaved-deepgram"
+    model.elevenLabsAPIKey = "unsaved-elevenlabs"
+    model.goBack()
+    model.page = .recognition
+    expect(model.deepgramAPIKey, "unsaved-deepgram", "Navigation preserves Deepgram input")
+    expect(model.elevenLabsAPIKey, "unsaved-elevenlabs", "Provider inputs stay separate")
 }
 
 @MainActor
@@ -106,10 +147,11 @@ private func testGPTLiveBetaRequiresAnExplicitToggle() {
 @MainActor
 private func testGPTLiveHasAnIndependentSettingsDestination() {
     expect(SettingsPage.gptLive.rawValue, "gptLive", "GPT Live owns a stable Settings destination")
+    expect(GPTLiveCredentialStatus.parse(line: #"{"configured":true,"valid":false,"email":"member@example.com"}"#)?.phase, .failed, "Expired credentials must not appear connected")
     expect(
-        SettingsPage.allCases.map(\.rawValue),
-        ["general", "audio", "output", "agent", "gptLive", "privacy"],
-        "GPT Live appears as its own sidebar item between Agent runtime and Data & privacy"
+        SettingsPage.primaryPages.map(\.rawValue),
+        ["general", "audio", "agent", "privacy"],
+        "Only four task-oriented sections appear in settings navigation"
     )
 }
 
@@ -191,8 +233,8 @@ private func testRemovalFailureDoesNotInventInlineError() async {
 }
 
 await testLeavingGeneralUnmountsShortcutRecorder()
-testLeavingOutputDiscardsComponentLocalDraft()
-testReturningToAudioRemountsOpenDisclosure()
+testLeavingOutputPreservesDraftWithinSettings()
+testSettingsDetailsReturnToTheirParent()
 testGPTLiveBetaRequiresAnExplicitToggle()
 testGPTLiveHasAnIndependentSettingsDestination()
 await testGPTLiveOAuthCanConnectReconnectAndDisconnectFromSettings()
@@ -227,7 +269,7 @@ expectTrue(
     "Shortcut recorder controls preserve the React filled primary and transparent secondary treatments"
 )
 expectTrue(
-    settingsViewSource.contains("settingsNavigation(.gptLive, symbol: \"waveform\", beta: true)")
+    !settingsViewSource.contains("settingsNavigation(.gptLive")
         && settingsViewSource.contains("case .gptLive: gptLivePage")
         && settingsViewSource.contains("private var gptLivePage: some View")
         && settingsViewSource.contains("settings.gptLiveBeta")
@@ -304,10 +346,10 @@ expectTrue(
 )
 expectTrue(
     settingsViewSource.contains("private struct SettingsControlRow")
-        && settingsViewSource.contains("let trackWidth = max(0, geometry.size.width - 16)")
-        && settingsViewSource.contains("let labelWidth = max(160, trackWidth / 1.9)")
-        && settingsViewSource.contains("let controlWidth = max(200, trackWidth * 0.9 / 1.9)"),
-    "Settings control rows preserve the React minmax(160px, 1fr) / minmax(200px, 0.9fr) tracks"
+        && settingsViewSource.contains("ViewThatFits(in: .horizontal)")
+        && settingsViewSource.contains("control.frame(width: 200)")
+        && settingsViewSource.contains(".frame(minHeight: 58)"),
+    "Settings control rows retain a 200pt control track and stack without fixed-height clipping"
 )
 expectTrue(
     settingsViewSource.contains(".menuStyle(.borderlessButton)")
@@ -332,8 +374,8 @@ expectTrue(
 )
 expectTrue(
     settingsViewSource.contains("accessibilityTitle: \"settings.transcriptStorage\"")
-        && settingsViewSource.contains("accessibilityTitle: \"settings.notesStorage\""),
-    "Storage rows preserve their source aria-label translations"
+        && settingsViewSource.contains("translate(\"settings.openNotesFolder\", [:])"),
+    "Transcript storage remains configurable and historical note files have an explicit Finder action"
 )
 expectTrue(
     settingsViewSource.contains(".help(settings.selectedDirectory)"),

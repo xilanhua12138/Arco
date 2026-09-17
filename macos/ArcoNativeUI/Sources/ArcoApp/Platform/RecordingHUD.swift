@@ -62,7 +62,10 @@ struct RecordingHUDView: View {
                     onError(error)
                 }
             } label: {
-                Label(translate("hud.askArco", [:]), systemImage: "sparkles")
+                Label { Text(translate("hud.askArco", [:])) } icon: {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable().scaledToFit().frame(width: 15, height: 15)
+                }
                     .labelStyle(HUDLabelStyle(iconSize: 14))
             }
             .buttonStyle(HUDButtonStyle(kind: .agent))
@@ -91,28 +94,30 @@ private struct RecordingHUDStatusView: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Circle()
-                .fill(ArcoNativeColors.record)
-                .frame(width: 7, height: 7)
-                .background {
-                    Circle()
-                        .fill(ArcoNativeColors.recordSoft)
-                        .frame(width: 13, height: 13)
+            Group {
+                if RecordingHUDPresentation.isRecording(phase: model.phase, saving: model.saving, saved: model.saved) {
+                    Circle().fill(ArcoNativeColors.record).frame(width: 7, height: 7)
+                } else if model.saved {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ArcoNativeColors.success)
+                } else {
+                    Circle().fill(ArcoNativeColors.inkMuted).frame(width: 6, height: 6)
                 }
-                .accessibilityHidden(true)
+            }
+            .frame(width: 13, height: 13)
+            .accessibilityHidden(true)
 
             Text(statusText)
                 .font(ArcoTypography.sans(12, weight: .semibold))
                 .foregroundStyle(HUDSourcePalette.ink)
-                .tracking(-0.12)
-                .lineLimit(1)
+                                .lineLimit(1)
 
             if !model.saved,
                !model.saving,
                model.phase == .recording {
                 let elapsed = elapsedClock.elapsed(startedAt: model.startedAt)
                 Text(elapsed)
-                    .font(ArcoTypography.mono(11, weight: .medium))
+                    .font(ArcoTypography.mono(12))
                     .monospacedDigit()
                     .foregroundStyle(HUDSourcePalette.ink.opacity(0.5))
                     .lineLimit(1)
@@ -187,7 +192,7 @@ private struct HUDButtonStyleBody: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         configuration.label
-            .foregroundStyle(kind == .stop ? Color.white : HUDSourcePalette.ink)
+            .foregroundStyle(kind == .stop ? ArcoNativeColors.record : HUDSourcePalette.ink)
             .contentShape(shape)
             .background(background, in: shape)
             .opacity(enabled ? 1 : 0.42)
@@ -197,7 +202,7 @@ private struct HUDButtonStyleBody: View {
     private var background: Color {
         switch kind {
         case .stop:
-            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 1 : 0.92)
+            ArcoNativeColors.record.opacity(hovering || configuration.isPressed ? 0.15 : 0.08)
         case .agent:
             HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.11 : 0.07)
         }

@@ -386,6 +386,7 @@ pub enum ServerMessage {
 
 #[derive(Clone, Debug)]
 struct Segment {
+    pub words: Vec<crate::models::TimedWord>,
     channel: usize,
     speaker: i64,
     label: String,
@@ -800,16 +801,28 @@ impl TranscriptWriter {
             .single()
             .unwrap_or_else(Local::now)
             .format("%H:%M:%S");
-        writeln!(file, "**[{timestamp}] {}:** {}\n", segment.label, segment.text)
-            .and_then(|_| {
-                writeln!(
-                    file,
-                    "<!-- arco channel={} speaker={} stream=doubao-bigmodel start={:.3} end={:.3} -->\n",
-                    segment.channel, segment.speaker, segment.start, segment.end,
-                )
-            })
-            .and_then(|_| file.flush())
-            .map_err(|error| format!("could not write live Doubao transcript: {error}"))
+        writeln!(
+            file,
+            "**[{timestamp}] {}:** {}\n",
+            segment.label, segment.text
+        )
+        .and_then(|_| file.flush())
+        .map_err(|error| format!("could not write live Doubao transcript: {error}"))?;
+        let raw_markdown = fs::read_to_string(&self.path)
+            .map_err(|error| format!("could not count transcript lines: {error}"))?;
+        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
+            .len()
+            .checked_sub(1)
+            .ok_or("could not identify the appended transcript line")?;
+        crate::transcript_timing::append_line(
+            &crate::transcript_timing::sidecar_path(&self.path),
+            line_index,
+            segment.start,
+            segment.end,
+            &segment.words,
+            self.session_started_at,
+        )
+        .map_err(|error| format!("could not append Doubao timing sidecar: {error}"))
     }
 }
 
@@ -1092,6 +1105,7 @@ fn segments_from_payload(payload: &Value, channel: usize, include_tentative: boo
                 })
                 .unwrap_or(0);
             Some(Segment {
+                words: crate::transcript_timing::words(utterance.get("words"), true),
                 channel,
                 speaker,
                 label: format!(
@@ -1124,6 +1138,7 @@ fn segments_from_connection_payload(
         .map(|mut segment| {
             segment.start += connection_origin;
             segment.end += connection_origin;
+            crate::transcript_timing::shift(&mut segment.words, connection_origin);
             segment
         })
         .collect()
@@ -1168,14 +1183,20 @@ fn is_fatal_channel_error(error: &str) -> bool {
         || (lowercase.contains("http") && (lowercase.contains("401") || lowercase.contains("403")))
 }
 
-// Only credential problems are unrecoverable. Session-level provider errors
-// like 45000081 (packet-wait timeout) or 55000031 (server busy) are exactly
-// what the reconnect path exists for.
+// Keep authentication failures terminal even if a provider uses a generic code.
 fn is_provider_auth_rejection(lowercase_error: &str) -> bool {
     lowercase_error.contains("doubao transcription failed (")
         && (lowercase_error.contains("access token")
             || lowercase_error.contains("(401")
             || lowercase_error.contains("(403"))
+}
+
+fn provider_error(code: u32, message: &str) -> String {
+    // Server failures and packet-wait timeouts can recover on a new session.
+    // Preserve terminal handling for other request/configuration rejections.
+    let retryable = (55_000_000..56_000_000).contains(&code) || code == 45_000_081;
+    let prefix = if retryable { "" } else { FATAL_ERROR_PREFIX };
+    format!("{prefix}Doubao transcription failed ({code}): {message}")
 }
 
 fn apply_server_confirmation(
@@ -1290,9 +1311,7 @@ async fn wait_for_initialization(socket: &mut DoubaoSocket) -> Result<(), String
     loop {
         match receive_protocol_message(socket.next().await).await? {
             Some(ServerMessage::Error { code, message }) => {
-                return Err(format!(
-                    "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
-                ));
+                return Err(provider_error(code, &message));
             }
             Some(ServerMessage::Result { .. } | ServerMessage::Acknowledgement { .. }) => {
                 return Ok(());
@@ -1631,9 +1650,7 @@ async fn stream_connected_channel(
                         )
                         .await
                         .map_err(|error| format!("{FATAL_ERROR_PREFIX}{error}"))?;
-                        return Err(format!(
-                            "{FATAL_ERROR_PREFIX}Doubao transcription failed ({code}): {message}"
-                        ));
+                        return Err(provider_error(code, &message));
                     }
                     ServerMessage::Acknowledgement { .. } => {
                         writer
@@ -2517,6 +2534,138 @@ mod tests {
         }
     }
 
+    fn server_error_message(code: u32, message: &str) -> Message {
+        let mut packet = vec![0x11, 0xf0, 0x10, 0x00];
+        packet.extend_from_slice(&code.to_be_bytes());
+        packet.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        packet.extend_from_slice(message.as_bytes());
+        Message::Binary(packet.into())
+    }
+
+    #[tokio::test]
+    async fn initialization_classifies_actual_provider_error_packets_for_retry() {
+        for (code, message, fatal) in [
+            (55000000, "read result timeout", false),
+            (55000031, "server busy", false),
+            (45000081, "waiting next packet timeout", false),
+            (45000000, "invalid access token", true),
+            (45000001, "invalid audio format", true),
+        ] {
+            let (mut socket, mut server) = local_websocket_pair().await;
+            server
+                .send(server_error_message(code, message))
+                .await
+                .unwrap();
+            let error =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_initialization(&mut socket))
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+            assert_eq!(is_fatal_channel_error(&error), fatal, "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn server_timeout_reconnect_preserves_unconfirmed_and_new_audio_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("transcript.md");
+        fs::write(&transcript, "# Meeting\n\n").unwrap();
+        let mut transcript_writer = TranscriptWriter::new(transcript, 0.0).unwrap();
+        transcript_writer.set_active_channels([true, false]);
+        let writer = Arc::new(Mutex::new(transcript_writer));
+        let (sender, mut receiver) = mpsc::channel(4);
+        let chunks = [
+            tenth_second_chunk(0, 3),
+            tenth_second_chunk(SAMPLE_RATE / 10, 4),
+            tenth_second_chunk(SAMPLE_RATE / 5, 5),
+        ];
+        sender.send(chunks[0].clone()).await.unwrap();
+        sender.send(chunks[1].clone()).await.unwrap();
+        let (ready, _ready_receiver) = mpsc::channel(1);
+        let mut state = ChannelState::new(0);
+        state.enable_disk_recovery().unwrap();
+        state.connection_id = 1;
+        let (socket, mut server) = local_websocket_pair().await;
+        let provider = async move {
+            assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+            server
+                .send(server_error_message(55000000, "read result timeout"))
+                .await
+                .unwrap();
+            // Keep the transport open until the client processes the error.
+            let _ = server.next().await;
+        };
+        let attempt = stream_connected_channel(
+            socket,
+            &mut receiver,
+            &writer,
+            None,
+            &ready,
+            "combined",
+            None,
+            &mut state,
+        );
+        let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(attempt, provider)
+        })
+        .await
+        .unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            !is_fatal_channel_error(&error),
+            "actual stream error must enter retry: {error}"
+        );
+        assert!(
+            !sender.is_closed(),
+            "provider failure must not close capture input"
+        );
+
+        // New capture continues during backoff; the retry must retain both
+        // previously sent/unconfirmed audio and the held lookahead before it.
+        sender.send(chunks[2].clone()).await.unwrap();
+        wait_before_retry(Duration::from_millis(10), &mut receiver, &mut state)
+            .await
+            .unwrap();
+        drop(sender);
+        state.connection_id += 1;
+        let (socket, mut server) = local_websocket_pair().await;
+        let provider = async move {
+            for chunk in chunks {
+                let Some(Ok(Message::Binary(packet))) = server.next().await else {
+                    panic!("expected replayed audio");
+                };
+                assert_eq!(&packet[..4], &[0x11, 0x21, 0x01, 0x00]);
+                assert_eq!(gunzip(&packet[12..]).unwrap(), chunk.data);
+            }
+            let Some(Ok(Message::Binary(packet))) = server.next().await else {
+                panic!("expected EOF flush");
+            };
+            assert_eq!(&packet[..4], &[0x11, 0x22, 0x01, 0x00]);
+            server
+                .send(result_message(-1, true, json!({"result": {}})))
+                .await
+                .unwrap();
+            let _ = server.next().await;
+        };
+        let attempt = stream_connected_channel(
+            socket,
+            &mut receiver,
+            &writer,
+            None,
+            &ready,
+            "combined",
+            None,
+            &mut state,
+        );
+        let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(attempt, provider)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, Ok(true));
+        assert!(state.pending.is_empty());
+    }
+
     #[test]
     fn credential_headers_use_the_official_doubao_streaming_contract() {
         let headers = credential_headers("app-id", "access-token", "request-id").unwrap();
@@ -2967,6 +3116,7 @@ mod tests {
             .update_live(
                 0,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 0,
                     speaker: 0,
                     label: "Remote 1".into(),
@@ -2980,6 +3130,7 @@ mod tests {
             .update_live(
                 1,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 1,
                     speaker: 0,
                     label: "In room 1".into(),
@@ -3322,6 +3473,7 @@ mod tests {
         let mut writer = TranscriptWriter::new(transcript.clone(), 0.0).unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3332,6 +3484,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3342,7 +3495,7 @@ mod tests {
             .unwrap();
         writer.flush_all().unwrap();
 
-        let content = fs::read_to_string(transcript).unwrap();
+        let content = fs::read_to_string(&transcript).unwrap();
         assert!(
             content.find("earlier recovered room").unwrap() < content.find("later remote").unwrap(),
             "replayed older room audio must not be appended after newer remote audio"
@@ -3359,6 +3512,7 @@ mod tests {
         writer.set_active_channels([true, true]);
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3424,6 +3578,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 3,
                 label: "In room 4".into(),
@@ -3434,6 +3589,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 1,
                 label: "Remote 2".into(),
@@ -3445,11 +3601,12 @@ mod tests {
         writer.advance(0, 26.0).unwrap();
         writer.advance(1, 26.0).unwrap();
 
-        let content = fs::read_to_string(transcript).unwrap();
+        let content = fs::read_to_string(&transcript).unwrap();
+        let timing = fs::read_to_string(transcript.with_extension("md.timing.json")).unwrap();
         assert!(content.contains("Remote 2:** 可以的，我能说中文，你想问什么。"));
-        assert!(content.contains("arco channel=0 speaker=1"));
+        assert!(timing.contains("\"line\":0") && timing.contains("\"startMs\":22252"));
         assert!(!content.contains("In room 4"));
-        assert!(!content.contains("arco channel=1 speaker=3"));
+        assert!(!timing.contains("\"line\":1"));
     }
 
     #[test]
@@ -3462,6 +3619,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3473,6 +3631,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3484,7 +3643,7 @@ mod tests {
         writer.advance(0, 15.0).unwrap();
         writer.advance(1, 15.0).unwrap();
 
-        let content = fs::read_to_string(transcript).unwrap();
+        let content = fs::read_to_string(&transcript).unwrap();
         assert!(content.contains("Remote 1"));
         assert!(!content.contains("In room 1"));
         assert_eq!(content.matches("正在验证").count(), 1);
@@ -3500,6 +3659,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3510,6 +3670,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3537,6 +3698,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3547,6 +3709,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3574,6 +3737,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3585,6 +3749,7 @@ mod tests {
         writer.advance(1, 125.0).unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3595,9 +3760,10 @@ mod tests {
             .unwrap();
         writer.flush_all().unwrap();
 
-        let content = fs::read_to_string(transcript).unwrap();
+        let content = fs::read_to_string(&transcript).unwrap();
+        let timing = fs::read_to_string(transcript.with_extension("md.timing.json")).unwrap();
         assert_eq!(content.matches("我在看进度").count(), 1);
-        assert_eq!(content.matches("arco channel=1 speaker=0").count(), 1);
+        assert_eq!(timing.lines().count(), 1);
     }
 
     #[test]
@@ -3611,6 +3777,7 @@ mod tests {
             .update_live(
                 0,
                 &[Segment {
+                    words: Vec::new(),
                     channel: 0,
                     speaker: 0,
                     label: "Remote 1".into(),
@@ -3625,6 +3792,7 @@ mod tests {
                 1,
                 &[
                     Segment {
+                        words: Vec::new(),
                         channel: 1,
                         speaker: 0,
                         label: "In room 1".into(),
@@ -3633,6 +3801,7 @@ mod tests {
                         end: 35.512,
                     },
                     Segment {
+                        words: Vec::new(),
                         channel: 1,
                         speaker: 0,
                         label: "In room 1".into(),
@@ -3660,6 +3829,7 @@ mod tests {
 
         for segment in [
             Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3668,6 +3838,7 @@ mod tests {
                 end: 11.5,
             },
             Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3697,6 +3868,7 @@ mod tests {
 
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),
@@ -3707,6 +3879,7 @@ mod tests {
             .unwrap();
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -3733,6 +3906,7 @@ mod tests {
         let one_hour_frame = (SAMPLE_RATE * 60 * 60) as f64;
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 1,
                 speaker: 0,
                 label: "In room 1".into(),
@@ -4576,6 +4750,7 @@ mod tests {
         writer.set_active_channels([true, false]);
         writer
             .append(&Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: 0,
                 label: "Remote 1".into(),

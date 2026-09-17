@@ -3,7 +3,6 @@ import Foundation
 public enum AppRoute: String, Codable, CaseIterable, Sendable {
     case current
     case history
-    case notes
     case review
 }
 
@@ -739,4 +738,19 @@ public struct GenerationSettings: Codable, Equatable, Sendable {
 
 public extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+public struct AudioArchiveSettings: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var directory: String
+    public var maxBytes: UInt64
+    public var defaultDirectory: String
+    public var usedBytes: UInt64
+    public var status: AudioArchiveStatus?
+}
+
+public struct AudioArchiveStatus: Codable, Equatable, Sendable {
+    public var phase: String
+    public var error: String?
+    public var directory: String?
 }

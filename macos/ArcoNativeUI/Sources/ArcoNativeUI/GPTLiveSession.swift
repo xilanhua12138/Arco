@@ -68,9 +68,10 @@ public struct GPTLiveCredentialStatus: Equatable, Sendable {
         let allowed = Set(["configured", "valid", "accountId", "expiresAtMs", "email", "planType"])
         guard Set(object.keys).isSubset(of: allowed),
               let configured = object["configured"] as? Bool,
-              object["valid"] is Bool
+              let valid = object["valid"] as? Bool
         else { return nil }
         guard configured else { return .missing }
+        guard valid else { return GPTLiveCredentialStatus(phase: .failed) }
         let identity = (object["email"] as? String) ?? (object["accountId"] as? String)
         guard let identity,
               !identity.isEmpty,

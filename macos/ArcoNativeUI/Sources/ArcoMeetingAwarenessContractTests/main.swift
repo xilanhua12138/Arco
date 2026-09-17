@@ -59,6 +59,45 @@ private let feishuInCall = MeetingAccessibilitySnapshot(
 )
 
 @MainActor
+private func testRealFeishuHelperWithoutAccessibleButtons() {
+    // Observed on 2026-09-07: both prejoin and in-call expose only an empty
+    // AX container in the dedicated native helper. Either should prompt.
+    var snapshot = MeetingAccessibilitySnapshot(
+        bundleIdentifier: "com.electron.lark.iron",
+        applicationName: "飞书会议",
+        processIdentifier: 702,
+        windowIdentifier: "native-call",
+        windowTitle: "飞书会议",
+        url: nil,
+        accessibilityLabels: []
+    )
+    let expected = DetectedMeeting(id: "feishu:702:native-call", source: .feishu,
+                                  processIdentifier: 702, windowIdentifier: "native-call")
+    expect(MeetingSurfaceClassifier.detect(snapshot), expected,
+           "The real native Feishu prejoin window must prompt without accessible call buttons")
+    var tracker = MeetingPromptTracker()
+    if let detected = MeetingSurfaceClassifier.detect(snapshot) {
+        expect(tracker.observe([detected], capturePhase: .idle), .show(expected), "Opening prejoin presents once")
+        expect(tracker.observe([detected], capturePhase: .idle), .none, "Entering the same window does not prompt twice")
+        expect(tracker.dismiss(), true, "Dismiss the native-window prompt")
+        expect(tracker.observe([detected], capturePhase: .idle), .none, "Dismissed preview stays quiet at join")
+    }
+    for identifier in ["com.electron.lark", "com.electron.lark.helper", "com.electron.lark.iron.fake"] {
+        snapshot.bundleIdentifier = identifier
+        expectNil(MeetingSurfaceClassifier.detect(snapshot), "Only the dedicated meeting helper bypasses call buttons")
+    }
+    snapshot.bundleIdentifier = "com.electron.lark.iron"
+    for title in ["", "设置", "飞书"] {
+        snapshot.windowTitle = title
+        expectNil(MeetingSurfaceClassifier.detect(snapshot), "Unrelated helper windows must stay quiet: \(title)")
+    }
+    snapshot.bundleIdentifier = "com.google.Chrome"
+    snapshot.windowTitle = "Google Meet"
+    snapshot.url = "https://meet.google.com/abc-defg-hij"
+    expectNil(MeetingSurfaceClassifier.detect(snapshot), "Google Meet prejoin keeps its existing behavior")
+}
+
+@MainActor
 private func testClassifierRequiresAnActiveCallControl() {
     expectNil(
         MeetingSurfaceClassifier.detect(meetPrejoin),
@@ -343,6 +382,7 @@ private func testPlatformUsesEventsAndReleasesTheMainSurfaceInMenuBarMode() {
 }
 
 testClassifierRequiresAnActiveCallControl()
+testRealFeishuHelperWithoutAccessibleButtons()
 testClassifierIdentifiesSupportedMeetings()
 testPromptAppearsOnlyOncePerMeeting()
 testCaptureSuppressesTheCurrentMeeting()

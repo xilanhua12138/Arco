@@ -163,7 +163,23 @@ impl CaptureConfig {
         let doubao_command = std::env::var_os("ARCO_DOUBAO_TRANSCRIBER_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| discover_doubao_transcriber(paths));
-        let environment = load_capture_environment(paths);
+        let mut environment = load_capture_environment(paths);
+        environment.insert(
+            "ARCO_AUDIO_ARCHIVE_CONFIG".into(),
+            paths
+                .app_data
+                .join("audio-archive.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        environment.insert(
+            "ARCO_AUDIO_ARCHIVE_DEFAULT".into(),
+            paths
+                .home
+                .join("Music/Arco/Recordings")
+                .to_string_lossy()
+                .into_owned(),
+        );
         Self {
             transcript_dir: paths.transcripts.clone(),
             log_dir,
@@ -1522,6 +1538,11 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                 }
                 let newest_input_modified = [
                     source.as_path(),
+                    source
+                        .parent()
+                        .unwrap()
+                        .join("AudioArchive.swift")
+                        .as_path(),
                     audio_runtime_archive.as_path(),
                     audio_runtime_header.as_path(),
                 ]
@@ -1549,6 +1570,17 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                 let swiftc = find_command("swiftc").ok_or_else(|| {
                     "swiftc was not found; install Xcode Command Line Tools".to_string()
                 })?;
+                let combined_source = tempfile::Builder::new()
+                    .suffix(".swift")
+                    .tempfile_in(parent)
+                    .map_err(|e| format!("Could not stage recorder source: {e}"))?;
+                let archive_source = source.parent().unwrap().join("AudioArchive.swift");
+                let combined = format!(
+                    "{}\n{}",
+                    fs::read_to_string(source).map_err(|e| e.to_string())?,
+                    fs::read_to_string(archive_source).map_err(|e| e.to_string())?
+                );
+                fs::write(combined_source.path(), combined).map_err(|e| e.to_string())?;
                 let mut build_command = Command::new(swiftc);
                 let swift_target = match std::env::consts::ARCH {
                     "aarch64" => "arm64-apple-macosx14.0",
@@ -1565,7 +1597,7 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                     .arg(audio_runtime_header)
                     .arg("-target")
                     .arg(swift_target)
-                    .arg(source)
+                    .arg(combined_source.path())
                     .arg(audio_runtime_archive)
                     .arg("-o")
                     .arg(&temporary)
@@ -2113,7 +2145,7 @@ mod tests {
         assert!(runtime_build.contains("--target \"$RUST_TARGET\""));
         assert!(runtime_build.contains("libarco_audio_rt.a"));
         assert!(runtime_build.contains("-import-objc-header"));
-        assert!(runtime_build.contains("swiftc -O \"$NATIVE_DIR/recorder.swift\""));
+        assert!(runtime_build.contains("swiftc -O \"$COMBINED_SOURCE\""));
         assert!(fallback_build.contains(".arg(\"-O\")"));
         assert!(fallback_build.contains("-import-objc-header"));
         assert!(fallback_build.contains(".arg(audio_runtime_archive)"));

@@ -1,7 +1,10 @@
 pub mod agent;
+mod agent_proxy;
+pub mod audio_archive;
 pub mod audio_setup;
 pub mod capture;
 pub mod controller;
+mod credential_store;
 pub mod deepgram;
 pub mod deepgram_credentials;
 pub mod doubao;
@@ -15,9 +18,13 @@ pub mod meeting_output;
 pub mod meeting_state;
 pub mod meetings;
 pub mod models;
+pub mod network_environment;
+pub mod network_proxy;
 pub mod notes;
 pub mod paths;
 pub mod process;
 pub mod speaker_timeline;
 pub mod storage;
 pub mod transcription;
+
+pub mod transcript_timing;

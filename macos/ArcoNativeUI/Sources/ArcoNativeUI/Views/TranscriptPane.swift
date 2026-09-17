@@ -7,9 +7,7 @@ public enum ArcoSourceTextLayoutMetrics {
     /// CSS `ch` resolves against the inherited 16px root font on these source
     /// containers, even though their child paragraphs use smaller type.
     public static func maximumWidth(characterCount: CGFloat) -> CGFloat {
-        let font = NSFont(name: "Avenir Next", size: 16)
-            ?? NSFont(name: "Avenir", size: 16)
-            ?? NSFont.systemFont(ofSize: 16)
+        let font = NSFont.systemFont(ofSize: 16)
         let zeroWidth = ("0" as NSString).size(withAttributes: [.font: font]).width
         return max(0, characterCount) * zeroWidth
     }
@@ -79,7 +77,7 @@ public struct TranscriptPaneView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceSubtle)
+        .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)
         .clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
@@ -140,16 +138,15 @@ public struct TranscriptPaneView: View {
     private var header: some View {
         HStack {
             Text(translate("transcript.heading", [:]))
-                .font(ArcoTypography.surfaceTitle)
+                .font(ArcoTypography.conversationHeading)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
-                .tracking(-0.16)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 22)
-        .padding(.bottom, 16)
-        .frame(minHeight: 70)
+        .padding(.horizontal, 12)
+        .padding(.top, 24)
+        .padding(.bottom, 12)
+        .frame(minHeight: 56)
         .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
     }
 
@@ -275,9 +272,9 @@ public struct TranscriptPaneView: View {
                             .lineLimit(1)
                     }
                     Text(line.text)
-                        .font(ArcoTypography.sans(13))
+                        .font(layout == .agentOverlay ? ArcoTypography.floatingBody : ArcoTypography.sans(13))
                         .foregroundStyle(ArcoNativeColors.inkStrong)
-                        .lineSpacing(3.4)
+                        .lineSpacing(layout == .agentOverlay ? 2.5 : 3.4)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }

@@ -28,7 +28,20 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
     case agent
     case gptLive
     case privacy
+    case recognition
+    case agentConnection
 
+    public static let primaryPages: [SettingsPage] = [.general, .audio, .agent, .privacy]
+
+    public var parent: SettingsPage? {
+        switch self {
+        case .recognition, .output: .audio
+        case .agentConnection, .gptLive: .agent
+        default: nil
+        }
+    }
+
+    public var section: SettingsPage { parent ?? self }
     public var id: String { rawValue }
 }
 

@@ -1,5 +1,6 @@
 import ArcoTranscriptionCore
 import Foundation
+import AVFoundation
 
 @main
 struct ArcoTranscriptionSelfTest {
@@ -16,7 +17,28 @@ struct ArcoTranscriptionSelfTest {
         try testModelCatalog()
         try await testPyannoteInstallationStatus()
         try await testStreamingTimelineExchange()
+        if let audio = ProcessInfo.processInfo.environment["ARCO_TIMING_TEST_AUDIO"] { try await testInstalledProviderTimings(audio) }
         print("12 local transcription contract tests passed")
+    }
+
+    private static func testInstalledProviderTimings(_ path: String) async throws {
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        try require(file.processingFormat.sampleRate == 16000 && file.processingFormat.channelCount == 1, "timing fixture must be 16k mono")
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+        try file.read(into: buffer)
+        let samples = Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+        let directories = ModelDirectories()
+        let whisper = try WhisperTranscriptionProvider(modelURL: directories.whisper.appendingPathComponent("ggml-tiny.bin"))
+        let manager = LocalModelManager(directories: directories)
+        let nemotron = try await NemotronTranscriptionProvider(modelDirectory: manager.nemotronPath())
+        for (name, provider) in [("Whisper Tiny", whisper as any LocalTranscriptionProvider), ("Nemotron", nemotron as any LocalTranscriptionProvider)] {
+            let segments = try await provider.transcribe(samples: samples, language: "en-US")
+            let words = segments.flatMap(\.words)
+            if name == "Whisper Tiny" { try require(segments.map(\.text).joined().contains("And so my fellow"), "Whisper word segmentation must preserve readable English spacing") }
+            try require(words.count > 5, "\(name) must return fine-grained timings for spoken fixture")
+            try require(words.allSatisfy { $0.startMs >= 0 && $0.endMs >= $0.startMs }, "\(name) has invalid word boundaries")
+            print("\(name): \(words.count) timed units; \(words.prefix(5))")
+        }
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -191,18 +213,25 @@ struct ArcoTranscriptionSelfTest {
     }
 
     private static func testTranscriptWriter() throws {
+        let tokens = ["Hello", "world", ",", "你", "好", "。"].map { TranscriptWord(text: $0, startMs: 0, endMs: 1) }
+        try require(joinedWhisperWords(tokens) == "Hello world,你好。", "Whisper word spacing must preserve Latin and Chinese text")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let transcript = directory.appendingPathComponent("transcript.md")
         try Data("# Meeting\n\n".utf8).write(to: transcript)
         let writer = TranscriptWriter(path: transcript, sessionStartedAt: Date(timeIntervalSince1970: 43_200))
-        try writer.append(TranscriptSegment(channel: 1, speaker: 2, text: "  hello  ", start: 2, end: 3.5))
+        try writer.append(TranscriptSegment(channel: 1, speaker: 2, text: "  hello  ", start: 2, end: 3.5, words: [TranscriptWord(text: "hello", startMs: 2000, endMs: 3500)]))
         let output = try String(contentsOf: transcript, encoding: .utf8)
-        try require(output.contains("In room 3:** hello"), "location speaker label")
+        try require(!output.contains("arco-timing"), "word timing must stay out of Markdown")
+        try require(!output.contains("<!-- arco "), "provider timing must stay out of Markdown")
+        let timingPath = URL(fileURLWithPath: transcript.path + ".timing.json")
+        let timingOutput = try String(contentsOf: timingPath, encoding: .utf8)
         try require(
-            output.contains("channel=1 speaker=2 stream=local start=2.000 end=3.500"),
-            "timing metadata"
+            timingOutput.contains("\"line\":0") && timingOutput.contains("\"startMs\":2000") && timingOutput.contains("\"originMs\":43200000"),
+            "word timing sidecar persistence"
         )
+        try require(output.contains("In room 3:** hello"), "location speaker label")
     }
 
     private static func testSlidingWindowDiarizer() throws {

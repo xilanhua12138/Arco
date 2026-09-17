@@ -311,6 +311,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var microphoneCaptureStarted = !useMic
     private var announcedReady = false
     private var hasStopped = false
+    private let archive = AsyncMeetingAudioArchive(environment: ProcessInfo.processInfo.environment)
     private let output = FileHandle.standardOutput
     private let outputQueue = DispatchQueue(label: "app.arco.recorder.stdout")
     private let outputWriteGate = DispatchSemaphore(value: 1)
@@ -932,6 +933,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             let emitted = payload.withUnsafeBytes { bytes in
                 self.writeAll(bytes)
             }
+            self.archive?.append(payload)
             self.outputWriteGate.signal()
             guard !emitted else { return }
             self.lifecycleQueue.async { [weak self] in
@@ -1304,6 +1306,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             microphoneCallbacksQuiesced: microphoneCallbacksQuiesced
                 && processingQueueQuiesced
         )
+        archive?.finish()
     }
 
     private func stopAudioRuntime(
@@ -1452,6 +1455,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                     paddedFrames: chunk.samples.count / 2 - chunk.microphoneFrames
                 )
             }
+            archive?.append(chunk.samples.withUnsafeBytes { Data($0) })
             let emitted = chunk.samples.withUnsafeBytes { bytes in
                 writeAll(bytes)
             }

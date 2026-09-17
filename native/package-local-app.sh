@@ -143,7 +143,13 @@ hdiutil attach -readwrite -nobrowse -mountpoint "$MOUNT_POINT" "$RW_DMG" >/dev/n
 MOUNTED=1
 mkdir -p "$MOUNT_POINT/.background"
 COPYFILE_DISABLE=1 ditto --norsrc "$BACKGROUND" "$MOUNT_POINT/.background/background.png"
-osascript "$ROOT/native/dmg-layout.applescript" "$VOLUME_NAME" "$MOUNT_POINT" >/dev/null
+# A previously verified layout can be reused on hosts without Finder automation.
+# The template must use the same volume name, icon names, and background path.
+if [ -n "${ARCO_DMG_LAYOUT_TEMPLATE:-}" ]; then
+  COPYFILE_DISABLE=1 ditto --norsrc "$ARCO_DMG_LAYOUT_TEMPLATE" "$MOUNT_POINT/.DS_Store"
+else
+  osascript "$ROOT/native/dmg-layout.applescript" "$VOLUME_NAME" "$MOUNT_POINT" >/dev/null
+fi
 sync
 hdiutil detach "$MOUNT_POINT" >/dev/null
 MOUNTED=0

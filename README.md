@@ -33,7 +33,7 @@ When that local CLI is signed in with your Codex or Claude subscription, Arco us
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
-The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Audio & speakers → Recognition**.
+The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
 
 ## Live context, not another meeting dashboard
 
@@ -53,7 +53,7 @@ Use the transcript alone or attach one project workspace through the native macO
 
 ## A useful local meeting history
 
-Meetings begin untitled, can be renamed at any time, and can receive an Agent-generated title and summary. Each meeting can also hold multiple hand-written or Agent-saved Markdown notes. History and notes remain searchable and live as readable local files rather than being hidden inside a hosted account.
+Meetings begin untitled, can be renamed at any time, and can receive an Agent-generated title and summary. Text questions and answers are retained with their meeting automatically. Meeting history remains searchable and stored locally. Existing note files remain accessible from Data & privacy; there is no separate Notes workspace.
 
 <p align="center">
   <img src="docs/images/arco-history.png" alt="Arco local meeting history" width="1000">
@@ -67,11 +67,11 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Streaming transcription | Choose Deepgram, Doubao, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
 | Multi-speaker separation | Choose Deepgram, Doubao, or a local Sortformer, Pyannote + WeSpeaker, or LS-EEND model independently from ASR. Mixed cloud/on-device pipelines remain streaming. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
 | Native local Agent | Sends questions through Codex CLI or Claude Code already installed and authenticated on the Mac. | Your meeting assistant can use the same project understanding and account you already trust. |
-| GPT Live voice questions (Beta) | After you opt in under **Settings → GPT Live** and connect ChatGPT with OAuth, use the meeting button to start or stop a live voice session. | Ask hands-free questions and hear concise answers; questions about meeting progress are delegated to the current transcript-aware Agent. |
+| GPT Live voice questions (Beta) | After you opt in under **Settings → Talk with Arco → Voice conversation** and connect ChatGPT with OAuth, use the meeting button to start or stop a live voice session. | Ask hands-free questions and hear concise answers; questions about meeting progress are delegated to the current transcript-aware Agent. |
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
 | Automatic meeting output | Generates a title after enough evidence and a summary when the meeting ends; both prompts are configurable. | Meetings become useful records without requiring a title or note-taking ritual up front. |
-| Meeting-bound notes | Create multiple Markdown notes for one meeting, or save an Agent answer as a note; choose a separate notes directory when needed. | Manual thinking and AI output stay portable, editable, and connected to their transcript evidence. |
+| Meeting discussions | Revisit text questions and answers with their source meeting, or copy a reply into another tool. | Continue exploring an idea without a separate save step. |
 | Local history | Stores Markdown transcripts and local sidecars under Arco's Application Support directory or a folder you choose. | Your meeting record remains portable, searchable, and under your control. |
 
 ## Privacy
@@ -85,7 +85,7 @@ By default, transcripts and meeting state live at:
 ```
 
 - Choose a different transcript folder at any time; previously used locations remain readable in History.
-- Choose a separate notes folder; every note remains an independent Markdown file bound to its source meeting.
+- Existing note files are preserved; open their original folder from Data & privacy.
 - Arco streams audio for transcription but does not save raw PCM recordings.
 - With on-device ASR and diarization, speech processing stays on the Mac.
 - Selecting Deepgram for either ASR or speaker separation sends meeting audio to Deepgram.
@@ -129,7 +129,7 @@ To create the same locally signed macOS archive used for preview releases:
 
 The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
-Open **Settings → Audio & speakers → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
+Open **Settings → Listening & recording → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
 
 ## The original Agent Skill is still here
 
@@ -168,7 +168,7 @@ ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
 - **SwiftUI** renders the main workspace, History, Settings, onboarding, recording HUD, global Agent window, and every Liquid Glass surface/control. AppKit is limited to native window/panel lifecycle, global shortcuts, and system pickers.
 - **Rust static library + C ABI** runs in the Arco process and owns storage, capture orchestration, credentials, provider routing, Agent lifecycle, and native session bindings.
 - **Managed worker processes** isolate the recorder, cloud transcription helpers, and the FluidAudio/SwiftWhisper/Nemotron local pipeline so a model crash or memory spike does not take down the UI process. Codex and Claude remain external CLI processes.
-- **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers and saved notes.
+- **Markdown + atomic JSON sidecars** keep transcript evidence separate from Agent answers. Text discussions remain attached to the source meeting.
 
 Read [PRODUCT.md](./PRODUCT.md), [DESIGN.md](./DESIGN.md), [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), and [docs/TRANSCRIPTION.md](./docs/TRANSCRIPTION.md) for the detailed contracts.
 

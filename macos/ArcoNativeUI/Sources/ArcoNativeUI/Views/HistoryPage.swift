@@ -86,22 +86,10 @@ public struct HistoryPageView: View {
         .background(Color.clear)
     }
 
-    @ViewBuilder
     private var searchField: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 8) {
-                searchContent
-                    .contentShape(Capsule())
-                    .glassEffect(.regular.interactive(), in: Capsule())
-            }
-            .frame(width: compactLayout ? 220 : 260, height: 36)
-        } else {
-            searchContent
-                .contentShape(Capsule())
-                .background(.regularMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 0.75))
-                .frame(width: compactLayout ? 220 : 260, height: 36)
-        }
+        searchContent
+            .background(ArcoNativeColors.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10))
+            .frame(width: compactLayout ? 220 : 260, height: 40)
     }
 
     private var searchContent: some View {

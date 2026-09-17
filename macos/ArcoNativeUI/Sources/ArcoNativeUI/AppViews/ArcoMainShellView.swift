@@ -5,6 +5,7 @@ public struct ArcoMainShellView: View {
     @StateObject private var controller: ArcoAppShellController
     @State private var liveReviewHovered = false
     @FocusState private var settingsTriggerFocused: Bool
+    @FocusState private var agentTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     private let translate: ArcoTranslate
 
@@ -100,6 +101,7 @@ public struct ArcoMainShellView: View {
             if controller.settingsOpen {
                 ArcoSettingsSheetView(
                     viewModel: controller.settingsViewModel(),
+                    providerViewModel: controller.providerViewModel(),
                     translate: translate
                 )
                 .transition(
@@ -154,41 +156,39 @@ public struct ArcoMainShellView: View {
                 Image(nsImage: NSApplication.shared.applicationIconImage)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 30, height: 30)
+                    .frame(width: 32, height: 32)
                     .accessibilityHidden(true)
                 Text("Arco")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
             .padding(.top, ArcoLayoutMetrics.sidebarTitlebarClearance)
-            .padding(.bottom, 14)
+            .padding(.bottom, 28)
 
             VStack(spacing: 3) {
-                navigationButton(.current, symbol: "dot.radiowaves.left.and.right", key: "nav.current")
+                navigationButton(.current, symbol: controller.store.capture.phase == .recording ? "waveform" : "house", key: controller.store.capture.phase == .recording ? "nav.current" : "nav.home")
                 navigationButton(.history, symbol: "clock", key: "nav.history", selectedWhenReviewing: true)
-                navigationButton(.notes, symbol: "note.text", key: "nav.notes")
             }
             .padding(.horizontal, 10)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(translate("nav.main", [:]))
 
             Spacer(minLength: 18)
-            captureCard
-                .padding(.horizontal, 10)
-                .padding(.bottom, 10)
+            if controller.page != .current || controller.store.capture.phase != .idle {
+                captureCard
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+            }
 
             Divider()
                 .padding(.horizontal, 12)
-            HStack {
-                Spacer()
-                sidebarSettingsButton
-            }
+            sidebarSettingsButton
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
         .foregroundStyle(ArcoNativeGlassPalette.ink)
-        .arcoLiquidGlass(in: shape)
+        .background(ArcoNativeColors.surfaceSidebar, in: shape)
     }
 
     private func navigationButton(
@@ -211,11 +211,11 @@ public struct ArcoMainShellView: View {
             }
             .foregroundStyle(selected ? ArcoNativeGlassPalette.ink : ArcoNativeGlassPalette.secondaryInk)
             .padding(.horizontal, 10)
-            .frame(height: 38)
+            .frame(height: 44)
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(SidebarNavigationButtonStyle(selected: selected))
-        .accessibilityLabel(translate(route == .current ? "nav.openCurrent" : route == .history ? "nav.openHistory" : "nav.openNotes", [:]))
+        .accessibilityLabel(translate(route == .current ? "nav.openCurrent" : "nav.openHistory", [:]))
     }
 
     private var captureCard: some View {
@@ -246,8 +246,7 @@ public struct ArcoMainShellView: View {
             }
         }
         .padding(12)
-        .background(Color.white.opacity(0.70), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ArcoNativeGlassPalette.ink.opacity(0.09), lineWidth: 0.75))
+        .background(ArcoNativeColors.surfaceDocument, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("capture.audioLabel", ["mode": mode.label, "source": mode.source]))
     }
@@ -285,13 +284,21 @@ public struct ArcoMainShellView: View {
     }
 
     @ViewBuilder private var sidebarSettingsButton: some View {
-        ArcoNativeActionButton(
-            title: translate("nav.openSettings", [:]),
-            symbol: "slider.horizontal.3",
-            variant: .toolbar,
-            action: { controller.openSettings() }
-        )
-        .frame(width: 40, height: 40)
+        Button { controller.openSettings() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 15)).frame(width: 20)
+                Text(translate("common.settings", [:]))
+                    .font(.system(size: 14))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(ArcoNativeColors.inkMuted)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(SidebarNavigationButtonStyle(selected: false))
+        .accessibilityLabel(translate("nav.openSettings", [:]))
         .focused($settingsTriggerFocused)
         .overlay(alignment: .topTrailing) {
             if controller.updateAvailable {
@@ -313,29 +320,18 @@ public struct ArcoMainShellView: View {
                 switch controller.page {
                 case .current: currentPage(viewportWidth: viewportWidth)
                 case .history: historyPage(viewportWidth: viewportWidth)
-                case .notes: notesPage(viewportWidth: viewportWidth)
                 case .review: reviewPage(viewportWidth: viewportWidth)
                 }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: ArcoLayoutMetrics.pageCornerRadius, style: .continuous))
-        .overlay(ArcoStageBorder(cornerRadius: ArcoLayoutMetrics.pageCornerRadius))
         .accessibilityElement(children: .contain)
     }
 
     private func currentPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
             if controller.store.capture.phase == .recording {
-                TopBarView(
-                    meeting: controller.currentMeeting?.summary,
-                    meetingDetail: controller.currentMeeting,
-                    capture: controller.store.capture,
-                    viewModel: controller.topBarViewModel,
-                    translate: translate
-                )
-                // The details card renders inside the TopBar's overlay; without
-                // raising the whole bar the later workspace paints over it.
-                .zIndex(1)
+                meetingHeader(controller.currentMeeting, backToHistory: false)
             }
             if controller.store.capture.phase == .recording {
                 workspace(controller.currentMeeting, viewportWidth: viewportWidth)
@@ -365,12 +361,7 @@ public struct ArcoMainShellView: View {
             onStart: { Task { await controller.toggleCapture() } },
             onOpenAudioSettings: { controller.openSettings(.audio) }
         )
-        .padding(ArcoLayoutMetrics.workspacePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(
-            RoundedRectangle(cornerRadius: ArcoLayoutMetrics.workspaceCornerRadius, style: .continuous)
-                .strokeBorder(ArcoNativeColors.lineThin)
-        )
     }
 
     private func historyPage(viewportWidth: CGFloat) -> some View {
@@ -389,30 +380,11 @@ public struct ArcoMainShellView: View {
         .padding(.top, 0)
     }
 
-    private func notesPage(viewportWidth: CGFloat) -> some View {
-        NotesPageView(
-            viewModel: controller.notesViewModel(),
-            viewportWidth: viewportWidth,
-            locale: Locale(identifier: controller.locale.rawValue),
-            translate: translate
-        )
-            .padding(.top, 32)
-            .padding(.bottom, 16)
-    }
+
 
     private func reviewPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
-            TopBarView(
-                meeting: controller.store.meeting?.summary,
-                meetingDetail: controller.store.meeting,
-                capture: controller.store.capture,
-                viewModel: controller.topBarViewModel,
-                translate: translate,
-                onBackToHistory: { controller.requestPage(.history) }
-            )
-            // The details card renders inside the TopBar's overlay; without
-            // raising the whole bar the later workspace paints over it.
-            .zIndex(1)
+            meetingHeader(controller.store.meeting, backToHistory: true)
             if controller.reviewingWhileRecording { liveReviewBanner }
             workspace(controller.store.meeting, viewportWidth: viewportWidth)
         }
@@ -460,37 +432,83 @@ public struct ArcoMainShellView: View {
         .accessibilityLabel(translate("app.returnToLiveMeeting", ["title": title]))
     }
 
+    private func meetingHeader(_ meeting: MeetingDetail?, backToHistory: Bool) -> some View {
+        HStack(spacing: 12) {
+            TopBarView(
+                meeting: meeting?.summary,
+                meetingDetail: meeting,
+                capture: controller.store.capture,
+                viewModel: controller.topBarViewModel,
+                translate: translate,
+                onBackToHistory: backToHistory ? { controller.requestPage(.history) } : nil
+            )
+            Button {
+                setAgentExpanded(!controller.agentPanelExpanded)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable().scaledToFit().frame(width: 16, height: 16)
+                        .accessibilityHidden(true)
+                    Text(translate(controller.agentPanelExpanded ? "agent.collapse" : "agent.askArco", [:]))
+                        .font(ArcoTypography.sans(13, weight: .medium))
+                    if controller.store.agentRunning {
+                        Circle().fill(ArcoNativeColors.action).frame(width: 5, height: 5)
+                    }
+                }
+                .foregroundStyle(ArcoNativeColors.inkStrong)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(controller.agentPanelExpanded ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
+                            in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(ArcoPressFeedbackButtonStyle())
+            .focused($agentTriggerFocused)
+            .accessibilityIdentifier("main-agent-toggle")
+            .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
+        }
+        .zIndex(1)
+    }
+
+    private func setAgentExpanded(_ expanded: Bool) {
+        controller.setAgentPanelExpanded(expanded)
+        if !expanded { agentTriggerFocused = true }
+    }
+
     private func workspace(_ meeting: MeetingDetail?, viewportWidth: CGFloat) -> some View {
         GeometryReader { proxy in
-            let stacked = viewportWidth <= ArcoLayoutMetrics.workspaceStackedViewportBreakpoint
-            Group {
-                if stacked {
-                    ScrollView {
-                        VStack(spacing: ArcoLayoutMetrics.workspaceGap) {
-                            transcriptDock(meeting)
-                            .frame(minHeight: 380)
-                            agentDock(meeting).frame(minHeight: 500)
-                        }
-                        .padding(ArcoLayoutMetrics.workspacePadding)
-                    }
-                } else {
-                    let contentWidth = max(0, proxy.size.width - ArcoLayoutMetrics.workspacePadding * 2 - ArcoLayoutMetrics.workspaceGap)
-                    let compactColumns = viewportWidth <= ArcoLayoutMetrics.compactViewportBreakpoint
-                    let columns = ArcoLayoutMetrics.workspaceColumnWidths(
-                        contentWidth: contentWidth,
-                        compactColumns: compactColumns
-                    )
-                    HStack(spacing: ArcoLayoutMetrics.workspaceGap) {
-                        transcriptDock(meeting)
-                            .frame(width: columns.transcript)
-                        agentDock(meeting)
-                            .frame(width: columns.agent)
-                    }
-                    .padding(ArcoLayoutMetrics.workspacePadding)
-                }
+            let available = max(0, proxy.size.width - ArcoLayoutMetrics.workspacePadding * 2)
+            let height = max(0, proxy.size.height - ArcoLayoutMetrics.workspacePadding * 2)
+            let expanded = controller.agentPanelExpanded
+            let stacked = available < ArcoLayoutMetrics.workspaceSplitMinimumWidth
+            let gap = expanded ? ArcoLayoutMetrics.workspaceGap : 0
+            let columns = ArcoLayoutMetrics.workspaceColumnWidths(
+                contentWidth: max(0, available - ArcoLayoutMetrics.workspaceGap), compactColumns: stacked
+            )
+            let agentWidth = stacked ? available : columns.agent
+            let agentHeight = stacked ? max(0, height * 0.64 - ArcoLayoutMetrics.workspaceGap) : height
+            let transcriptWidth = stacked || !expanded ? available : columns.transcript
+            let transcriptHeight = stacked && expanded ? height * 0.36 : height
+            let layout = stacked
+                ? AnyLayout(VStackLayout(spacing: gap))
+                : AnyLayout(HStackLayout(spacing: gap))
+
+            // Stable view identities keep the draft, source disclosure, pending
+            // reply and scroll state alive across hiding and width breakpoints.
+            layout {
+                transcriptDock(meeting)
+                    .frame(maxWidth: ArcoLayoutMetrics.transcriptReadingMaximumWidth)
+                    .frame(width: transcriptWidth, height: transcriptHeight)
+                agentDock(meeting)
+                    .frame(width: agentWidth, height: agentHeight)
+                    .frame(width: stacked ? available : (expanded ? agentWidth : 0),
+                           height: stacked && !expanded ? 0 : agentHeight)
+                    .clipped()
+                    .opacity(expanded ? 1 : 0)
+                    .allowsHitTesting(expanded)
+                    .disabled(!expanded)
+                    .accessibilityHidden(!expanded)
             }
-            .background(ArcoNativeColors.stageFrame, in: RoundedRectangle(cornerRadius: ArcoLayoutMetrics.workspaceCornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: ArcoLayoutMetrics.workspaceCornerRadius).stroke(ArcoNativeColors.lineThin))
+            .padding(ArcoLayoutMetrics.workspacePadding)
             .clipShape(RoundedRectangle(cornerRadius: ArcoLayoutMetrics.workspaceCornerRadius))
         }
     }
@@ -503,19 +521,32 @@ public struct ArcoMainShellView: View {
             translate: translate
         )
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ArcoNativeColors.lineThin))
     }
 
     private func agentDock(_ meeting: MeetingDetail?) -> some View {
         let route = controller.providerRoute
         return InsightPanelView(
             meeting: meeting,
-            replies: controller.store.agentReplies,
+            replies: meeting.map { controller.store.agentTurnsByMeeting[$0.summary.id] ?? [] } ?? [],
             runtimes: controller.store.runtimes,
             provider: route.provider,
             primaryProvider: controller.providerConfiguration.primary ?? route.provider,
             isFailover: route.isFailover,
             running: controller.store.agentRunning,
+            question: Binding(
+                get: { controller.agentDrafts[meeting?.summary.id ?? ""] ?? "" },
+                set: { controller.agentDrafts[meeting?.summary.id ?? ""] = $0 }
+            ),
+            contextScope: Binding(
+                get: { controller.agentScopes[meeting?.summary.id ?? ""] ?? .transcript },
+                set: { controller.agentScopes[meeting?.summary.id ?? ""] = $0 }
+            ),
+            requestError: Binding(
+                get: { controller.agentRequestErrors[meeting?.summary.id ?? ""] ?? false },
+                set: { controller.agentRequestErrors[meeting?.summary.id ?? ""] = $0 }
+            ),
+            isVisible: controller.agentPanelExpanded,
+            focusRequest: controller.agentFocusRequest,
             workspace: controller.agentWorkspace,
             attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
@@ -535,9 +566,6 @@ public struct ArcoMainShellView: View {
                     contextScope: request.contextScope.rawValue
                 ))
             },
-            onToggleSaved: { meetingID, turnID, saved in
-                await controller.store.setAgentTurnSaved(meetingId: meetingID, turnId: turnID, saved: saved)
-            },
             onChooseWorkspace: { await controller.chooseWorkspace() },
             onAttachDocument: { meetingID in
                 await controller.attachDocument(to: meetingID)
@@ -546,13 +574,14 @@ public struct ArcoMainShellView: View {
                 await controller.removeAttachment(attachmentID, from: meetingID)
             },
             onCopy: controller.environment.copyText,
+            onClose: { setAgentExpanded(false) },
             onConnectAgent: controller.openProviderSetup,
             onToggleGPTLive: {
                 Task { @MainActor in await controller.toggleGPTLive() }
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(ArcoNativeColors.lineThin))
+        .id(meeting?.summary.id)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func errorToast(_ message: String) -> some View {
@@ -652,225 +681,10 @@ public struct ArcoMainShellView: View {
     }
 }
 
-@_spi(Testing)
-public enum ArcoStageGradientGeometry {
-    public static func cssEndpoints(
-        angleDegrees: Double,
-        size: CGSize
-    ) -> (start: CGPoint, end: CGPoint) {
-        let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        guard size.width > 0, size.height > 0 else { return (center, center) }
-
-        let radians = angleDegrees * Double.pi / 180
-        let directionX = CGFloat(sin(radians))
-        let directionY = CGFloat(-cos(radians))
-        let halfLength = (
-            abs(size.width * directionX) + abs(size.height * directionY)
-        ) / 2
-
-        return (
-            start: CGPoint(
-                x: center.x - directionX * halfLength,
-                y: center.y - directionY * halfLength
-            ),
-            end: CGPoint(
-                x: center.x + directionX * halfLength,
-                y: center.y + directionY * halfLength
-            )
-        )
-    }
-}
-
 private struct ArcoStageArtwork: View, Equatable {
-    private static let matrixAngleDegrees: Double = 112
-    private static let dotTileSize = CGSize(width: 8, height: 8)
-    private static let dotCenter = CGPoint(x: 4, y: 4)
-    private static let dotSolidRadius: CGFloat = 1
-    private static let dotFadeRadius: CGFloat = 1.05
-    private static let dotOverlayOpacity: Double = 0.38
-
-    private static let dotTile = Image(
-        size: dotTileSize,
-        label: nil,
-        opaque: false,
-        colorMode: .nonLinear
-    ) { context in
-        let bounds = Path(CGRect(origin: .zero, size: dotTileSize))
-        let solid = ArcoNativeColors.stageDot.opacity(dotOverlayOpacity)
-        context.fill(
-            bounds,
-            with: .radialGradient(
-                Gradient(stops: [
-                    .init(color: solid, location: 0),
-                    .init(color: solid, location: dotSolidRadius / dotFadeRadius),
-                    .init(color: .clear, location: 1),
-                ]),
-                center: dotCenter,
-                startRadius: 0,
-                endRadius: dotFadeRadius
-            )
-        )
-    }
-
     var body: some View {
-        Canvas(opaque: true, colorMode: .nonLinear, rendersAsynchronously: true) { context, size in
-            let bounds = CGRect(origin: .zero, size: size)
-            let boundsPath = Path(bounds)
-            context.fill(boundsPath, with: .color(ArcoNativeColors.surfaceStageBase))
-            context.withCGContext { graphics in
-                Self.drawMatrixWash(in: graphics, size: size)
-                Self.drawEllipticalWash(
-                    in: graphics,
-                    size: size,
-                    red: 242,
-                    green: 166,
-                    blue: 144,
-                    opacity: 0.20,
-                    center: CGPoint(x: 0.88, y: 0.94),
-                    radiusX: 0.62,
-                    radiusY: 0.56,
-                    fadeLocation: 0.74
-                )
-                Self.drawEllipticalWash(
-                    in: graphics,
-                    size: size,
-                    red: 187,
-                    green: 174,
-                    blue: 238,
-                    opacity: 0.18,
-                    center: CGPoint(x: 0.88, y: 0.12),
-                    radiusX: 0.58,
-                    radiusY: 0.52,
-                    fadeLocation: 0.76
-                )
-                Self.drawEllipticalWash(
-                    in: graphics,
-                    size: size,
-                    red: 111,
-                    green: 201,
-                    blue: 236,
-                    opacity: 0.28,
-                    center: CGPoint(x: 0.14, y: 0.08),
-                    radiusX: 0.78,
-                    radiusY: 0.64,
-                    fadeLocation: 0.72
-                )
-            }
-            context.fill(
-                boundsPath,
-                with: .tiledImage(
-                    Self.dotTile,
-                    origin: .zero,
-                    sourceRect: CGRect(x: 0, y: 0, width: 1, height: 1),
-                    scale: 1
-                )
-            )
-        }
-        .allowsHitTesting(false)
-    }
-
-    private static func drawMatrixWash(in graphics: CGContext, size: CGSize) {
-        let colors = [
-            color(red: 100, green: 201, blue: 238, opacity: 0.24),
-            color(red: 137, green: 204, blue: 244, opacity: 0.14),
-            color(red: 177, green: 157, blue: 240, opacity: 0.14),
-            color(red: 249, green: 169, blue: 145, opacity: 0.20),
-        ]
-        guard let gradient = CGGradient(
-            colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: colors as CFArray,
-            locations: [0, 0.34, 0.64, 1]
-        ) else { return }
-        let endpoints = ArcoStageGradientGeometry.cssEndpoints(
-            angleDegrees: matrixAngleDegrees,
-            size: size
-        )
-        graphics.drawLinearGradient(
-            gradient,
-            start: endpoints.start,
-            end: endpoints.end,
-            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-        )
-    }
-
-    private static func drawEllipticalWash(
-        in graphics: CGContext,
-        size: CGSize,
-        red: CGFloat,
-        green: CGFloat,
-        blue: CGFloat,
-        opacity: CGFloat,
-        center: CGPoint,
-        radiusX: CGFloat,
-        radiusY: CGFloat,
-        fadeLocation: CGFloat
-    ) {
-        let solid = color(red: red, green: green, blue: blue, opacity: opacity)
-        let transparent = color(red: red, green: green, blue: blue, opacity: 0)
-        guard let gradient = CGGradient(
-            colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: [solid, transparent] as CFArray,
-            locations: [0, fadeLocation]
-        ) else { return }
-
-        graphics.saveGState()
-        graphics.translateBy(x: size.width * center.x, y: size.height * center.y)
-        graphics.scaleBy(
-            x: max(1, size.width * radiusX),
-            y: max(1, size.height * radiusY)
-        )
-        graphics.drawRadialGradient(
-            gradient,
-            startCenter: .zero,
-            startRadius: 0,
-            endCenter: .zero,
-            endRadius: 1,
-            options: [.drawsAfterEndLocation]
-        )
-        graphics.restoreGState()
-    }
-
-    private static func color(
-        red: CGFloat,
-        green: CGFloat,
-        blue: CGFloat,
-        opacity: CGFloat
-    ) -> CGColor {
-        CGColor(
-            red: red / 255,
-            green: green / 255,
-            blue: blue / 255,
-            alpha: opacity
-        )
-    }
-}
-
-private struct ArcoStageBorder: View {
-    var cornerRadius: CGFloat
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Rectangle()
-                    .fill(ArcoNativeColors.lineThin)
-                    .frame(width: 1, height: geometry.size.height)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Rectangle()
-                    .fill(ArcoNativeColors.line)
-                    .frame(width: 1, height: geometry.size.height)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                Rectangle()
-                    .fill(ArcoNativeColors.lineThin)
-                    .frame(width: geometry.size.width, height: 1)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                Rectangle()
-                    .fill(ArcoNativeColors.lineThin)
-                    .frame(width: geometry.size.width, height: 1)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .allowsHitTesting(false)
+        ArcoNativeColors.surfaceStageBase
+            .allowsHitTesting(false)
     }
 }
 
@@ -905,8 +719,8 @@ private struct SidebarNavigationButton: View {
     }
 
     private var background: Color {
-        if selected { return Color.white.opacity(0.72) }
-        if hovered && isEnabled { return Color.white.opacity(0.34) }
+        if selected { return ArcoNativeColors.surfaceSelected }
+        if hovered && isEnabled { return ArcoNativeColors.surfaceHover }
         return .clear
     }
 }
@@ -953,9 +767,7 @@ private struct ArcoContentSynchronizationModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: controller.store.savedNotes) { _, _ in controller.updateDependentViewModels() }
             .onChange(of: controller.store.meetings) { _, _ in controller.updateDependentViewModels() }
-            .onChange(of: controller.store.notesLoading) { _, _ in controller.updateDependentViewModels() }
             .onChange(of: controller.store.transcriptionModels) { _, _ in controller.updateDependentViewModels() }
     }
 }

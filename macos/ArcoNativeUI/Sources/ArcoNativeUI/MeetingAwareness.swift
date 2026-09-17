@@ -127,8 +127,13 @@ public enum MeetingSurfaceClassifier {
             || title.contains("lark meeting")
             || title.contains("video meeting")
             || title.contains("视频会议")
+        // The native Feishu meeting helper exposes an empty AX container,
+        // including on its prejoin screen. Opening that meeting window is
+        // enough to offer recording; the user still explicitly starts it.
+        // Keep the main messenger and browser paths gated on call controls.
+        let nativeMeetingWindow = normalize(snapshot.bundleIdentifier) == "com.electron.lark.iron"
         guard titleIdentifiesMeeting,
-              hasActiveCallControl(snapshot.accessibilityLabels) else {
+              nativeMeetingWindow || hasActiveCallControl(snapshot.accessibilityLabels) else {
             return nil
         }
         return DetectedMeeting(

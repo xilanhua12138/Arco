@@ -22,7 +22,6 @@ private let theme = source("Views/Theme.swift")
 private let shell = source("AppViews/ArcoMainShellView.swift")
 private let history = source("Views/HistoryPage.swift")
 private let settings = source("AppViews/ArcoSettingsSheetView.swift")
-private let notes = source("SetupViews/NotesPageView.swift")
 private let topBar = source("SetupViews/TopBarView.swift")
 private let transcript = source("Views/TranscriptPane.swift")
 private let meetingOutput = source("SetupViews/MeetingOutputSettingsView.swift")
@@ -32,7 +31,6 @@ expectTrue(!theme.isEmpty, "Theme source must resolve")
 expectTrue(!shell.isEmpty, "Main shell source must resolve")
 expectTrue(!history.isEmpty, "History source must resolve")
 expectTrue(!settings.isEmpty, "Settings source must resolve")
-expectTrue(!notes.isEmpty, "Notes source must resolve")
 expectTrue(!topBar.isEmpty, "Top bar source must resolve")
 expectTrue(!appStore.isEmpty, "App store source must resolve")
 
@@ -66,10 +64,10 @@ expectTrue(
     "Primary navigation and global actions must respond immediately on pointer-down"
 )
 expectTrue(
-    shell.contains(".arcoLiquidGlass(in: shape)")
+    shell.contains(".background(ArcoNativeColors.surfaceSidebar, in: shape)")
         && !shell.contains(".ultraThickMaterial")
         && !shell.contains("shellBase.opacity(0.92)"),
-    "The sidebar must use one native Liquid Glass layer instead of an opaque tint stacked over thick material"
+    "The sidebar uses the opaque neutral surface without stacking material"
 )
 expectTrue(
     history.contains("isSelected")
@@ -89,17 +87,6 @@ expectTrue(
     "The settings navigation group must not overwrite every child button's accessible name"
 )
 
-private let notesWorkspace = notes
-    .components(separatedBy: "public var body: some View {")
-    .dropFirst()
-    .first?
-    .components(separatedBy: "private var indexToggle")
-    .first ?? ""
-expectTrue(
-    !notesWorkspace.contains(".arcoLiquidGlass")
-        && !notesWorkspace.contains(".shadow("),
-    "The Notes reading workspace must remain a stable surface, not decorative stacked glass"
-)
 expectTrue(
     topBar.contains("ArcoPressFeedbackButtonStyle")
         && topBar.contains("ArcoMotion.state"),
@@ -113,12 +100,7 @@ expectTrue(
     appStore.contains("Task.sleep(for: .milliseconds(250))"),
     "Live first-pass captions must be polled quickly enough to feel real-time"
 )
-expectTrue(
-    notes.contains("@Environment(\\.accessibilityReduceMotion)")
-        && notes.contains("ArcoMotion.press")
-        && notes.contains("ArcoMotion.hover"),
-    "Notes custom rows and tools must use the shared accessible interaction motion"
-)
+
 expectTrue(
     meetingOutput.contains("@Environment(\\.accessibilityReduceMotion)")
         && meetingOutput.contains("ArcoMotion.press")

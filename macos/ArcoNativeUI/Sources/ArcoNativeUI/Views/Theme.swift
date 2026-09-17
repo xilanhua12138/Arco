@@ -7,43 +7,42 @@ public typealias ArcoTranslate = (_ key: String, _ parameters: [String: String])
 
 /// Literal SwiftUI counterparts of the original color tokens.
 public enum ArcoNativeColors {
-    public static let surfaceStageBase = Color(red: 245 / 255, green: 248 / 255, blue: 250 / 255)
-    public static let surfaceStage = Color.white.opacity(0.06)
-    public static let surfaceDocument = Color(red: 251 / 255, green: 252 / 255, blue: 253 / 255)
+    public static let surfaceStageBase = Color.white
+    public static let surfaceStage = Color.white
+    public static let surfaceDocument = Color.white
     public static let surfaceSheetContent = Color.white.opacity(0.68)
-    public static let surfaceRaised = Color.white.opacity(0.82)
-    public static let surfaceSubtle = Color(red: 243 / 255, green: 246 / 255, blue: 248 / 255)
-    public static let surfaceSidebar = Color(red: 241 / 255, green: 248 / 255, blue: 252 / 255).opacity(0.16)
+    public static let surfaceRaised = Color.white
+    public static let surfaceSubtle = Color(white: 246 / 255)
+    public static let surfaceSidebar = Color(white: 246 / 255)
     public static let surfaceHover = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.07)
-    public static let surfaceSelected = Color.white.opacity(0.42)
-    public static let surfaceNavigation = Color(red: 241 / 255, green: 248 / 255, blue: 252 / 255).opacity(0.14)
+    public static let surfaceSelected = Color(white: 232 / 255)
+    public static let surfaceNavigation = Color(white: 246 / 255)
     public static let surfacePopover = Color.white.opacity(0.94)
     public static let surfaceControlFill = Color.white.opacity(0.24)
-    public static let surfaceSettingsShell = Color(red: 248 / 255, green: 250 / 255, blue: 252 / 255).opacity(0.99)
-    public static let surfaceSettingsNavigation = Color(red: 244 / 255, green: 248 / 255, blue: 251 / 255).opacity(0.98)
-    public static let surfaceSettingsContent = Color.white.opacity(0.99)
+    public static let surfaceSettingsShell = Color.white
+    public static let surfaceSettingsNavigation = Color(white: 246 / 255)
+    public static let surfaceSettingsContent = Color.white
 
-    public static let inkStrong = Color(red: 23 / 255, green: 26 / 255, blue: 31 / 255)
-    public static let ink = Color(red: 52 / 255, green: 58 / 255, blue: 67 / 255)
-    public static let inkMuted = Color(red: 86 / 255, green: 97 / 255, blue: 109 / 255)
-    public static let inkFaint = Color(red: 102 / 255, green: 116 / 255, blue: 129 / 255)
+    public static let inkStrong = Color(white: 25 / 255)
+    public static let ink = Color(white: 52 / 255)
+    public static let inkMuted = Color(white: 102 / 255)
+    public static let inkFaint = Color(white: 102 / 255)
 
     public static let line = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.18)
     public static let lineThin = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.07)
     public static let lineStrong = Color(red: 119 / 255, green: 119 / 255, blue: 119 / 255).opacity(0.30)
 
-    public static let action = Color.black.opacity(0.87)
-    public static let actionHover = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    public static let action = brand
+    public static let actionHover = Color(red: 26 / 255, green: 74 / 255, blue: 209 / 255)
     public static let actionInk = Color.white
-    public static let brand = Color(red: 31 / 255, green: 93 / 255, blue: 242 / 255)
+    public static let brand = Color(red: 36 / 255, green: 92 / 255, blue: 245 / 255)
     public static let brandSoft = Color(red: 52 / 255, green: 107 / 255, blue: 255 / 255).opacity(0.10)
-    public static let record = Color(red: 236 / 255, green: 15 / 255, blue: 56 / 255)
-    public static let recordSoft = Color(red: 236 / 255, green: 15 / 255, blue: 56 / 255).opacity(0.10)
+    public static let record = Color(red: 198 / 255, green: 45 / 255, blue: 65 / 255)
+    public static let recordSoft = Color(red: 252 / 255, green: 239 / 255, blue: 240 / 255)
     public static let success = Color(red: 0 / 255, green: 135 / 255, blue: 112 / 255)
     public static let warning = Color(red: 154 / 255, green: 91 / 255, blue: 0 / 255)
     public static let scrim = Color.black.opacity(0.50)
-    public static let stageFrame = Color(red: 206 / 255, green: 225 / 255, blue: 238 / 255).opacity(0.18)
-    public static let stageDot = Color(red: 78 / 255, green: 94 / 255, blue: 111 / 255).opacity(0.28)
+    public static let stageFrame = Color.clear
     public static let surfaceInnerHighlight = Color.white.opacity(0.94)
     public static let surfaceEdgeHighlight = Color.white.opacity(0.76)
 }
@@ -212,10 +211,11 @@ public enum ArcoLayoutMetrics {
     public static let sidebarTitlebarClearance: CGFloat = 44
     public static let pageBottomPadding: CGFloat = 16
     public static let workspacePadding: CGFloat = 10
-    public static let workspaceGap: CGFloat = 10
+    public static let workspaceGap: CGFloat = 20
     public static let workspaceCornerRadius: CGFloat = 16
     public static let compactViewportBreakpoint: CGFloat = 1_024
-    public static let workspaceStackedViewportBreakpoint: CGFloat = 900
+    public static let workspaceSplitMinimumWidth: CGFloat = 740
+    public static let transcriptReadingMaximumWidth: CGFloat = 720
     public static let idleMediumViewportBreakpoint: CGFloat = 1_100
     public static let idleStackedViewportBreakpoint: CGFloat = 880
 
@@ -223,30 +223,15 @@ public enum ArcoLayoutMetrics {
         viewportWidth <= compactViewportBreakpoint ? 12 : 16
     }
 
-    /// Reproduces `minmax(minimum, 3fr) minmax(minimum, 2fr)` from App.css.
-    /// When the 2fr track reaches its minimum, CSS Grid gives the remaining
-    /// available width to the 3fr track instead of independently clamping both.
+    /// Cap the optional Agent at 400pt; at compact widths both readers retain
+    /// equal space. Callers stack below workspaceSplitMinimumWidth.
     public static func workspaceColumnWidths(
         contentWidth: CGFloat,
         compactColumns: Bool
     ) -> WorkspaceColumnWidths {
-        let transcriptMinimum: CGFloat = compactColumns ? 390 : 420
-        let agentMinimum: CGFloat = compactColumns ? 300 : 320
-        let minimumTotal = transcriptMinimum + agentMinimum
-
-        guard contentWidth >= minimumTotal else {
-            return WorkspaceColumnWidths(
-                transcript: transcriptMinimum,
-                agent: agentMinimum
-            )
-        }
-
-        let proportionalAgent = contentWidth * 0.4
-        let agent = max(agentMinimum, proportionalAgent)
-        return WorkspaceColumnWidths(
-            transcript: contentWidth - agent,
-            agent: agent
-        )
+        let available = max(0, contentWidth)
+        let agent = min(400, available / 2)
+        return WorkspaceColumnWidths(transcript: available - agent, agent: agent)
     }
 
     public static func historyPageHorizontalPadding(viewportWidth: CGFloat) -> CGFloat {
@@ -290,11 +275,11 @@ private struct ArcoLegacyWindowDragRegion: NSViewRepresentable {
 /// not reuse the CSS palette: the established native controls use Apple's glass
 /// with these stronger native tints on macOS 26.
 public enum ArcoNativeGlassPalette {
-    public static let action = Color(red: 0.02, green: 0.49, blue: 1.0)
-    public static let recording = Color(red: 0.92, green: 0.12, blue: 0.22)
-    public static let shellBase = Color(red: 0.96, green: 0.98, blue: 0.99)
-    public static let ink = Color(red: 0.09, green: 0.10, blue: 0.12)
-    public static let secondaryInk = Color(red: 0.31, green: 0.35, blue: 0.40)
+    public static let action = ArcoNativeColors.brand
+    public static let recording = ArcoNativeColors.record
+    public static let shellBase = ArcoNativeColors.surfaceSidebar
+    public static let ink = ArcoNativeColors.inkStrong
+    public static let secondaryInk = ArcoNativeColors.inkMuted
 }
 
 public enum ArcoGlassSurfaceTone: Sendable {
@@ -451,7 +436,7 @@ public struct ArcoNativeActionButton: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .contentShape(Capsule())
-                .glassEffect(.regular.tint(tint).interactive(), in: Capsule())
+                .background(tint, in: Capsule())
             case .standard:
                 actionButton {
                     Label(title, systemImage: symbol)
@@ -536,21 +521,29 @@ public struct ArcoNativeActionButton: View {
 /// Font construction and the fixed product scale from the original UI.
 public enum ArcoTypography {
     public static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .custom("Avenir Next", size: size).weight(weight)
+        .system(size: size, weight: weight)
     }
 
     public static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .custom("SFMono-Regular", size: size).weight(weight)
+        .system(size: size, weight: weight, design: .monospaced)
     }
 
+    public static let meetingTitle = sans(28, weight: .semibold)
+    public static let conversationHeading = sans(14, weight: .semibold)
+    public static let conversationQuestion = sans(13, weight: .semibold)
+    public static let conversationBody = sans(13)
+    public static let floatingHeading = sans(13, weight: .semibold)
+    public static let floatingQuestion = sans(12.5, weight: .semibold)
+    public static let floatingBody = sans(12)
+    public static let speaker = sans(12, weight: .semibold)
     public static let pageTitle = sans(36, weight: .semibold)
     public static let surfaceTitle = sans(16, weight: .semibold)
     public static let emptyTitle = sans(20, weight: .semibold)
     public static let body = sans(14)
     public static let bodyStrong = sans(14, weight: .medium)
     public static let metadata = sans(12)
-    public static let small = sans(11)
-    public static let tiny = sans(10)
+    public static let small = sans(12)
+    public static let tiny = sans(12)
 }
 
 /// The original React surface uses Lucide 1.24.0. Keeping the same 24-point

@@ -51,6 +51,9 @@ public final class ArcoStore {
     public private(set) var agentStreamingTurn: AgentStreamingTurn?
     public private(set) var error: String?
 
+    public private(set) var audioArchiveSettings: AudioArchiveSettings?
+    public private(set) var audioArchiveChanging = false
+    public private(set) var audioArchiveError: String?
     public private(set) var storageSettings: StorageSettings?
     public private(set) var notesStorageSettings: StorageSettings?
     public private(set) var storageChanging = false
@@ -174,6 +177,7 @@ public final class ArcoStore {
             self.error = errorMessage(error, fallbackKey: "error.startArco")
         }
         await loadStorageSettings()
+        await refreshAudioArchiveSettings()
     }
 
     public func dispose() {
@@ -654,6 +658,26 @@ public final class ArcoStore {
         }
     }
 
+    public func refreshAudioArchiveSettings() async {
+        do {
+            audioArchiveSettings = try await backend.call("audio_archive_settings")
+            audioArchiveError = nil
+        } catch { audioArchiveError = error.localizedDescription }
+    }
+
+    public func setAudioArchiveSettings(enabled: Bool, directory: String?, maxBytes: UInt64) async {
+        guard !audioArchiveChanging else { return }
+        audioArchiveChanging = true
+        defer { audioArchiveChanging = false }
+        do {
+            audioArchiveSettings = try await backend.call("set_audio_archive_settings", arguments: [
+                "enabled": .bool(enabled), "directory": directory.map(AnySendable.string) ?? .null,
+                "maxBytes": .number(Double(maxBytes)),
+            ])
+            audioArchiveError = nil
+        } catch { audioArchiveError = error.localizedDescription }
+    }
+
     public func testProvider(_ provider: ProviderID) async throws -> ProviderConnectionTest {
         try await backend.call(
             "test_agent_provider",
@@ -1108,7 +1132,6 @@ public final class ArcoStore {
         case "arco:agent-thread-changed":
             if let id = try? event.decode(String.self) {
                 _ = await refreshAgentTurns(id)
-                _ = await refreshSavedNotes(noteQuery)
             }
         case "arco:agent-attachments-changed":
             if let id = try? event.decode(String.self) { _ = await refreshAttachments(id) }
@@ -1117,7 +1140,7 @@ public final class ArcoStore {
         case "arco:meeting-output-changed":
             if let id = try? event.decode(String.self) { await refreshMeetingOutput(id) }
         case "arco:notes-changed":
-            _ = await refreshSavedNotes(noteQuery)
+            break
         case "arco:agent-stream":
             guard let stream = try? event.decode(AgentStreamEvent.self),
                   agentStreamingTurn?.requestId == stream.requestId,

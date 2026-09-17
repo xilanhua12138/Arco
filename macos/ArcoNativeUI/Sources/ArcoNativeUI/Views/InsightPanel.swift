@@ -32,8 +32,8 @@ public enum InsightSourceLayout {
 
     public static func composerHeight(for layout: InsightPanelLayout) -> CGFloat {
         switch layout {
-        case .main: 42
-        case .agentOverlay: 40
+        case .main: 36
+        case .agentOverlay: 36
         }
     }
 }
@@ -84,6 +84,12 @@ public struct InsightAskRequest: Sendable {
     }
 }
 
+@_spi(Testing)
+public enum InsightDraftRecovery {
+    public static func draft(current: String, failed: String) -> String { current.isEmpty ? failed : current }
+    public static func pending(local: String?, stream: AgentStreamingTurn?, meetingID: String?) -> String? { local ?? (stream?.meetingId == meetingID ? stream?.question : nil) }
+}
+
 public struct InsightPanelView: View {
     public var meeting: MeetingDetail?
     public var replies: [AgentTurn]
@@ -99,11 +105,12 @@ public struct InsightPanelView: View {
     public var gptLiveStatus: GPTLiveSessionStatus
     public var showHeader: Bool
     public var layout: InsightPanelLayout
+    public var isVisible: Bool
+    public var focusRequest: Int
     public var streamingTurn: AgentStreamingTurn?
     public var translate: ArcoTranslate
 
     public var onAsk: (InsightAskRequest) async throws -> Bool
-    public var onToggleSaved: (String, String, Bool) async -> Bool
     public var onChooseWorkspace: () async -> String?
     public var onAttachDocument: (String) async -> Bool
     public var onRemoveAttachment: (String, String) async -> Void
@@ -114,12 +121,27 @@ public struct InsightPanelView: View {
 
     private var externalQuestion: Binding<String>?
     @State private var localQuestion: String
-    @State private var scope: InsightContextScope = .transcript
+    private var externalScope: Binding<InsightContextScope>?
+    @State private var localScope: InsightContextScope = .transcript
+    private var scope: InsightContextScope {
+        get { externalScope?.wrappedValue ?? localScope }
+        nonmutating set {
+            if let externalScope { externalScope.wrappedValue = newValue }
+            else { localScope = newValue }
+        }
+    }
     @State private var copiedReplyIndex: Int?
-    @State private var requestError = false
+    private var externalRequestError: Binding<Bool>?
+    @State private var localRequestError = false
+    private var requestError: Bool {
+        get { externalRequestError?.wrappedValue ?? localRequestError }
+        nonmutating set {
+            if let externalRequestError { externalRequestError.wrappedValue = newValue }
+            else { localRequestError = newValue }
+        }
+    }
     @State private var contextMenuOpen = false
     @State private var openContextTurnID: String?
-    @State private var savingTurnID: String?
     @State private var pendingQuestion: String?
     @State private var measuredWidth: CGFloat = .infinity
     @State private var closeHovering = false
@@ -136,6 +158,10 @@ public struct InsightPanelView: View {
         isFailover: Bool,
         running: Bool,
         question: Binding<String>? = nil,
+        contextScope: Binding<InsightContextScope>? = nil,
+        requestError: Binding<Bool>? = nil,
+        isVisible: Bool = true,
+        focusRequest: Int = 0,
         workspace: String? = nil,
         attachments: [MeetingAttachment] = [],
         live: Bool = false,
@@ -146,7 +172,6 @@ public struct InsightPanelView: View {
         streamingTurn: AgentStreamingTurn? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onAsk: @escaping (InsightAskRequest) async throws -> Bool,
-        onToggleSaved: @escaping (String, String, Bool) async -> Bool,
         onChooseWorkspace: @escaping () async -> String? = { nil },
         onAttachDocument: @escaping (String) async -> Bool = { _ in false },
         onRemoveAttachment: @escaping (String, String) async -> Void = { _, _ in },
@@ -163,6 +188,10 @@ public struct InsightPanelView: View {
         self.isFailover = isFailover
         self.running = running
         self.externalQuestion = question
+        self.externalScope = contextScope
+        self.externalRequestError = requestError
+        self.isVisible = isVisible
+        self.focusRequest = focusRequest
         self._localQuestion = State(initialValue: question?.wrappedValue ?? "")
         self.workspace = workspace
         self.attachments = attachments
@@ -174,7 +203,6 @@ public struct InsightPanelView: View {
         self.streamingTurn = streamingTurn
         self.translate = translate
         self.onAsk = onAsk
-        self.onToggleSaved = onToggleSaved
         self.onChooseWorkspace = onChooseWorkspace
         self.onAttachDocument = onAttachDocument
         self.onRemoveAttachment = onRemoveAttachment
@@ -209,9 +237,7 @@ public struct InsightPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            layout == .agentOverlay
-                ? Color.white.opacity(0.32)
-                : ArcoNativeColors.surfaceDocument
+            layout == .agentOverlay ? ArcoNativeColors.surfaceDocument : ArcoNativeColors.surfaceSubtle
         )
         .clipped()
         .background {
@@ -220,6 +246,9 @@ public struct InsightPanelView: View {
             }
         }
         .onPreferenceChange(InsightWidthPreferenceKey.self) { measuredWidth = $0 }
+        .onChange(of: isVisible) { _, visible in
+            if !visible { contextMenuOpen = false }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("agent.askArco", [:]))
     }
@@ -227,9 +256,8 @@ public struct InsightPanelView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(translate("agent.askArco", [:]))
-                .font(ArcoTypography.surfaceTitle)
+                .font(ArcoTypography.conversationHeading)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
-                .tracking(-0.16)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
             if live, gptLiveBetaEnabled, let onToggleGPTLive {
@@ -252,8 +280,8 @@ public struct InsightPanelView: View {
             }
             if let onClose {
                 Button(action: onClose) {
-                    ArcoLucideIcon(.x, size: 17)
-                        .frame(width: 30, height: 30)
+                    ArcoLucideIcon(layout == .main ? .chevronRight : .x, size: 17)
+                        .frame(width: layout == .main ? 20 : 30, height: layout == .main ? 20 : 30)
                         .background(
                             closeHovering ? ArcoNativeColors.surfaceHover : .clear,
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -263,13 +291,15 @@ public struct InsightPanelView: View {
                 .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))
                 .foregroundStyle(closeHovering ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
                 .onHover { closeHovering = $0 }
-                .accessibilityLabel(translate("agent.close", [:]))
+                .accessibilityLabel(translate(layout == .main ? "agent.collapse" : "agent.close", [:]))
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 22)
-        .padding(.bottom, 16)
-        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
+        .padding(.horizontal, layout == .agentOverlay ? 18 : 24)
+        .padding(.top, layout == .agentOverlay ? 16 : 24)
+        .padding(.bottom, 12)
+        .overlay(alignment: .bottom) {
+            if layout == .agentOverlay { ArcoNativeColors.lineThin.frame(height: 1) }
+        }
     }
 
     @ViewBuilder
@@ -353,7 +383,7 @@ public struct InsightPanelView: View {
                 .padding(.bottom, 10)
             }
 
-            if replies.isEmpty && pendingQuestion == nil {
+            if replies.isEmpty && displayedPendingQuestion == nil {
                 quickActions
             }
 
@@ -362,11 +392,11 @@ public struct InsightPanelView: View {
                     .padding(.top, index == 0 ? 0 : replySpacing)
             }
 
-            if let pendingQuestion {
+            if let pendingQuestion = displayedPendingQuestion {
                 VStack(alignment: .leading, spacing: 0) {
                     replyDividerIfNeeded
                     Text(pendingQuestion)
-                        .font(ArcoTypography.sans(13, weight: .medium))
+                        .font(layout == .agentOverlay ? ArcoTypography.floatingQuestion : ArcoTypography.conversationQuestion)
                         .foregroundStyle(ArcoNativeColors.inkStrong)
                         .lineSpacing(2.4)
                         .padding(.bottom, 10)
@@ -386,7 +416,8 @@ public struct InsightPanelView: View {
                             MarkdownContentView(
                                 streaming.answer,
                                 compact: measuredWidth <= 340,
-                                overlayParagraphs: layout == .agentOverlay
+                                overlayParagraphs: layout == .agentOverlay,
+                                conversation: true
                             )
                         }
                     } else {
@@ -400,7 +431,7 @@ public struct InsightPanelView: View {
                 )
             }
 
-            if running && pendingQuestion == nil {
+            if running && displayedPendingQuestion == nil {
                 ThinkingIndicator(label: streamingStatus)
                     .padding(12)
             }
@@ -411,6 +442,10 @@ public struct InsightPanelView: View {
     private var runtime: RuntimeStatus? {
         guard let provider else { return nil }
         return runtimes.first { $0.provider == provider }
+    }
+
+    private var displayedPendingQuestion: String? {
+        InsightDraftRecovery.pending(local: pendingQuestion, stream: streamingTurn, meetingID: meeting?.summary.id)
     }
 
     private var activeStreamingTurn: AgentStreamingTurn? {
@@ -507,10 +542,10 @@ public struct InsightPanelView: View {
     private var workspaceMissing: Bool { scope == .workspace && usableWorkspace == nil }
 
     private var bodyHorizontalInset: CGFloat { layout == .agentOverlay ? 16 : 24 }
-    private var bodyTopInset: CGFloat { layout == .agentOverlay ? 14 : 18 }
-    private var bodyBottomInset: CGFloat { layout == .agentOverlay ? 18 : 24 }
+    private var bodyTopInset: CGFloat { layout == .agentOverlay ? 14 : 12 }
+    private var bodyBottomInset: CGFloat { layout == .agentOverlay ? 18 : 14 }
     private var bodyVerticalInsets: CGFloat { bodyTopInset + bodyBottomInset }
-    private var replySpacing: CGFloat { layout == .agentOverlay ? 16 : 22 }
+    private var replySpacing: CGFloat { layout == .agentOverlay ? 12 : 16 }
 
     @ViewBuilder
     private func replyView(_ reply: AgentTurn, index: Int) -> some View {
@@ -531,10 +566,10 @@ public struct InsightPanelView: View {
             }
 
             Text(reply.question)
-                .font(ArcoTypography.sans(13, weight: .medium))
+                .font(layout == .agentOverlay ? ArcoTypography.floatingQuestion : ArcoTypography.conversationQuestion)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .lineSpacing(2.4)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
                 .accessibilityAddTraits(.isHeader)
 
             if reply.workDurationMs != nil || !reply.toolActivities.isEmpty {
@@ -552,7 +587,8 @@ public struct InsightPanelView: View {
             MarkdownContentView(
                 reply.answer,
                 compact: measuredWidth <= 340,
-                overlayParagraphs: layout == .agentOverlay
+                overlayParagraphs: layout == .agentOverlay,
+                conversation: true
             )
 
             HStack(spacing: 1) {
@@ -570,22 +606,6 @@ public struct InsightPanelView: View {
                                 openContextTurnID = openContextTurnID == reply.id ? nil : reply.id
                             }
                         }
-                    }
-                }
-
-                replyAction(
-                    label: savingTurnID == reply.id
-                        ? translate("common.saving", [:])
-                        : reply.savedAsNote
-                            ? translate("agent.savedNote", [:])
-                            : translate("agent.saveAsNote", [:]),
-                    icon: reply.savedAsNote ? .check : .bookmark,
-                    disabled: savingTurnID == reply.id
-                ) {
-                    savingTurnID = reply.id
-                    Task { @MainActor in
-                        _ = await onToggleSaved(reply.meetingId, reply.id, !reply.savedAsNote)
-                        savingTurnID = nil
                     }
                 }
 
@@ -668,7 +688,7 @@ public struct InsightPanelView: View {
                 ArcoLucideIcon(icon, size: 13)
                     .rotationEffect(.degrees(rotateIcon ? 90 : 0))
                 if !hideLabel {
-                    Text(label).font(ArcoTypography.small)
+                    Text(label).font(ArcoTypography.sans(layout == .agentOverlay ? 11 : 12))
                 }
             }
             .foregroundStyle(selected ? ArcoNativeColors.inkStrong : ArcoNativeColors.inkMuted)
@@ -685,43 +705,13 @@ public struct InsightPanelView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 5) {
-                contextChip(
-                    label: translate("agent.scope.transcript", [:]),
-                    icon: .bookOpenText,
-                    fixed: true,
-                    action: nil
-                )
-                if scope == .workspace, let workspace = usableWorkspace {
-                    contextChip(
-                        label: workspaceName(workspace),
-                        icon: .folderOpen,
-                        fixed: false,
-                        action: {
-                            Task { @MainActor in _ = await onChooseWorkspace() }
-                        }
-                    )
-                    .accessibilityLabel(translate("agent.changeWorkspace", [:]))
-                    .help(workspace)
-                }
-                ForEach(attachments) { attachment in
-                    attachmentChip(attachment)
-                }
-            }
-            .padding(.bottom, 9)
-            .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
-            .padding(.top, -4)
-            .padding(.bottom, 10)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(translate("agent.referenceContext", [:]))
-
             ZStack(alignment: .topLeading) {
                 if InsightQuestionPlaceholderPresentation.shouldShow(
                     questionText: questionText,
                     editorFocused: questionEditorFocused
                 ) {
                     Text(translate("agent.placeholder", [:]))
-                        .font(ArcoTypography.body)
+                        .font(ArcoTypography.sans(layout == .agentOverlay ? 12 : 13))
                         .foregroundStyle(ArcoNativeColors.inkMuted)
                         .padding(.top, 1)
                         .padding(.leading, InsightSourceLayout.textContainerInset)
@@ -729,7 +719,10 @@ public struct InsightPanelView: View {
                 }
                 InsightQuestionEditor(
                     text: questionBinding,
+                    isVisible: isVisible,
+                    focusRequest: focusRequest,
                     accessibilityLabel: translate("agent.questionAria", [:]),
+                    fontSize: layout == .agentOverlay ? 12 : 13,
                     onSubmit: {
                         Task { @MainActor in await submit() }
                     },
@@ -749,9 +742,12 @@ public struct InsightPanelView: View {
                     .accessibilityLabel(translate("agent.requestError", [:]))
             }
 
-            HStack {
+            HStack(spacing: 6) {
                 contextMenu
-                Spacer()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    referenceChips.fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(height: 28)
                 Button {
                     Task { @MainActor in await submit() }
                 } label: {
@@ -767,14 +763,42 @@ public struct InsightPanelView: View {
             }
             .padding(.top, 8)
         }
-        .padding(.horizontal, layout == .agentOverlay ? 11 : 24)
-        .padding(.vertical, layout == .agentOverlay ? 11 : 0)
-        .padding(.top, layout == .agentOverlay ? 0 : 12)
-        .padding(.bottom, layout == .agentOverlay ? 0 : 16)
-        .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)
-        .overlay(alignment: .top) { ArcoNativeColors.lineThin.frame(height: 1) }
-        .padding(.horizontal, layout == .agentOverlay ? 16 : 0)
-        .padding(.bottom, layout == .agentOverlay ? 16 : 0)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            layout == .agentOverlay ? ArcoNativeColors.surfaceSubtle : ArcoNativeColors.surfaceDocument,
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .padding(.horizontal, layout == .agentOverlay ? 16 : 24)
+        .padding(.bottom, layout == .agentOverlay ? 16 : 24)
+    }
+
+    private var referenceChips: some View {
+        HStack(spacing: 5) {
+            contextChip(
+                label: translate("agent.scope.transcript", [:]),
+                icon: .bookOpenText,
+                fixed: true,
+                action: nil
+            )
+            if scope == .workspace, let workspace = usableWorkspace {
+                contextChip(
+                    label: workspaceName(workspace),
+                    icon: .folderOpen,
+                    fixed: false,
+                    action: {
+                        Task { @MainActor in _ = await onChooseWorkspace() }
+                    }
+                )
+                .accessibilityLabel(translate("agent.changeWorkspace", [:]))
+                .help(workspace)
+            }
+            ForEach(attachments) { attachment in
+                attachmentChip(attachment)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(translate("agent.referenceContext", [:]))
     }
 
     private func contextChip(
@@ -956,7 +980,7 @@ public struct InsightPanelView: View {
 
     @MainActor
     private func submit(displayQuestion: String? = nil, agentPrompt: String? = nil) async {
-        guard let meeting, let provider else { return }
+        guard isVisible, let meeting, let provider else { return }
         let visibleQuestion = (displayQuestion ?? questionText).trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedPrompt = agentPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !visibleQuestion.isEmpty,
@@ -983,12 +1007,12 @@ public struct InsightPanelView: View {
         do {
             let succeeded = try await onAsk(request)
             if !succeeded {
-                questionBinding.wrappedValue = visibleQuestion
+                questionBinding.wrappedValue = InsightDraftRecovery.draft(current: questionText, failed: visibleQuestion)
                 requestError = true
             }
             pendingQuestion = nil
         } catch {
-            questionBinding.wrappedValue = visibleQuestion
+            questionBinding.wrappedValue = InsightDraftRecovery.draft(current: questionText, failed: visibleQuestion)
             requestError = true
             pendingQuestion = nil
         }
@@ -1002,25 +1026,41 @@ public struct InsightPanelView: View {
 
 public typealias InsightPanel = InsightPanelView
 
+private final class InsightQuestionScrollView: NSScrollView {
+    var onWindowAttachment: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { onWindowAttachment?() }
+    }
+}
+
 private struct InsightQuestionEditor: NSViewRepresentable {
     @Binding var text: String
+    let isVisible: Bool
+    let focusRequest: Int
     let accessibilityLabel: String
+    let fontSize: CGFloat
     let onSubmit: () -> Void
     let onFocusChange: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = InsightQuestionScrollView()
+        let textView = NSTextView(frame: .zero)
+        textView.autoresizingMask = [.width]
+        scrollView.documentView = textView
+        scrollView.onWindowAttachment = { [weak coordinator = context.coordinator, weak textView] in
+            guard let textView else { return }
+            coordinator?.requestFocus(on: textView)
+        }
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
         scrollView.autohidesScrollers = true
 
-        guard let textView = scrollView.documentView as? NSTextView else {
-            return scrollView
-        }
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
@@ -1041,7 +1081,7 @@ private struct InsightQuestionEditor: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = true
         textView.setAccessibilityLabel(accessibilityLabel)
         textView.string = text
-        Self.applyTypography(to: textView)
+        Self.applyTypography(to: textView, fontSize: fontSize)
         return scrollView
     }
 
@@ -1049,6 +1089,12 @@ private struct InsightQuestionEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? NSTextView else { return }
         textView.setAccessibilityLabel(accessibilityLabel)
+        textView.isEditable = isVisible
+        textView.isSelectable = isVisible
+        if !isVisible, textView.window?.firstResponder === textView {
+            textView.window?.makeFirstResponder(nil)
+        }
+        context.coordinator.requestFocus(on: textView)
         textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
         textView.maxSize = NSSize(
             width: CGFloat.greatestFiniteMagnitude,
@@ -1064,13 +1110,14 @@ private struct InsightQuestionEditor: NSViewRepresentable {
         context.coordinator.updating = true
         let selection = textView.selectedRange()
         textView.string = text
-        Self.applyTypography(to: textView)
+        Self.applyTypography(to: textView, fontSize: fontSize)
         textView.setSelectedRange(Self.clamped(selection, for: text))
         context.coordinator.updating = false
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
         (scrollView.documentView as? NSTextView)?.delegate = nil
+        (scrollView as? InsightQuestionScrollView)?.onWindowAttachment = nil
     }
 
     private static func clamped(_ selection: NSRange, for text: String) -> NSRange {
@@ -1082,10 +1129,10 @@ private struct InsightQuestionEditor: NSViewRepresentable {
         )
     }
 
-    private static func applyTypography(to textView: NSTextView) {
+    private static func applyTypography(to textView: NSTextView, fontSize: CGFloat) {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 4.2
-        let font = NSFont(name: "Avenir Next", size: 14) ?? NSFont.systemFont(ofSize: 14)
+        paragraph.lineSpacing = fontSize <= 12 ? 2.5 : 4.2
+        let font = NSFont.systemFont(ofSize: fontSize)
         let color = NSColor(
             srgbRed: 23 / 255,
             green: 26 / 255,
@@ -1106,12 +1153,27 @@ private struct InsightQuestionEditor: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: InsightQuestionEditor
         var updating = false
+        var appliedFocusRequest = 0
 
         init(_ parent: InsightQuestionEditor) {
             self.parent = parent
+        }
+
+        func requestFocus(on textView: NSTextView) {
+            let generation = parent.focusRequest
+            guard parent.isVisible, generation > appliedFocusRequest else { return }
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView, let window = textView.window,
+                      self.parent.isVisible,
+                      self.parent.focusRequest == generation,
+                      generation > self.appliedFocusRequest else { return }
+                if window.makeFirstResponder(textView) {
+                    self.appliedFocusRequest = generation
+                }
+            }
         }
 
         func textDidChange(_ notification: Notification) {

@@ -110,11 +110,14 @@ func topBarCallSites(in text: String) -> [String] {
 
 let callSites = topBarCallSites(in: shellSource)
 expectTrue(!shellSource.isEmpty, "Main shell source contract must resolve the migrated source")
-expectTrue(callSites.count >= 2, "Current and review pages must both embed the meeting TopBar")
-expectTrue(
-    callSites.allSatisfy { $0.contains(".zIndex(1)") },
-    "Every TopBar call site must raise zIndex above the workspace so the meeting-details card is not covered by the transcript and agent docks"
-)
+expectTrue(callSites.count == 1
+    && shellSource.contains("meetingHeader(controller.currentMeeting, backToHistory: false)")
+    && shellSource.contains("meetingHeader(controller.store.meeting, backToHistory: true)"),
+    "Current and review use the same meeting header and its controls")
+let sharedHeader = shellSource.components(separatedBy: "private func meetingHeader").last?
+    .components(separatedBy: "private func setAgentExpanded").first ?? ""
+expectTrue(sharedHeader.contains("TopBarView(") && sharedHeader.contains(".zIndex(1)"),
+    "The complete shared header stays above the workspace so meeting details remain interactive")
 
 expectTrue(
     source.contains("NSPasteboard.general"),

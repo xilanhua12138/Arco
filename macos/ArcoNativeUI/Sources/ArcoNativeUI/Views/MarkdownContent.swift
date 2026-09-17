@@ -50,17 +50,20 @@ public struct MarkdownContentView: View {
     public var content: String
     public var compact: Bool
     public var overlayParagraphs: Bool
+    public var conversation: Bool
 
     @State private var measuredWidth: CGFloat = .infinity
 
     public init(
         _ content: String,
         compact: Bool = false,
-        overlayParagraphs: Bool = false
+        overlayParagraphs: Bool = false,
+        conversation: Bool = false
     ) {
         self.content = content
         self.compact = compact
         self.overlayParagraphs = overlayParagraphs
+        self.conversation = conversation
     }
 
     public var body: some View {
@@ -72,10 +75,11 @@ public struct MarkdownContentView: View {
                 MarkdownBlockView(
                     block: block,
                     compact: tightened,
-                    overlayParagraphs: overlayParagraphs
+                    overlayParagraphs: overlayParagraphs,
+                    conversation: conversation
                 )
                 .padding(.top, gapBefore(index: index, blocks: blocks))
-                .padding(.bottom, index == blocks.count - 1 ? 12 : 0)
+                .padding(.bottom, index == blocks.count - 1 ? (conversation ? 4 : 12) : 0)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -89,7 +93,7 @@ public struct MarkdownContentView: View {
 
     private func gapBefore(index: Int, blocks: [MarkdownBlock]) -> CGFloat {
         guard index > 0 else { return 0 }
-        return max(bottomMargin(blocks[index - 1]), topMargin(blocks[index]))
+        return conversation ? (overlayParagraphs ? 6 : 8) : max(bottomMargin(blocks[index - 1]), topMargin(blocks[index]))
     }
 
     private func topMargin(_ block: MarkdownBlock) -> CGFloat {
@@ -131,6 +135,7 @@ private struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let compact: Bool
     let overlayParagraphs: Bool
+    let conversation: Bool
 
     var body: some View {
         switch block {
@@ -170,7 +175,8 @@ private struct MarkdownBlockView: View {
                         MarkdownBlockView(
                             block: nestedBlock,
                             compact: compact,
-                            overlayParagraphs: overlayParagraphs
+                            overlayParagraphs: overlayParagraphs,
+                            conversation: conversation
                         )
                     }
                 }
@@ -214,14 +220,15 @@ private struct MarkdownBlockView: View {
     }
 
     private var paragraphFont: Font {
-        ArcoTypography.sans(compact || overlayParagraphs ? 14 : 15)
+        conversation ? (overlayParagraphs ? ArcoTypography.floatingBody : ArcoTypography.conversationBody) : ArcoTypography.sans(compact || overlayParagraphs ? 14 : 15)
     }
-    private var paragraphLineSpacing: CGFloat { compact || overlayParagraphs ? 5.2 : 6 }
-    private var listFont: Font { ArcoTypography.sans(compact ? 14 : 15) }
-    private var listLineSpacing: CGFloat { compact ? 5.2 : 6 }
+    private var paragraphLineSpacing: CGFloat { conversation ? (overlayParagraphs ? 2.5 : 3) : compact || overlayParagraphs ? 5.2 : 6 }
+    private var listFont: Font { conversation ? (overlayParagraphs ? ArcoTypography.floatingBody : ArcoTypography.conversationBody) : ArcoTypography.sans(compact ? 14 : 15) }
+    private var listLineSpacing: CGFloat { conversation ? (overlayParagraphs ? 2.5 : 3) : compact ? 5.2 : 6 }
 
     private func headingFont(_ level: Int) -> Font {
-        switch level {
+        if conversation { return ArcoTypography.sans(overlayParagraphs ? (level == 1 ? 14 : 13) : (level == 1 ? 16 : 14), weight: .semibold) }
+        return switch level {
         case 1: ArcoTypography.sans(18, weight: .semibold)
         case 2: ArcoTypography.sans(16, weight: .semibold)
         default: ArcoTypography.sans(15, weight: .semibold)

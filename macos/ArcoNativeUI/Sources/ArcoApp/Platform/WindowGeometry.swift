@@ -7,17 +7,16 @@ enum ArcoWindowMetrics {
     static let mainMinimumSize = CGSize(width: 980, height: 680)
 
     static let hudSize = CGSize(width: 368, height: 56)
-    static let meetingPromptSize = CGSize(width: 372, height: 140)
+    static let meetingPromptSize = CGSize(width: 320, height: 112)
     static let agentSize = CGSize(width: 720, height: 560)
     static let collapsedAgentSize = CGSize(width: 432, height: 560)
     static let agentMaximumSize = CGSize(width: 820, height: 720)
 
     static let hudBottomMargin: CGFloat = 24
+    static let meetingPromptBottomMargin: CGFloat = 16
     static let agentTopMargin: CGFloat = 20
     static let agentRightMargin: CGFloat = 20
     static let agentHUDGap: CGFloat = 20
-    static let meetingPromptTopMargin: CGFloat = 18
-    static let meetingPromptRightMargin: CGFloat = 18
 }
 
 /// Point-space geometry used by tao/wry for the source
@@ -108,18 +107,18 @@ enum ArcoWindowPlacement {
     }
 
     static func meetingPromptFrame(in area: ScreenWorkArea) -> CGRect {
-        let size = ArcoWindowMetrics.meetingPromptSize
+        let size = CGSize(
+            width: min(ArcoWindowMetrics.meetingPromptSize.width, area.frame.width),
+            height: min(ArcoWindowMetrics.meetingPromptSize.height, area.frame.height)
+        )
         return CGRect(
-            x: max(
-                area.frame.minX,
-                area.frame.maxX - size.width - ArcoWindowMetrics.meetingPromptRightMargin
+            x: area.frame.midX - size.width / 2,
+            y: min(
+                area.frame.minY + ArcoWindowMetrics.meetingPromptBottomMargin,
+                area.frame.maxY - size.height
             ),
-            y: max(
-                area.frame.minY,
-                area.frame.maxY - size.height - ArcoWindowMetrics.meetingPromptTopMargin
-            ),
-            width: min(size.width, area.frame.width),
-            height: min(size.height, area.frame.height)
+            width: size.width,
+            height: size.height
         )
     }
 
