@@ -282,16 +282,11 @@ public struct TranscriptWord: Codable, Sendable, Equatable {
     }
 }
 
-private struct SavedTranscriptTiming: Codable {
+private struct SavedTranscriptTiming: Encodable {
     let startMs: Int64
     let endMs: Int64
     let words: [TranscriptWord]
     let originMs: Int64
-}
-
-private struct SavedTimingRecord: Codable {
-    let line: Int
-    let timing: SavedTranscriptTiming
 }
 
 public struct TranscriptSegment: Sendable, Equatable {
@@ -314,13 +309,11 @@ public struct TranscriptSegment: Sendable, Equatable {
 
 public final class TranscriptWriter: @unchecked Sendable {
     private let path: URL
-    private let timingPath: URL
     private let sessionStartedAt: Date
     private let lock = NSLock()
 
     public init(path: URL, sessionStartedAt: Date) {
         self.path = path
-        self.timingPath = URL(fileURLWithPath: path.path + ".timing.json")
         self.sessionStartedAt = sessionStartedAt
     }
 
@@ -330,7 +323,12 @@ public final class TranscriptWriter: @unchecked Sendable {
         let prefix = segment.channel == 0 ? "Remote" : "In room"
         let timestamp = Self.clock.string(from: sessionStartedAt.addingTimeInterval(segment.start))
         let timing = SavedTranscriptTiming(startMs: Int64((segment.start * 1000).rounded()), endMs: Int64((segment.end * 1000).rounded()), words: segment.words, originMs: Int64((sessionStartedAt.timeIntervalSince1970 * 1000).rounded()))
+        let json = String(decoding: try JSONEncoder().encode(timing), as: UTF8.self)
+            .replacingOccurrences(of: "<", with: "\\u003c").replacingOccurrences(of: ">", with: "\\u003e")
         let block = "**[\(timestamp)] \(prefix) \(segment.speaker + 1):** \(text)\n\n"
+            + "<!-- arco channel=\(segment.channel) speaker=\(segment.speaker) stream=local "
+            + String(format: "start=%.3f end=%.3f", segment.start, segment.end) + " -->\n\n"
+            + "<!-- arco-timing \(json) -->\n\n"
         lock.lock()
         defer { lock.unlock() }
         let handle = try FileHandle(forWritingTo: path)
@@ -338,27 +336,6 @@ public final class TranscriptWriter: @unchecked Sendable {
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(block.utf8))
         try handle.synchronize()
-        let lineIndex = try Self.appendedLineIndex(at: path)
-        let record = SavedTimingRecord(line: lineIndex, timing: timing)
-        let recordData = try JSONEncoder().encode(record)
-        var recordLine = recordData
-        recordLine.append(0x0A)
-        if !FileManager.default.fileExists(atPath: timingPath.path) {
-            FileManager.default.createFile(atPath: timingPath.path, contents: nil)
-        }
-        let timingHandle = try FileHandle(forWritingTo: timingPath)
-        defer { try? timingHandle.close() }
-        try timingHandle.seekToEnd()
-        try timingHandle.write(contentsOf: recordLine)
-        try timingHandle.synchronize()
-    }
-
-    private static func appendedLineIndex(at path: URL) throws -> Int {
-        let transcript = try String(contentsOf: path, encoding: .utf8)
-        let pattern = try NSRegularExpression(pattern: #"^\s*\*\*\[\d{2}:\d{2}:\d{2}\]\s*([^:*]+?):\*\*\s*(.*)\s*$"#)
-        let range = NSRange(transcript.startIndex..., in: transcript)
-        let count = pattern.numberOfMatches(in: transcript, range: range)
-        return max(count - 1, 0)
     }
 
     private static let clock: DateFormatter = {

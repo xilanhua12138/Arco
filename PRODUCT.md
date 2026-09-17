@@ -67,7 +67,7 @@ There is no separate Notes feature. Answers persist with their meeting without a
 - Clear permission, audio source, recording, reconnecting, stopping, and error states.
 - Continuous transcript; user scrolling disables auto-follow until `Jump to live`.
 - Empty test sessions do not pollute the main history.
-- Once recording is ready, expose only `Recording`, elapsed time, `Stop`, and `Ask Arco` in the global HUD. Audio engineering and provider metadata stay in Settings.
+- Once recording is ready, expose `Recording`, elapsed time, `Stop`, `Ask Arco`, and the opt-in voice invitation in the global HUD. Compact action icons retain full accessible names and descriptive tooltips. Audio engineering and provider metadata stay in Settings.
 - Stop remains available above other apps and finalizes only Arco-owned recorder/transcriber processes.
 - Stopping returns as soon as transcript finalization is complete. If the meeting contains evidence, the configured CLI creates the end-of-meeting summary in the background; generation latency or failure never turns a saved recording into a capture error.
 - After stopping and successfully re-reading the finalized transcript, Arco opens the just-completed meeting as the latest History review. `Current` remains the explicit idle start surface when the user returns to it.

@@ -7,6 +7,13 @@ NATIVE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$NATIVE_DIR/.." && pwd)
 AUDIO_RUNTIME_DIR="$ROOT/rust/arco-audio-rt"
 AUDIO_RUNTIME_HEADER="$NATIVE_DIR/arco_audio_rt.h"
+# AEC3 is built into the Rust static library; end users need no extra runtime.
+for tool in meson ninja pkg-config; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "Missing recorder build tool: $tool (brew install meson ninja pkgconf)" >&2
+    exit 1
+  }
+done
 OUTPUT=${1:-"$NATIVE_DIR/recorder"}
 case "$(uname -m)" in
   arm64)
@@ -35,7 +42,7 @@ fi
 
 COMBINED_SOURCE=$(mktemp "${TMPDIR:-/tmp}/arco-recorder.XXXXXX.swift")
 trap 'rm -f "$COMBINED_SOURCE"' EXIT HUP INT TERM
-cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" > "$COMBINED_SOURCE"
+cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" "$NATIVE_DIR/RecorderOutput.swift" > "$COMBINED_SOURCE"
 swiftc -O "$COMBINED_SOURCE" \
   -import-objc-header "$AUDIO_RUNTIME_HEADER" \
   "$AUDIO_RUNTIME_ARCHIVE" \
@@ -46,6 +53,7 @@ swiftc -O "$COMBINED_SOURCE" \
   -framework AudioToolbox \
   -framework CoreAudio \
   -framework CoreMedia \
+  -lc++ \
   -Xlinker -sectcreate \
   -Xlinker __TEXT \
   -Xlinker __info_plist \
@@ -59,9 +67,12 @@ if [ "$OUTPUT" = "$NATIVE_DIR/recorder" ]; then
   RUNTIME_DIR="$NATIVE_DIR/runtime"
   mkdir -p "$RUNTIME_DIR"
   cp "$OUTPUT" "$RUNTIME_DIR/recorder"
+  cp "$NATIVE_DIR/RecorderOutput.swift" "$RUNTIME_DIR/RecorderOutput.swift"
   cp "$NATIVE_DIR/AudioArchive.swift" "$RUNTIME_DIR/AudioArchive.swift"
   cp "$NATIVE_DIR/recorder.swift" "$RUNTIME_DIR/recorder.swift"
   cp "$NATIVE_DIR/recorder-Info.plist" "$RUNTIME_DIR/recorder-Info.plist"
+  mkdir -p "$RUNTIME_DIR/licenses"
+  cp "$NATIVE_DIR/licenses/WebRTC-AEC3.txt" "$RUNTIME_DIR/licenses/WebRTC-AEC3.txt"
   # The archive and header are build inputs, never runtime dependencies.
   rm -f "$RUNTIME_DIR/libarco_audio_rt.a" "$RUNTIME_DIR/arco_audio_rt.h"
 fi

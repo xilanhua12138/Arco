@@ -166,7 +166,7 @@ by sequenced audio frames.
   speaker timeline. With Doubao as diarization-only, it publishes speaker
   intervals without writing a duplicate transcript.
 - Credentials support a Doubao Speech APP Key or the legacy App ID + Access
-  Token pair and are stored in a dedicated macOS Keychain service. Arco never
+  Token pair and are stored in the local ~/.arco/credentials.json file. Arco never
   falls back to the generic Ark/LLM `DOUBAO_API_KEY`.
 - The worker is ready only after every active channel receives a server
   response. Provider handshake errors remain terminal. A transient disconnect
@@ -191,7 +191,7 @@ ElevenLabs uses Scribe v2 Realtime only. Its realtime API is mono and does not c
 - Audio is streamed only while the meeting is active. Arco does not buffer meeting audio for a later ElevenLabs batch pass and does not replace the transcript after capture stops.
 - Speaker attribution remains incremental; Arco does not run a stop-time batch pass or replace the transcript after capture stops.
 
-The API key is verified against ElevenLabs' user endpoint, stored in macOS Keychain, and injected only into the owned helper environment.
+The API key is verified against ElevenLabs' user endpoint, stored in ~/.arco/credentials.json, and injected only into the owned helper environment.
 
 Primary references:
 
@@ -214,4 +214,4 @@ Rust reports `recording` only after every resolved worker is ready. Deepgram sig
 
 ## Echo caveat
 
-Hybrid setups can leak room speech back through conferencing output or acoustic echo. Identity mapping cannot fix duplicated audio. Capture should prefer OS echo cancellation and may later deduplicate only when channel, timing, and text strongly agree—not by global text equality.
+Hybrid capture enables software WebRTC AEC3 by default, using system playback as a reference to remove loudspeaker echo from the microphone sent to transcription. It does not enable macOS voice processing or change playback volume. The audio archive retains both original captured channels. Microphone-only and system-only capture are unchanged; an explicit `ARCO_MIC_ECHO_CANCELLATION=off` disables AEC. See [software echo cancellation](features/software-echo-cancellation.md) for build requirements, fallback behavior and measured limits. Speaker identity mapping still cannot correct every duplicate or fragmented provider label.

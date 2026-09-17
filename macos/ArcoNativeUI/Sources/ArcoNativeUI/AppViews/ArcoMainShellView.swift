@@ -4,6 +4,7 @@ import SwiftUI
 public struct ArcoMainShellView: View {
     @StateObject private var controller: ArcoAppShellController
     @State private var liveReviewHovered = false
+    @State private var captureButtonHovered = false
     @FocusState private var settingsTriggerFocused: Bool
     @FocusState private var agentTriggerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -65,6 +66,7 @@ public struct ArcoMainShellView: View {
             shortcutViewModel: controller.shortcutViewModel,
             locale: localeBinding,
             shortcutTestCount: controller.shortcutTestCount,
+            meetingAudioSetup: controller.meetingAudioSetup,
             translate: translate
         )
     }
@@ -102,6 +104,8 @@ public struct ArcoMainShellView: View {
                 ArcoSettingsSheetView(
                     viewModel: controller.settingsViewModel(),
                     providerViewModel: controller.providerViewModel(),
+                    meetingAudioSetup: controller.meetingAudioSetup,
+                    meetingStore: controller.store,
                     translate: translate
                 )
                 .transition(
@@ -159,7 +163,7 @@ public struct ArcoMainShellView: View {
                     .frame(width: 32, height: 32)
                     .accessibilityHidden(true)
                 Text("Arco")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(ArcoTypography.wordmark(24))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
@@ -251,9 +255,9 @@ public struct ArcoMainShellView: View {
         .accessibilityLabel(translate("capture.audioLabel", ["mode": mode.label, "source": mode.source]))
     }
 
-    @ViewBuilder private func sidebarCaptureButton(recording: Bool, enabled: Bool) -> some View {
-        let tint = recording ? ArcoNativeGlassPalette.recording : ArcoNativeGlassPalette.action
-        let button = Button {
+    private func sidebarCaptureButton(recording: Bool, enabled: Bool) -> some View {
+        let tint = recording ? ArcoNativeColors.record : ArcoNativeColors.action
+        return Button {
             let resume = controller.page == .review ? controller.store.meeting?.summary.id : nil
             Task { await controller.toggleCapture(resumeMeetingID: resume) }
         } label: {
@@ -270,17 +274,20 @@ public struct ArcoMainShellView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
-            .contentShape(Capsule())
+            .background(tint, in: Capsule(style: .circular))
+            .overlay {
+                Capsule(style: .circular)
+                    .fill(Color.black.opacity(captureButtonHovered && enabled ? 0.08 : 0))
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Capsule(style: .circular))
         }
         .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.985))
         .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
+        .onHover { captureButtonHovered = $0 }
+        .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: captureButtonHovered)
         .accessibilityLabel(captureActionLabel)
-
-        if #available(macOS 26.0, *) {
-            button.glassEffect(.regular.tint(tint).interactive(), in: Capsule())
-        } else {
-            button.background(tint, in: Capsule())
-        }
     }
 
     @ViewBuilder private var sidebarSettingsButton: some View {
@@ -331,7 +338,7 @@ public struct ArcoMainShellView: View {
     private func currentPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
             if controller.store.capture.phase == .recording {
-                meetingHeader(controller.currentMeeting, backToHistory: false)
+                meetingHeader(controller.currentMeeting, backToHistory: false, viewportWidth: viewportWidth)
             }
             if controller.store.capture.phase == .recording {
                 workspace(controller.currentMeeting, viewportWidth: viewportWidth)
@@ -375,7 +382,10 @@ public struct ArcoMainShellView: View {
             viewportWidth: viewportWidth,
             locale: Locale(identifier: controller.locale.rawValue),
             translate: translate,
-            onSelectMeeting: { id in Task { await controller.selectMeeting(id) } }
+            onSelectMeeting: { id in Task { await controller.selectMeeting(id) } },
+            managementBusy: controller.store.meetingManagementBusy,
+            onArchiveMeeting: { id in Task { await controller.store.manageMeeting(id, archived: true) } },
+            onDeleteMeeting: { id in Task { await controller.store.manageMeeting(id) } }
         )
         .padding(.top, 0)
     }
@@ -384,7 +394,7 @@ public struct ArcoMainShellView: View {
 
     private func reviewPage(viewportWidth: CGFloat) -> some View {
         VStack(spacing: 16) {
-            meetingHeader(controller.store.meeting, backToHistory: true)
+            meetingHeader(controller.store.meeting, backToHistory: true, viewportWidth: viewportWidth)
             if controller.reviewingWhileRecording { liveReviewBanner }
             workspace(controller.store.meeting, viewportWidth: viewportWidth)
         }
@@ -432,8 +442,9 @@ public struct ArcoMainShellView: View {
         .accessibilityLabel(translate("app.returnToLiveMeeting", ["title": title]))
     }
 
-    private func meetingHeader(_ meeting: MeetingDetail?, backToHistory: Bool) -> some View {
-        HStack(spacing: 12) {
+    private func meetingHeader(_ meeting: MeetingDetail?, backToHistory: Bool, viewportWidth: CGFloat) -> some View {
+        let compactActions = viewportWidth < 1080
+        return HStack(spacing: 12) {
             TopBarView(
                 meeting: meeting?.summary,
                 meetingDetail: meeting,
@@ -442,29 +453,23 @@ public struct ArcoMainShellView: View {
                 translate: translate,
                 onBackToHistory: backToHistory ? { controller.requestPage(.history) } : nil
             )
-            Button {
-                setAgentExpanded(!controller.agentPanelExpanded)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable().scaledToFit().frame(width: 16, height: 16)
-                        .accessibilityHidden(true)
-                    Text(translate(controller.agentPanelExpanded ? "agent.collapse" : "agent.askArco", [:]))
-                        .font(ArcoTypography.sans(13, weight: .medium))
-                    if controller.store.agentRunning {
-                        Circle().fill(ArcoNativeColors.action).frame(width: 5, height: 5)
+            HStack(spacing: 8) {
+                ArcoMeetingActionButton(title: translate("agent.askArco", [:]),
+                    symbol: controller.agentPanelExpanded ? "text.bubble.fill" : "text.bubble",
+                    active: controller.agentPanelExpanded, iconOnly: compactActions) {
+                    setAgentExpanded(!controller.agentPanelExpanded)
+                }
+                .focused($agentTriggerFocused)
+                .help(translate("agent.askArco", [:]) + "\n" + translate("agent.askArcoHelp", [:]))
+                .accessibilityIdentifier("main-agent-toggle")
+                .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
+                if controller.gptLiveBetaEnabled {
+                    GPTLiveBetaButton(status: controller.voiceParticipantStatus, translate: translate, iconOnly: compactActions) {
+                        Task { @MainActor in await controller.inviteArco() }
                     }
                 }
-                .foregroundStyle(ArcoNativeColors.inkStrong)
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .background(controller.agentPanelExpanded ? ArcoNativeColors.surfaceSelected : ArcoNativeColors.surfaceSubtle,
-                            in: RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(ArcoPressFeedbackButtonStyle())
-            .focused($agentTriggerFocused)
-            .accessibilityIdentifier("main-agent-toggle")
-            .accessibilityValue(controller.store.agentRunning ? translate("agent.responding", [:]) : "")
+
         }
         .zIndex(1)
     }
@@ -496,8 +501,7 @@ public struct ArcoMainShellView: View {
             // reply and scroll state alive across hiding and width breakpoints.
             layout {
                 transcriptDock(meeting)
-                    .frame(maxWidth: ArcoLayoutMetrics.transcriptReadingMaximumWidth)
-                    .frame(width: transcriptWidth, height: transcriptHeight)
+                    .frame(width: transcriptWidth, height: transcriptHeight, alignment: .topLeading)
                 agentDock(meeting)
                     .frame(width: agentWidth, height: agentHeight)
                     .frame(width: stacked ? available : (expanded ? agentWidth : 0),
@@ -518,7 +522,8 @@ public struct ArcoMainShellView: View {
             meeting: meeting,
             capture: controller.store.capture,
             loading: controller.store.loading,
-            translate: translate
+            translate: translate,
+            onLoadRecording: { id in try await controller.store.recording(for: id) }
         )
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
@@ -550,8 +555,8 @@ public struct ArcoMainShellView: View {
             workspace: controller.agentWorkspace,
             attachments: meeting.map { controller.store.attachments(for: $0.summary.id) } ?? [],
             live: controller.store.capture.phase == .recording && meeting?.summary.id == controller.store.capture.activeMeetingId,
-            gptLiveBetaEnabled: controller.gptLiveBetaEnabled,
-            gptLiveStatus: controller.gptLiveSession.status,
+            gptLiveBetaEnabled: false,
+            gptLiveStatus: controller.voiceParticipantStatus,
             showHeader: true,
             streamingTurn: controller.store.agentStreamingTurn,
             translate: translate,
@@ -577,7 +582,7 @@ public struct ArcoMainShellView: View {
             onClose: { setAgentExpanded(false) },
             onConnectAgent: controller.openProviderSetup,
             onToggleGPTLive: {
-                Task { @MainActor in await controller.toggleGPTLive() }
+                Task { @MainActor in await controller.inviteArco() }
             }
         )
         .id(meeting?.summary.id)
@@ -585,7 +590,9 @@ public struct ArcoMainShellView: View {
     }
 
     private func errorToast(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        let displayMessage = message.hasPrefix("No physical microphone is available.")
+            ? translate("capture.microphoneUnavailable", [:]) : message
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 17))
                 .foregroundStyle(ArcoNativeColors.warning)
@@ -593,7 +600,7 @@ public struct ArcoMainShellView: View {
                 Text(translate("app.needsAttention", [:]))
                     .font(ArcoTypography.sans(12, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
-                Text(message)
+                Text(displayMessage)
                     .font(ArcoTypography.metadata)
                     .foregroundStyle(ArcoNativeColors.ink)
             }

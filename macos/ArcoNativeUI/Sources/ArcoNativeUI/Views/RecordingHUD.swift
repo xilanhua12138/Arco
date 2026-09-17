@@ -1,4 +1,3 @@
-import ArcoNativeUI
 import SwiftUI
 
 private enum HUDSourcePalette {
@@ -9,25 +8,38 @@ private enum HUDSourcePalette {
     )
 }
 
-struct RecordingHUDView: View {
+public struct RecordingHUDView: View {
     @Bindable var model: RecordingHUDModel
+    let controller: ArcoAppShellController
+    @State private var voicePhase: GPTLiveSessionPhase
+    @State private var voiceEnabled: Bool
+    private enum Action: Hashable { case ask, voice }
+    @State private var revealedActions: Set<Action> = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let onWidthChange: @MainActor (CGFloat, Bool) -> Void
     let translate: ArcoTranslate
     let onToggleAgent: @MainActor () throws -> Bool
     let onError: @MainActor (Error) -> Void
 
-    init(
+    public init(
         model: RecordingHUDModel,
+        controller: ArcoAppShellController,
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
         onToggleAgent: @escaping @MainActor () throws -> Bool,
+        onWidthChange: @escaping @MainActor (CGFloat, Bool) -> Void = { _, _ in },
         onError: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
         self.model = model
+        self.controller = controller
+        _voicePhase = State(initialValue: controller.voiceParticipantStatus.phase)
+        _voiceEnabled = State(initialValue: controller.gptLiveBetaEnabled)
         self.translate = translate
         self.onToggleAgent = onToggleAgent
+        self.onWidthChange = onWidthChange
         self.onError = onError
     }
 
-    var body: some View {
+    public var body: some View {
         HStack(spacing: 8) {
             RecordingHUDStatusView(
                 model: RecordingHUDStatusState(
@@ -39,45 +51,87 @@ struct RecordingHUDView: View {
                 elapsedClock: model.elapsedClock,
                 translate: translate
             )
-            Spacer(minLength: 0)
+            Button {
+                Task { await model.stop() }
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(HUDButtonStyle(kind: .stop))
+            .padding(.leading, 4)
+            .disabled(model.controlsLocked)
+            .accessibilityLabel(translate("hud.stop", [:]))
+            .help(translate("hud.stop", [:]))
+
             Rectangle()
                 .fill(HUDSourcePalette.ink.opacity(0.09))
                 .frame(width: 1, height: 20)
                 .accessibilityHidden(true)
 
-            Button {
-                Task { await model.stop() }
-            } label: {
-                Label(translate("common.stop", [:]), systemImage: "stop.fill")
-                    .labelStyle(HUDLabelStyle(iconSize: 11))
+            ArcoMeetingActionButton(title: translate("hud.askArco", [:]), symbol: model.agentWindowVisible ? "text.bubble.fill" : "text.bubble",
+                active: model.agentWindowVisible, compact: true, iconOnly: true,
+                revealLabel: revealedActions.contains(.ask),
+                onRevealInteraction: { interactionChanged(.ask, engaged: $0) }) {
+                do { _ = try onToggleAgent() }
+                catch { onError(error) }
             }
-            .buttonStyle(HUDButtonStyle(kind: .stop))
-            .disabled(model.controlsLocked)
-            .accessibilityLabel(translate("hud.stop", [:]))
-
-            Button {
-                do {
-                    _ = try onToggleAgent()
-                } catch {
-                    onError(error)
-                }
-            } label: {
-                Label { Text(translate("hud.askArco", [:])) } icon: {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable().scaledToFit().frame(width: 15, height: 15)
-                }
-                    .labelStyle(HUDLabelStyle(iconSize: 14))
-            }
-            .buttonStyle(HUDButtonStyle(kind: .agent))
+            .help(translate(model.agentWindowVisible ? "hud.hideAskArco" : "hud.askArco", [:]) + "\n"
+                + translate("agent.askArcoHelp", [:]))
+            .accessibilityValue(model.agentWindowVisible ? translate("hud.askArcoOpen", [:]) : "")
             .disabled(model.controlsLocked || model.capture.phase != .recording)
+
+            if voiceEnabled {
+                GPTLiveBetaButton(status: GPTLiveSessionStatus(phase: voicePhase), translate: translate, compact: true, iconOnly: true,
+                    revealLabel: revealedActions.contains(.voice),
+                    onRevealInteraction: { interactionChanged(.voice, engaged: $0) }) {
+                    Task { @MainActor in await controller.inviteArco() }
+                }
+                .disabled(model.controlsLocked || model.capture.phase != .recording)
+            }
+
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 11)
-        .frame(width: 368, height: 56)
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 12)
+        .frame(width: expandedWidth, height: 52)
+        .onChange(of: expandedWidth) { _, width in onWidthChange(width, !reduceMotion) }
+        .onChange(of: model.capture.phase) { _, phase in
+            if phase != .recording {
+                revealedActions.removeAll()
+            }
+        }
+        .onDisappear {
+            revealedActions.removeAll()
+        }
         .background(ArcoWindowDragRegion())
+        // Audio level updates belong to the participant animation, not the HUD.
+        .onReceive(controller.$gptLiveBetaEnabled.removeDuplicates()) { voiceEnabled = $0 }
+        .onReceive(controller.$voiceInvitationPreparing.combineLatest(
+            controller.gptLiveSession.$status.map(\.phase).removeDuplicates()
+        ).map { preparing, phase in preparing ? .connecting : phase }.removeDuplicates()) { voicePhase = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(translate("hud.controls", [:]))
     }
+    private var expandedWidth: CGFloat { width(for: revealedActions) }
+
+    private func width(for actions: Set<Action>) -> CGFloat {
+        328
+            + (actions.contains(.ask) ? ArcoMeetingActionButton.labelRevealWidth(translate("hud.askArco", [:])) : 0)
+            + (actions.contains(.voice) ? GPTLiveButtonPresentation.maximumRevealWidth(translate: translate) : 0)
+    }
+
+    private func interactionChanged(_ action: Action, engaged: Bool) {
+        // Each capsule owns its reveal lifetime. Leaving it must start the
+        // collapse even while the pointer remains elsewhere inside the HUD.
+        var next = revealedActions
+        if engaged { next.insert(action) }
+        else { next.remove(action) }
+        guard next != revealedActions else { return }
+        // Reserve native canvas before changing the SwiftUI label layout.
+        onWidthChange(width(for: next), !reduceMotion)
+        revealedActions = next
+    }
+
 }
 
 private struct RecordingHUDStatusState {
@@ -110,7 +164,7 @@ private struct RecordingHUDStatusView: View {
             Text(statusText)
                 .font(ArcoTypography.sans(12, weight: .semibold))
                 .foregroundStyle(HUDSourcePalette.ink)
-                                .lineLimit(1)
+                .lineLimit(1)
 
             if !model.saved,
                !model.saving,
@@ -119,7 +173,7 @@ private struct RecordingHUDStatusView: View {
                 Text(elapsed)
                     .font(ArcoTypography.mono(12))
                     .monospacedDigit()
-                    .foregroundStyle(HUDSourcePalette.ink.opacity(0.5))
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
                     .lineLimit(1)
                     .accessibilityLabel(elapsed)
             }
@@ -202,7 +256,7 @@ private struct HUDButtonStyleBody: View {
     private var background: Color {
         switch kind {
         case .stop:
-            ArcoNativeColors.record.opacity(hovering || configuration.isPressed ? 0.15 : 0.08)
+            HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.09 : 0.04)
         case .agent:
             HUDSourcePalette.ink.opacity(hovering || configuration.isPressed ? 0.11 : 0.07)
         }

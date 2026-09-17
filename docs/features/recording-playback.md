@@ -14,7 +14,7 @@
 | Nemotron Speech 3.5 本地模型 | FluidAudio 0.15.5 `finishWithTokenTimings()` | token 发射帧时间，约 80ms；子词不等于完整汉字/单词，也不是精确声学边界 |
 | Whisper Tiny/Base/Small/Medium/Large v3 本地模型 | SwiftWhisper/whisper.cpp `token_timestamps`、`max_len=1`、`split_on_word` | 模型估计时间；正文重新合并，保留字词分段用于跳转 |
 
-所有时间统一到会议起始点。云端重连、续录、本地 VAD 分段均加回音频偏移。新录音把句级和词级时间写入 `transcript.md.timing.json`，Markdown 只保留正文；旧 `arco`/`arco-timing` 注释仍可解析，历史文件已有的句级时间仍可跳转；没有保存的词时间不会凭空补齐。
+所有时间统一到会议起始点。云端重连、续录、本地 VAD 分段均加回音频偏移。新的隐藏 `arco-timing` JSON 注释保存时间与词语，保留旧 `arco` 注释兼容原有消费方。历史文件已有的句级时间仍可跳转；没有保存的词时间不会凭空补齐。
 
 ## 归档与播放器
 
@@ -26,10 +26,10 @@
 
 ## 验证
 
-- Rust core：190 项单测通过，覆盖时间单位、重连偏移、续录、旧注释解析、元数据转义、历史目录和清理过的分片。
+- Rust core：原有 190 项单测及新增的 Agent 上下文元数据过滤测试通过，覆盖时间单位、重连偏移、续录、旧注释解析、元数据转义、历史目录和清理过的分片。
 - 本地 ASR：12 项 contract tests 通过；真实音频跑 Whisper Tiny 和 Nemotron，分别返回 22 和 37 个有时间戳的单元。其余 Whisper 大小共用适配路径，未逐个加载模型实测。
 - AVFoundation contract：真实静音播放推进、暂停、倍速、边界/缺口跳转、波形采样、旧数据解码与生命周期通过。
 - 录音归档 contract：AAC 编解码、分片时长、淘汰、符号链接和无效 PCM 检查通过。
 - 云端供应商在本次通过解析测试与 helper 构建，未逐家发起真实云端识别会话。
 
-本地构建产物位于 `build/Arco.app`；不代表 `/Applications/Arco.app` 已更新。界面自动化能读取测试窗口的按钮与词语链接，系统截屏/点击工具报 ScreenCaptureKit 错误，尚无成功的视觉验收截图。
+构建产物位于 `build/Arco.app`，本机安装位于 `/Applications/Arco.app`；发布时分别验证版本与签名。界面自动化能读取测试窗口的按钮与词语链接，系统截屏/点击工具报 ScreenCaptureKit 错误，尚无成功的视觉验收截图。

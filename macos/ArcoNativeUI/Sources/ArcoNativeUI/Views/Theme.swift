@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 /// The presentation layer's translation contract. Callers own the selected
@@ -215,7 +216,6 @@ public enum ArcoLayoutMetrics {
     public static let workspaceCornerRadius: CGFloat = 16
     public static let compactViewportBreakpoint: CGFloat = 1_024
     public static let workspaceSplitMinimumWidth: CGFloat = 740
-    public static let transcriptReadingMaximumWidth: CGFloat = 720
     public static let idleMediumViewportBreakpoint: CGFloat = 1_100
     public static let idleStackedViewportBreakpoint: CGFloat = 880
 
@@ -520,6 +520,25 @@ public struct ArcoNativeActionButton: View {
 
 /// Font construction and the fixed product scale from the original UI.
 public enum ArcoTypography {
+    /// Syne is reserved for the Arco wordmark; product text stays in the system font.
+    public static func wordmark(_ size: CGFloat) -> Font {
+        guard wordmarkFontAvailable else { return .system(size: size, weight: .bold) }
+        return .custom("Syne-Bold", fixedSize: size)
+    }
+
+    private static let wordmarkFontAvailable: Bool = {
+        // A packaged app must resolve its own resources, not SwiftPM's build directory.
+        let packagedBundle = Bundle.main.resourceURL
+            .map { $0.appendingPathComponent("ArcoNativeUI_ArcoNativeUI.bundle") }
+            .flatMap { Bundle(url: $0) }
+        let resources = packagedBundle ?? Bundle.module
+        guard let url = resources.url(forResource: "Syne", withExtension: "ttf", subdirectory: "Fonts") else {
+            return false
+        }
+        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        return NSFont(name: "Syne-Bold", size: 24) != nil
+    }()
+
     public static func sans(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
     }

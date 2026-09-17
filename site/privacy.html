@@ -79,7 +79,7 @@
         <li>Selecting Deepgram for speech recognition or speaker separation sends the active meeting audio to Deepgram.</li>
         <li>Selecting Doubao Speech for either role sends the active meeting audio to Doubao Speech.</li>
         <li>Selecting ElevenLabs for speech recognition sends the active meeting audio to ElevenLabs. Speaker labels can come from a separately selected diarization provider.</li>
-        <li>Cloud credentials are verified by the Rust backend and stored in macOS Keychain, not in transcripts or logs.</li>
+        <li>Cloud credentials are verified by the Rust backend and stored locally in <code>~/.arco/credentials.json</code>, not in transcripts or logs. The file is plaintext with permissions restricted to the current OS user (600); its directory uses permissions 700.</li>
       </ul>
 
       <h2>What Codex or Claude receives</h2>

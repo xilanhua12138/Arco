@@ -10,7 +10,7 @@ THEME="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/Views/Theme.swift"
 MAIN_SHELL="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoMainShellView.swift"
 SETTINGS_SHEET="$ROOT/macos/ArcoNativeUI/Sources/ArcoNativeUI/AppViews/ArcoSettingsSheetView.swift"
 WINDOW_COORDINATOR="$PLATFORM/WindowCoordinator.swift"
-HUD="$PLATFORM/RecordingHUD.swift"
+HUD="$SOURCES/ArcoNativeUI/Views/RecordingHUD.swift"
 AGENT="$PLATFORM/AgentOverlay.swift"
 
 if grep -R -E 'NSGlassEffectView|NSVisualEffectView' $PRODUCT_SOURCES >/dev/null; then
@@ -53,7 +53,7 @@ fi
 if ! awk '
   /\.background\(ArcoNativeColors\.surfaceSettingsShell/ { shell = NR }
   shell && ! highlight && /\.overlay\(alignment: \.top\)/ { highlight = NR }
-  shell && ! clip && /\.clipShape\(RoundedRectangle\(cornerRadius: 12/ { clip = NR }
+  shell && ! clip && /\.clipShape\(RoundedRectangle\(cornerRadius: 14/ { clip = NR }
   END { exit(shell && highlight && clip && highlight < clip ? 0 : 1) }
 ' "$SETTINGS_SHEET"; then
   echo "The Settings top highlight must be clipped by the full sheet shape" >&2

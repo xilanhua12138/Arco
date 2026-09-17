@@ -25,6 +25,7 @@ public final class ProviderSetupViewModel: ObservableObject {
     private let refreshRuntimes: (() async throws -> [RuntimeStatus]?)?
     private let testProvider: (ProviderID) async throws -> ProviderConnectionTest
     private let complete: (ProviderConfiguration) -> Void
+    private let configurationChanged: ((ProviderConfiguration) -> Void)?
     private var testGeneration = 0
 
     public init(
@@ -33,6 +34,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         initialConfiguration: ProviderConfiguration? = nil,
         onRefresh: (() async throws -> [RuntimeStatus]?)? = nil,
         onTest: @escaping (ProviderID) async throws -> ProviderConnectionTest,
+        onChange: ((ProviderConfiguration) -> Void)? = nil,
         onComplete: @escaping (ProviderConfiguration) -> Void
     ) {
         self.mode = mode
@@ -46,6 +48,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         refreshRuntimes = onRefresh
         testProvider = onTest
         complete = onComplete
+        configurationChanged = onChange
     }
 
     public var primary: ProviderID? {
@@ -93,6 +96,7 @@ public final class ProviderSetupViewModel: ObservableObject {
         resetTest()
         configurationErrorKey = nil
         furthestStep = 1
+        persistSelectionChange()
     }
 
     public func changeSecondary(_ provider: ProviderID?) {
@@ -102,6 +106,12 @@ public final class ProviderSetupViewModel: ObservableObject {
         secondary = provider
         configurationErrorKey = nil
         furthestStep = min(furthestStep, 2)
+        persistSelectionChange()
+    }
+
+    private func persistSelectionChange() {
+        guard let primary, primaryAvailable else { return }
+        configurationChanged?(ProviderConfiguration(setupComplete: true, primary: primary, secondary: effectiveSecondary))
     }
 
     public func runPrimaryTest() async {
@@ -266,24 +276,84 @@ public struct ProviderSetupView: View {
     /// Reuse the validated connection flow within Settings, without onboarding navigation.
     public var connectionSettings: some View {
         ProviderSettingsObservation(model: viewModel) {
-        VStack(alignment: .leading, spacing: 22) {
-            providers
-            test
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsControlRow {
+                Text(translate("onboarding.primary", [:])).font(ArcoTypography.bodyStrong)
+            } control: {
+                settingsProviderMenu(selection: viewModel.primary, secondary: false)
+            }
+            SettingsControlRow {
+                Text(translate("onboarding.secondary", [:])).font(ArcoTypography.bodyStrong)
+            } control: {
+                settingsProviderMenu(selection: viewModel.effectiveSecondary, secondary: true)
+            }
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(translate(viewModel.primaryTestPassed ? "common.ready" : "onboarding.testConnection", [:]))
+                        .font(ArcoTypography.bodyStrong)
+                        .foregroundStyle(viewModel.primaryTestPassed ? ArcoNativeColors.success : ArcoNativeColors.inkStrong)
+                    if !viewModel.primaryTestPassed {
+                        Text(translate("settings.connectionTestHelp", [:]))
+                            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
+                    }
+                }
+                Spacer()
+                Button {
+                    Task { await viewModel.runPrimaryTest() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if viewModel.testState == .working { ProgressView().controlSize(.small) }
+                        Text(translate(viewModel.testState == .working ? "onboarding.testingMayTakeTime" : "onboarding.testConnection", [:]))
+                    }
+                }
+                .buttonStyle(SettingsActionButtonStyle())
+                .disabled(!viewModel.primaryAvailable || viewModel.testState == .working)
+            }
+            .padding(.vertical, 18)
+            if !viewModel.primaryAvailable { errorText(translate("onboarding.installCli", [:])) }
+            if let key = viewModel.configurationErrorKey { errorText(translate(key, [:])) }
+            if viewModel.testState == .failed {
+                errorText(viewModel.testError ?? translate("onboarding.providerFailed", ["provider": viewModel.primary?.displayName ?? ""]))
+            }
+            DisclosureGroup(translate("settings.installationDetails", [:])) {
+                VStack(spacing: 0) {
+                    ForEach(ProviderID.allCases, id: \.self) { provider in
+                        HStack {
+                            Text(provider.runtimeName)
+                            Spacer()
+                            Text(viewModel.runtime(for: provider)?.version ?? translate("common.notDetected", [:]))
+                                .foregroundStyle(ArcoNativeColors.inkMuted)
+                        }
+                        .font(ArcoTypography.small).padding(.vertical, 10)
+                    }
+                    if viewModel.canRefresh {
+                        Button(translate("onboarding.recheckInstallations", [:])) {
+                            Task { await viewModel.refreshInstallations() }
+                        }
+                        .buttonStyle(SettingsActionButtonStyle())
+                        .disabled(viewModel.refreshing)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 12)
+                    }
+                }.padding(.top, 8)
+            }
+            .font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted).padding(.top, 16)
         }
         }
     }
 
-    public var connectionSaveButton: some View {
-        ProviderSettingsObservation(model: viewModel) {
-        HStack {
-            Spacer()
-            setupFooterButton(translate("onboarding.saveConfiguration", [:]), symbol: "checkmark", prominent: true) {
-                viewModel.finish()
-            }
-            .disabled(!viewModel.primaryTestPassed || !viewModel.primaryAvailable)
-            .opacity(viewModel.primaryTestPassed && viewModel.primaryAvailable ? 1 : 0.4)
-        }
-        }
+    private func settingsProviderMenu(selection: ProviderID?, secondary: Bool) -> some View {
+        SettingsSelect(title: translate(secondary ? "onboarding.secondary" : "onboarding.primary", [:]),
+            noResults: translate("common.noOptions", [:]),
+            selection: selection?.rawValue ?? "none",
+            options: (secondary ? [SettingsSelectOption(id: "none", label: translate("common.none", [:]))] : [])
+                + ProviderID.allCases.map { provider in
+                    SettingsSelectOption(id: provider.rawValue, label: provider.displayName,
+                        enabled: viewModel.runtime(for: provider)?.available == true && (!secondary || provider != viewModel.primary))
+                }, onSelect: { value in
+                    if secondary { viewModel.changeSecondary(ProviderID(rawValue: value)) }
+                    else if let provider = ProviderID(rawValue: value) { viewModel.changePrimary(provider) }
+                })
     }
 
     private var steps: [String] {
@@ -304,8 +374,7 @@ public struct ProviderSetupView: View {
                     .scaledToFit()
                     .frame(width: 24, height: 24)
                 Text("Arco")
-                    .font(ArcoTypography.sans(16, weight: .semibold))
-                    .tracking(-0.24)
+                    .font(ArcoTypography.wordmark(16))
             }
                 .padding(.horizontal, 8)
                 .padding(.top, embeddedInSettings ? 16 : 28)
@@ -366,17 +435,12 @@ public struct ProviderSetupView: View {
                 .font(ArcoTypography.sans(30, weight: .semibold))
                 .foregroundStyle(ArcoNativeColors.inkStrong)
             Spacer()
-            Picker(translate("settings.appLanguage", [:]), selection: $locale) {
-                Text("简体中文").tag("zh-CN")
-                Text("English").tag("en")
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .font(ArcoTypography.sans(12))
-            .frame(minWidth: 112)
-            .frame(height: 32)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ArcoNativeColors.lineThin))
+            SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
+                selection: locale,
+                options: [SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                          SettingsSelectOption(id: "en", label: "English")],
+                onSelect: { locale = $0 })
+                .frame(width: 144)
             if let onCancel {
                 Button(action: onCancel) { Image(systemName: "xmark").font(.system(size: 18)).frame(width: 34, height: 34) }
                     .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.94))

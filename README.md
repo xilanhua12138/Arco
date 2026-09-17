@@ -33,7 +33,46 @@ When that local CLI is signed in with your Codex or Claude subscription, Arco us
 
 Download the latest Apple Silicon `.dmg` from [GitHub Releases](https://github.com/xilanhua12138/Arco/releases), open it, and drag `Arco.app` to Applications. Arco requires macOS 14 or newer.
 
-The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Because this is not an Apple Developer ID signature, macOS may ask you to approve Keychain access once after installing a newly rebuilt preview; repeated meetings in that installed build reuse the approved credential. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
+The current preview build uses Arco's stable local development signature but is not yet Apple-notarized. On first launch, Control-click `Arco.app`, choose **Open**, then confirm once. Provider credentials are stored in a private local file; normal app use does not request Keychain access. The release includes the recorder, cloud transcription helpers, and local-transcriber worker; Whisper, Nemotron, and on-device speaker-separation models are downloaded only when you choose them in **Settings → Listening & recording → Recognition**.
+
+## Replay meeting recordings
+
+Play saved recordings from History. Click a word or sentence timestamp to seek, or drag the waveform to locate the corresponding transcript. Playback highlights and follows the current text, with 1× / 1.5× / 2× speed. Older records use their saved sentence timing; word timestamps are not retroactively generated. See [recording playback](docs/features/recording-playback.md).
+
+## Invite Arco to your meeting
+
+> **Available in v0.3.25.** Actual app screenshots using a synthetic-voice demonstration meeting, with live transcription, generated answers, and Arco’s connected participant window.
+
+Invite Arco to listen alongside you in an online, in-person, or hybrid meeting. System audio carries remote participants; your physical microphone captures the room. Arco joins quietly. Call its name to begin a conversation, then ask follow-up questions naturally without repeating the name. Turn-taking is guided by the voice model’s meeting prompt; the app does not mute replies using a local wake-word or time-window check. The voice model receives recent meeting context on joining and can read fresh transcript context directly, without waiting for a separate Codex analysis before each spoken reply.
+
+<p align="center">
+  <img src="docs/images/arco-invite-meeting.jpg" alt="A demonstration meeting with a populated live transcript, an actual Arco summary, and the Invite Arco button" width="1000">
+  <br>
+  <sub>A demonstration discussion is transcribed live; Arco summarizes the release plan and identifies the unassigned permission test.</sub>
+</p>
+
+The invitation opens a separate, always-on-top participant card. Its Aura visualization uses the official [LiveKit Agents UI shader](https://github.com/livekit/components-js/blob/main/packages/shadcn/components/agents-ui/agent-audio-visualizer-aura.tsx), adapted to native Metal, and reflects listening, thinking, and speech playback.
+
+<p align="center">
+  <img src="docs/images/arco-voice-participant.png" alt="Arco actively listening in its floating Aura window alongside the meeting transcript and question-and-answer panel" width="1000">
+  <br>
+  <sub>Actual app windows during a demonstration session. Transcription and text Q&amp;A remain available while Arco participates by voice.</sub>
+</p>
+
+| Action | What happens |
+| --- | --- |
+| Start listening | Transcription begins. Arco does not join automatically. |
+| Invite Arco | Opens the participant card and connects voice. If needed, starts a new current meeting. |
+| Select “Arco is in the meeting” | Brings back the same card without restarting or ending the session. |
+| Hide the card | Arco stays in the meeting. Reopen it from the meeting page. |
+| Ask Arco to leave | Closes the card, ends voice participation, and restores the microphone. Transcription continues. |
+| Stop listening or quit Arco | Ends recording and voice participation, and restores the microphone. |
+
+Drag the card by its title area; its position is remembered. Opening a historical meeting does not invite Arco, and inviting from history does not append new audio to the old record.
+
+**Let other participants hear Arco.** Arco mixes your physical microphone with Arco’s replies through BlackHole 2ch. Configure the audio component during onboarding, or skip and finish later in Settings. In Feishu, select **Same as system** once from the microphone menu before or during a call. Arco then switches the system input when it joins and restores it when it leaves. Without that setup, replies play locally. Installation is not triggered in the middle of an invitation.
+
+Arco participates through local audio capture and routing; it does not appear as a separate bot in Feishu’s participant list. Remote system audio is excluded from the microphone send mix to avoid sending participants their own audio back.
 
 ## Live context, not another meeting dashboard
 
@@ -67,7 +106,7 @@ Meetings begin untitled, can be renamed at any time, and can receive an Agent-ge
 | Streaming transcription | Choose Deepgram, Doubao, ElevenLabs, or an on-device Nemotron / Whisper model. | Use the quality, latency, and privacy boundary that fits the meeting. |
 | Multi-speaker separation | Choose Deepgram, Doubao, or a local Sortformer, Pyannote + WeSpeaker, or LS-EEND model independently from ASR. Mixed cloud/on-device pipelines remain streaming. | One microphone can contain several people; Arco never labels the whole mic as “You.” |
 | Native local Agent | Sends questions through Codex CLI or Claude Code already installed and authenticated on the Mac. | Your meeting assistant can use the same project understanding and account you already trust. |
-| GPT Live voice questions (Beta) | After you opt in under **Settings → Talk with Arco → Voice conversation** and connect ChatGPT with OAuth, use the meeting button to start or stop a live voice session. | Ask hands-free questions and hear concise answers; questions about meeting progress are delegated to the current transcript-aware Agent. |
+| GPT Live voice (Beta) | Enable the voice Beta in Settings, connect ChatGPT with OAuth, and explicitly start a live voice session from the meeting. Use **Invite Arco to meeting** to open its independent participant window. | Ask hands-free questions and hear concise answers; meeting context is supplied directly to the voice model, with fresh transcript lookup when needed. |
 | Explicit context | Every question includes the meeting transcript; a selected workspace can be attached visibly from the composer. | Broader context is intentional, inspectable, and never inferred from an unrelated folder. |
 | Native session continuity | Each meeting, provider, and context boundary is bound to its exact Codex / Claude session. | Follow-up questions preserve continuity without using `--last` or selecting an unrelated conversation. |
 | Automatic meeting output | Generates a title after enough evidence and a summary when the meeting ends; both prompts are configurable. | Meetings become useful records without requiring a title or note-taking ritual up front. |
@@ -86,17 +125,17 @@ By default, transcripts and meeting state live at:
 
 - Choose a different transcript folder at any time; previously used locations remain readable in History.
 - Existing note files are preserved; open their original folder from Data & privacy.
-- Arco streams audio for transcription but does not save raw PCM recordings.
+- Meeting audio is saved locally as compressed AAC/M4A by default, under `~/Music/Arco/Recordings`, with a 10 GB limit. Disable **Save meeting recordings** in **Settings → Data & privacy** to keep transcription without audio archives. The limit removes the oldest Arco audio segments, not transcripts or summaries. See [audio storage](docs/features/recording-audio-storage.md).
 - With on-device ASR and diarization, speech processing stays on the Mac.
 - Selecting Deepgram for either ASR or speaker separation sends meeting audio to Deepgram.
 - Selecting Doubao for either ASR or speaker separation sends meeting audio to Doubao Speech. When selected for both roles, Arco uses Doubao's fused streaming recognition and automatic speaker separation.
 - Selecting ElevenLabs ASR sends audio to ElevenLabs. Its realtime API does not supply speaker identities, but Arco can label its finalized segments from the separately selected Deepgram or local streaming diarizer.
 - Speaker separation is incremental during the meeting. Arco does not run a later batch pass or rewrite the transcript after capture stops.
-- Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored separately in macOS Keychain; they are never written to a transcript or log.
+- Deepgram, Doubao Speech, and ElevenLabs credentials are verified by the Rust backend and stored in separate entries in `~/.arco/credentials.json` (directory permissions `700`, file permissions `600`); they are never written to a transcript or log.
 - Agent questions are sent through the selected local CLI. The composer always shows whether only the transcript or the transcript plus a workspace is in scope.
 - Codex transcript and workspace runs add a read-only macOS sandbox around the CLI process.
-- GPT Live is an opt-in Beta and is off by default. Arco sends the active meeting audio to OpenAI only after you click the GPT Live button, and disconnects when you click again or stop the meeting.
-- ChatGPT OAuth credentials for GPT Live are stored in macOS Keychain and are managed separately from the Codex CLI login. This Beta currently depends on an undocumented ChatGPT backend interface and may stop working for some accounts or after upstream changes.
+- GPT Live is an opt-in Beta and is off by default. Arco sends the active meeting audio to OpenAI only after you explicitly start a voice session. Ending that session or stopping the meeting disconnects it. Hiding the participant card keeps the voice session active; **Leave** ends it.
+- ChatGPT OAuth credentials for GPT Live are stored in `~/.arco/credentials.json` and are managed separately from the Codex CLI login. This Beta currently depends on an undocumented ChatGPT backend interface and may stop working for some accounts or after upstream changes.
 
 ## Development
 
@@ -129,7 +168,7 @@ To create the same locally signed macOS archive used for preview releases:
 
 The installer image and checksum are written to `artifacts/Arco-macos-<arch>.dmg` and `artifacts/Arco-macos-<arch>.dmg.sha256`. A future generally available build will add Developer ID signing and Apple notarization.
 
-Open **Settings → Listening & recording → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in macOS Keychain. On-device models live under `~/Library/Application Support/Arco/models/`.
+Open **Settings → Listening & recording → Recognition** to choose ASR and streaming speaker separation independently. Any selected cloud provider requires its own verified key; Arco verifies it through the provider's official endpoint and stores it in `~/.arco/credentials.json`. On-device models live under `~/Library/Application Support/Arco/models/`.
 
 ## The original Agent Skill is still here
 
@@ -159,6 +198,7 @@ swift build --package-path macos/ArcoNativeUI
 swift run --package-path macos/ArcoNativeUI ArcoNativeUIContractTests
 swift run --package-path macos/ArcoNativeUI ArcoPreferencesContractTests
 swift run --package-path macos/ArcoNativeUI ArcoLocalizationContractTests
+./native/test-hud-window.sh
 ARCO_BUILD_PROFILE=debug ARCO_SKIP_CODESIGN=1 ./native/build-native-app.sh
 ./native/package-local-app.sh
 ```
@@ -183,3 +223,7 @@ Issues and pull requests are welcome. For a larger product or architecture chang
 ## License
 
 Arco is licensed under the [MIT License](./LICENSE).
+
+Existing Keychain credentials can be re-entered in Settings or imported once using the [credential migration instructions](docs/features/credential-file-storage.md). The new app does not fall back to Keychain.
+
+Third-party components retain their own licenses. The Aura shader is adapted from LiveKit Agents UI / Unicorn Studio and retains its upstream Polyform Non-Resale notice; see [third-party notices](macos/ArcoNativeUI/Sources/ArcoNativeUI/Resources/Aura/NOTICE.md).

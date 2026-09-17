@@ -254,13 +254,13 @@ public struct InsightPanelView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             Text(translate("agent.askArco", [:]))
                 .font(ArcoTypography.conversationHeading)
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
-            if live, gptLiveBetaEnabled, let onToggleGPTLive {
+            if gptLiveBetaEnabled, let onToggleGPTLive {
                 GPTLiveBetaButton(
                     status: gptLiveStatus,
                     translate: translate,
@@ -276,12 +276,12 @@ public struct InsightPanelView: View {
                         .font(ArcoTypography.sans(11, weight: .medium))
                 }
                 .foregroundStyle(ArcoNativeColors.inkMuted)
-                .padding(.top, 2)
+                .frame(height: 30)
             }
             if let onClose {
                 Button(action: onClose) {
                     ArcoLucideIcon(layout == .main ? .chevronRight : .x, size: 17)
-                        .frame(width: layout == .main ? 20 : 30, height: layout == .main ? 20 : 30)
+                        .frame(width: 30, height: 30)
                         .background(
                             closeHovering ? ArcoNativeColors.surfaceHover : .clear,
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous)

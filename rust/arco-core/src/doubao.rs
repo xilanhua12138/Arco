@@ -801,28 +801,17 @@ impl TranscriptWriter {
             .single()
             .unwrap_or_else(Local::now)
             .format("%H:%M:%S");
-        writeln!(
-            file,
-            "**[{timestamp}] {}:** {}\n",
-            segment.label, segment.text
-        )
-        .and_then(|_| file.flush())
-        .map_err(|error| format!("could not write live Doubao transcript: {error}"))?;
-        let raw_markdown = fs::read_to_string(&self.path)
-            .map_err(|error| format!("could not count transcript lines: {error}"))?;
-        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
-            .len()
-            .checked_sub(1)
-            .ok_or("could not identify the appended transcript line")?;
-        crate::transcript_timing::append_line(
-            &crate::transcript_timing::sidecar_path(&self.path),
-            line_index,
-            segment.start,
-            segment.end,
-            &segment.words,
-            self.session_started_at,
-        )
-        .map_err(|error| format!("could not append Doubao timing sidecar: {error}"))
+        writeln!(file, "**[{timestamp}] {}:** {}\n", segment.label, segment.text)
+            .and_then(|_| {
+                writeln!(
+                    file,
+                    "<!-- arco channel={} speaker={} stream=doubao-bigmodel start={:.3} end={:.3} -->\n",
+                    segment.channel, segment.speaker, segment.start, segment.end,
+                )
+            })
+            .and_then(|_| writeln!(file, "{}", crate::transcript_timing::comment(segment.start, segment.end, &segment.words, self.session_started_at)))
+            .and_then(|_| file.flush())
+            .map_err(|error| format!("could not write live Doubao transcript: {error}"))
     }
 }
 
@@ -2552,15 +2541,10 @@ mod tests {
             (45000001, "invalid audio format", true),
         ] {
             let (mut socket, mut server) = local_websocket_pair().await;
-            server
-                .send(server_error_message(code, message))
-                .await
-                .unwrap();
-            let error =
-                tokio::time::timeout(Duration::from_secs(1), wait_for_initialization(&mut socket))
-                    .await
-                    .unwrap()
-                    .unwrap_err();
+            server.send(server_error_message(code, message)).await.unwrap();
+            let error = tokio::time::timeout(
+                Duration::from_secs(1), wait_for_initialization(&mut socket),
+            ).await.unwrap().unwrap_err();
             assert_eq!(is_fatal_channel_error(&error), fatal, "{error}");
         }
     }
@@ -2588,44 +2572,24 @@ mod tests {
         let (socket, mut server) = local_websocket_pair().await;
         let provider = async move {
             assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
-            server
-                .send(server_error_message(55000000, "read result timeout"))
-                .await
-                .unwrap();
+            server.send(server_error_message(55000000, "read result timeout")).await.unwrap();
             // Keep the transport open until the client processes the error.
             let _ = server.next().await;
         };
         let attempt = stream_connected_channel(
-            socket,
-            &mut receiver,
-            &writer,
-            None,
-            &ready,
-            "combined",
-            None,
-            &mut state,
+            socket, &mut receiver, &writer, None, &ready, "combined", None, &mut state,
         );
         let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
             tokio::join!(attempt, provider)
-        })
-        .await
-        .unwrap();
+        }).await.unwrap();
         let error = result.unwrap_err();
-        assert!(
-            !is_fatal_channel_error(&error),
-            "actual stream error must enter retry: {error}"
-        );
-        assert!(
-            !sender.is_closed(),
-            "provider failure must not close capture input"
-        );
+        assert!(!is_fatal_channel_error(&error), "actual stream error must enter retry: {error}");
+        assert!(!sender.is_closed(), "provider failure must not close capture input");
 
         // New capture continues during backoff; the retry must retain both
         // previously sent/unconfirmed audio and the held lookahead before it.
         sender.send(chunks[2].clone()).await.unwrap();
-        wait_before_retry(Duration::from_millis(10), &mut receiver, &mut state)
-            .await
-            .unwrap();
+        wait_before_retry(Duration::from_millis(10), &mut receiver, &mut state).await.unwrap();
         drop(sender);
         state.connection_id += 1;
         let (socket, mut server) = local_websocket_pair().await;
@@ -2641,27 +2605,15 @@ mod tests {
                 panic!("expected EOF flush");
             };
             assert_eq!(&packet[..4], &[0x11, 0x22, 0x01, 0x00]);
-            server
-                .send(result_message(-1, true, json!({"result": {}})))
-                .await
-                .unwrap();
+            server.send(result_message(-1, true, json!({"result": {}}))).await.unwrap();
             let _ = server.next().await;
         };
         let attempt = stream_connected_channel(
-            socket,
-            &mut receiver,
-            &writer,
-            None,
-            &ready,
-            "combined",
-            None,
-            &mut state,
+            socket, &mut receiver, &writer, None, &ready, "combined", None, &mut state,
         );
         let (result, _) = tokio::time::timeout(Duration::from_secs(2), async {
             tokio::join!(attempt, provider)
-        })
-        .await
-        .unwrap();
+        }).await.unwrap();
         assert_eq!(result, Ok(true));
         assert!(state.pending.is_empty());
     }
@@ -3495,7 +3447,7 @@ mod tests {
             .unwrap();
         writer.flush_all().unwrap();
 
-        let content = fs::read_to_string(&transcript).unwrap();
+        let content = fs::read_to_string(transcript).unwrap();
         assert!(
             content.find("earlier recovered room").unwrap() < content.find("later remote").unwrap(),
             "replayed older room audio must not be appended after newer remote audio"
@@ -3601,12 +3553,11 @@ mod tests {
         writer.advance(0, 26.0).unwrap();
         writer.advance(1, 26.0).unwrap();
 
-        let content = fs::read_to_string(&transcript).unwrap();
-        let timing = fs::read_to_string(transcript.with_extension("md.timing.json")).unwrap();
+        let content = fs::read_to_string(transcript).unwrap();
         assert!(content.contains("Remote 2:** 可以的，我能说中文，你想问什么。"));
-        assert!(timing.contains("\"line\":0") && timing.contains("\"startMs\":22252"));
+        assert!(content.contains("arco channel=0 speaker=1"));
         assert!(!content.contains("In room 4"));
-        assert!(!timing.contains("\"line\":1"));
+        assert!(!content.contains("arco channel=1 speaker=3"));
     }
 
     #[test]
@@ -3643,7 +3594,7 @@ mod tests {
         writer.advance(0, 15.0).unwrap();
         writer.advance(1, 15.0).unwrap();
 
-        let content = fs::read_to_string(&transcript).unwrap();
+        let content = fs::read_to_string(transcript).unwrap();
         assert!(content.contains("Remote 1"));
         assert!(!content.contains("In room 1"));
         assert_eq!(content.matches("正在验证").count(), 1);
@@ -3760,10 +3711,9 @@ mod tests {
             .unwrap();
         writer.flush_all().unwrap();
 
-        let content = fs::read_to_string(&transcript).unwrap();
-        let timing = fs::read_to_string(transcript.with_extension("md.timing.json")).unwrap();
+        let content = fs::read_to_string(transcript).unwrap();
         assert_eq!(content.matches("我在看进度").count(), 1);
-        assert_eq!(timing.lines().count(), 1);
+        assert_eq!(content.matches("arco channel=1 speaker=0").count(), 1);
     }
 
     #[test]

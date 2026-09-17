@@ -13,12 +13,14 @@ test:
 	@set -e; for product in \
 		ArcoNativeUIContractTests \
 		ArcoAudioArchiveContractTests \
+		ArcoRecordingPlaybackContractTests \
 		ArcoProviderPresentationContractTests \
 		ArcoMarkdownContractTests \
 		ArcoTopBarContractTests \
 		ArcoContentSourceParityContractTests \
 		ArcoHistoryPerformanceContractTests \
 		ArcoSettingsParityContractTests \
+		ArcoSettingsControlContractTests \
 		ArcoSetupSourceParityContractTests \
 		ArcoOverlaySourceParityContractTests \
 		ArcoWindowChromeContractTests \
@@ -30,6 +32,7 @@ test:
 	./native/build-recorder.sh
 	./native/recorder --self-test
 	./native/test-audio-archive.sh
+	./native/test-recorder-output.sh
 	swift run --package-path native/local-transcriber arco-transcription-selftest
 
 helpers:

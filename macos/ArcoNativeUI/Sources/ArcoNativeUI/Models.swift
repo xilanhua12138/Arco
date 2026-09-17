@@ -312,13 +312,15 @@ public struct TranscriptLine: Codable, Equatable, Identifiable, Sendable {
     public var speaker: String
     public var text: String
     public var sequence: Int
+    public var timing: TranscriptTiming?
 
-    public init(id: String, timestamp: String, speaker: String, text: String, sequence: Int) {
+    public init(id: String, timestamp: String, speaker: String, text: String, sequence: Int, timing: TranscriptTiming? = nil) {
         self.id = id
         self.timestamp = timestamp
         self.speaker = speaker
         self.text = text
         self.sequence = sequence
+        self.timing = timing
     }
 }
 
@@ -753,4 +755,27 @@ public struct AudioArchiveStatus: Codable, Equatable, Sendable {
     public var phase: String
     public var error: String?
     public var directory: String?
+}
+
+public struct TranscriptWord: Codable, Equatable, Sendable {
+    public var text: String
+    public var startMs: Int64
+    public var endMs: Int64
+    public init(text: String, startMs: Int64, endMs: Int64) { self.text = text; self.startMs = startMs; self.endMs = endMs }
+}
+public struct TranscriptTiming: Codable, Equatable, Sendable {
+    public var startMs: Int64
+    public var endMs: Int64
+    public var words: [TranscriptWord]
+    public init(startMs: Int64, endMs: Int64, words: [TranscriptWord] = []) { self.startMs = startMs; self.endMs = endMs; self.words = words }
+}
+public struct MeetingRecording: Codable, Equatable, Sendable {
+    public var meetingId: String
+    public var chunks: [RecordingChunk]
+    public init(meetingId: String, chunks: [RecordingChunk]) { self.meetingId = meetingId; self.chunks = chunks }
+}
+public struct RecordingChunk: Codable, Equatable, Sendable {
+    public var path: String
+    public var startMs: Int64
+    public init(path: String, startMs: Int64) { self.path = path; self.startMs = startMs }
 }

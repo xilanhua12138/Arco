@@ -68,6 +68,137 @@ impl AudioArchiveStorage {
         })
     }
 
+    fn directories(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = fs::read(self.app_data.join("audio-archive-roots.json"))
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
+        roots.push(self.default_directory.clone());
+        if let Ok(config) = self.config() {
+            roots.push(config.directory);
+        }
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+
+    /// Resolve only Arco-owned files for a meeting already validated by MeetingStore.
+    /// Numbered chunks keep their original offsets even after quota eviction.
+    pub fn recording(&self, meeting: &crate::models::MeetingSummary) -> Result<Value, String> {
+        let meeting_start = chrono::DateTime::parse_from_rfc3339(&meeting.started_at)
+            .map_err(|e| e.to_string())?
+            .timestamp_millis();
+        let mut recordings = Vec::new();
+        for root in self.directories() {
+            let entries = match fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("Could not read recordings: {e}")),
+            };
+            for entry in entries.flatten() {
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let marker = entry.path().join("recording.json");
+                if fs::symlink_metadata(&marker).is_ok_and(|m| m.file_type().is_symlink()) {
+                    continue;
+                }
+                let Some(meta) = fs::read(&marker)
+                    .ok()
+                    .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+                else {
+                    continue;
+                };
+                if meta["owner"] != "app.arco.audio-archive" {
+                    continue;
+                }
+                let same_path = meta["transcript"].as_str().is_some_and(|p| {
+                    p == meeting.path
+                        || Path::new(p)
+                            .canonicalize()
+                            .ok()
+                            .zip(Path::new(&meeting.path).canonicalize().ok())
+                            .is_some_and(|(a, b)| a == b)
+                });
+                if !same_path && meta["meetingID"] != meeting.id {
+                    continue;
+                }
+                let origin = meta["sessionStartedAtUnix"]
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .map(|v| (v * 1000.0).round() as i64);
+                let created = meta["startedAt"]
+                    .as_str()
+                    .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                    .map(|v| v.timestamp_millis())
+                    .unwrap_or(meeting_start);
+                recordings.push((created, origin, meta, entry.path()));
+            }
+        }
+        recordings.sort_by_key(|r| r.0);
+        let mut chunks = Vec::new();
+        for (position, (created, origin, meta, folder)) in recordings.into_iter().enumerate() {
+            // Legacy first captures started on the meeting sample clock; their
+            // marker's creation time includes helper startup and must not shift audio.
+            let offset = origin.unwrap_or(if position == 0 {
+                meeting_start
+            } else {
+                created
+            }) - meeting_start;
+            let span = meta["segmentDurationMs"]
+                .as_i64()
+                .filter(|v| *v > 0)
+                .unwrap_or(300_000);
+            for file in fs::read_dir(folder).map_err(|e| e.to_string())?.flatten() {
+                if !file.file_type().is_ok_and(|t| t.is_file()) {
+                    continue;
+                }
+                let name = file.file_name().to_string_lossy().into_owned();
+                let Some(index) = name
+                    .strip_prefix("audio-")
+                    .and_then(|v| v.strip_suffix(".m4a"))
+                    .filter(|v| v.len() == 6 && v.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|v| *v > 0)
+                else {
+                    continue;
+                };
+                chunks.push(serde_json::json!({ "path": file.path(), "startMs": (offset + (index-1)*span).max(0) }));
+            }
+        }
+        chunks.sort_by_key(|c| c["startMs"].as_i64().unwrap_or(0));
+        chunks.dedup_by(|a, b| a["path"] == b["path"]);
+        Ok(serde_json::json!({ "meetingId": meeting.id, "chunks": chunks }))
+    }
+
+    pub fn deletion_paths(&self, meeting: &crate::models::MeetingSummary) -> Result<Vec<PathBuf>, String> {
+        let mut folders = Vec::new();
+        for root in self.directories() {
+            let entries = match fs::read_dir(root) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("Could not read recordings: {e}")),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+                let marker = entry.path().join("recording.json");
+                if !fs::symlink_metadata(&marker).is_ok_and(|m| m.file_type().is_file()) { continue; }
+                let Some(meta) = fs::read(marker).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue; };
+                if meta["owner"] != "app.arco.audio-archive" { continue; }
+                // Prefer the full transcript path; IDs can be duplicated across imported roots.
+                let matches = if let Some(path) = meta["transcript"].as_str() {
+                    path == meeting.path || Path::new(path).canonicalize().ok()
+                        .zip(Path::new(&meeting.path).canonicalize().ok()).is_some_and(|(a,b)| a == b)
+                } else { meta["meetingID"] == meeting.id };
+                if matches { folders.push(entry.path()); }
+            }
+        }
+        folders.sort();
+        folders.dedup();
+        Ok(folders)
+    }
+
     pub fn update(
         &self,
         enabled: bool,
@@ -91,6 +222,15 @@ impl AudioArchiveStorage {
         let _probe = NamedTempFile::new_in(&config.directory)
             .map_err(|e| format!("Audio folder is not writable: {e}"))?;
         fs::create_dir_all(&self.app_data).map_err(|e| e.to_string())?;
+        let mut roots = self.directories();
+        roots.push(config.directory.clone());
+        roots.sort();
+        roots.dedup();
+        let mut roots_file = NamedTempFile::new_in(&self.app_data).map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut roots_file, &roots).map_err(|e| e.to_string())?;
+        roots_file
+            .persist(self.app_data.join("audio-archive-roots.json"))
+            .map_err(|e| e.to_string())?;
         let mut staged = NamedTempFile::new_in(&self.app_data).map_err(|e| e.to_string())?;
         serde_json::to_writer_pretty(&mut staged, &config).map_err(|e| e.to_string())?;
         staged.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -142,6 +282,39 @@ fn archive_size(directory: &Path) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lookup_preserves_evicted_offsets_and_previous_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let store = AudioArchiveStorage::new(root.path().join("app"), root.path());
+        let old = root.path().join("old");
+        store.update(true, Some(&old), 1_000_000_000).unwrap();
+        let transcript = root.path().join("transcript-20260915-120000.md");
+        fs::write(&transcript, "# Meeting Transcript\n\n> Started: 2026-09-15 12:00:00\n\n**[12:00:01] Remote 1:** hello\n").unwrap();
+        let summary = crate::meetings::parse_meeting(&transcript, "local", None)
+            .unwrap()
+            .summary;
+        let folder = old.join("recording");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("recording.json"), serde_json::to_vec(&serde_json::json!({"owner":"app.arco.audio-archive", "meetingID": summary.id, "transcript": summary.path})).unwrap()).unwrap();
+        fs::write(folder.join("audio-000003.m4a"), b"audio").unwrap();
+        fs::write(folder.join("audio-other.m4a"), b"ignore").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&transcript, folder.join("audio-000004.m4a")).unwrap();
+        store
+            .update(true, Some(&root.path().join("new")), 1_000_000_000)
+            .unwrap();
+        let recording = store.recording(&summary).unwrap();
+        let chunks = recording["chunks"].as_array().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0]["startMs"], 600000);
+        let mut other = summary.clone();
+        other.id = "other".into();
+        other.path = "other".into();
+        assert!(store.recording(&other).unwrap()["chunks"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
     #[test]
     fn defaults_and_saved_settings_survive_reload() {
         let root = tempfile::tempdir().unwrap();

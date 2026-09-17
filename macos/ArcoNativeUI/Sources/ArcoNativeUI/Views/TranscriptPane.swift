@@ -44,6 +44,10 @@ public struct TranscriptPaneView: View {
     public var showHeader: Bool
     public var layout: TranscriptPaneLayout
     public var translate: ArcoTranslate
+    public var onLoadRecording: ((String) async throws -> MeetingRecording)?
+
+    @State private var playback = RecordingPlayback()
+    @State private var recordingError: String?
 
     @State private var followingLive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -55,7 +59,8 @@ public struct TranscriptPaneView: View {
         compact: Bool = false,
         showHeader: Bool = true,
         layout: TranscriptPaneLayout = .main,
-        translate: @escaping ArcoTranslate = ArcoTranslations.english
+        translate: @escaping ArcoTranslate = ArcoTranslations.english,
+        onLoadRecording: ((String) async throws -> MeetingRecording)? = nil
     ) {
         self.meeting = meeting
         self.capture = capture
@@ -64,6 +69,7 @@ public struct TranscriptPaneView: View {
         self.showHeader = showHeader
         self.layout = layout
         self.translate = translate
+        self.onLoadRecording = onLoadRecording
     }
 
     public var body: some View {
@@ -79,6 +85,32 @@ public struct TranscriptPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(layout == .agentOverlay ? Color.clear : ArcoNativeColors.surfaceDocument)
         .clipped()
+        .task(id: "\(meeting?.summary.id ?? "")-\(capture.phase.rawValue)-\(loading)") {
+            playback.clear(); recordingError = nil
+            guard !compact, !loading, let meeting, !meeting.summary.isLive, let onLoadRecording else { return }
+            do {
+                let recording = try await onLoadRecording(meeting.summary.id)
+                guard !Task.isCancelled else { return }
+                await playback.load(recording)
+                playback.setTranscript(meeting.lines)
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .milliseconds(80))
+                    playback.tick()
+                }
+            } catch is CancellationError {} catch {
+                if !Task.isCancelled { recordingError = error.localizedDescription }
+            }
+        }
+        .onDisappear { playback.clear() }
+        .onChange(of: meeting?.lines) {
+            if playback.duration > 0 { playback.setTranscript(meeting?.lines ?? []) }
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "arco-audio", let ms = Int64(url.lastPathComponent), playback.duration > 0 else { return .systemAction }
+            playback.seek(Double(ms) / 1000)
+            if !playback.isPlaying { playback.toggle() }
+            return .handled
+        })
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             loading ? translate("transcript.loading", [:]) : translate("transcript.aria", [:])
@@ -142,6 +174,12 @@ public struct TranscriptPaneView: View {
                 .foregroundStyle(ArcoNativeColors.inkStrong)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
+            if playback.duration > 0 && !playback.hasWordTimings {
+                Text(translate("playback.sentenceOnly", [:]))
+                    .font(ArcoTypography.small)
+                    .foregroundStyle(ArcoNativeColors.inkMuted)
+                    .help(translate("playback.sentenceOnlyHelp", [:]))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 24)
@@ -158,183 +196,159 @@ public struct TranscriptPaneView: View {
 
         return VStack(spacing: 0) {
             if showHeader { header }
-
-            GeometryReader { viewport in
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            if !generatedSummary.isEmpty {
-                                MeetingSummaryDocument(
-                                    summary: generatedSummary,
-                                    compact: compact,
-                                    translate: translate
-                                )
-                            }
-
-                            if meeting.lines.isEmpty {
-                                emptyTranscriptState(active: active)
-                            } else {
-                                LazyVStack(spacing: 0) {
-                                    ForEach(meeting.lines) { line in
-                                        transcriptLine(line)
-                                    }
-
-                                    if active && !compact {
-                                        ListeningIndicator(label: translate("common.listening", [:]))
-                                            .padding(12)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                }
-                                .padding(.bottom, compact ? 48 : 0)
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id("transcript-live-edge")
-                                .background {
-                                    GeometryReader { edge in
-                                        Color.clear.preference(
-                                            key: TranscriptBottomPreferenceKey.self,
-                                            value: edge.frame(in: .named("transcript-scroll")).maxY
-                                        )
-                                    }
-                                }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
-                    }
-                    .coordinateSpace(name: "transcript-scroll")
-                    .onPreferenceChange(TranscriptBottomPreferenceKey.self) { bottom in
-                        followingLive = bottom - viewport.size.height < 72
-                    }
-                    .onAppear {
-                        guard active else { return }
-                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                    }
-                    .onChange(of: liveEdgeRevision) {
-                        guard TranscriptLiveFollowPolicy.shouldFollow(
-                            active: active,
-                            followingLive: followingLive
-                        ) else { return }
-                        if reduceMotion {
-                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                        } else {
-                            withAnimation(.easeOut(duration: 0.22)) {
-                                proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: active) {
-                        guard active && followingLive else { return }
-                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        if active && !followingLive {
-                            Button {
-                                if reduceMotion {
-                                    proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                                } else {
-                                    withAnimation(.easeOut(duration: 0.22)) {
-                                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
-                                    }
-                                }
-                                followingLive = true
-                            } label: {
-                                HStack(spacing: 5) {
-                                    ArcoLucideIcon(.arrowDown, size: 14)
-                                    Text(translate("transcript.jumpToLive", [:]))
-                                }
-                                .font(ArcoTypography.sans(compact ? 10 : 12))
-                                .foregroundStyle(ArcoNativeColors.actionInk)
-                                .padding(.horizontal, compact ? 9 : 12)
-                                .padding(.vertical, compact ? 7 : 8)
-                                .background(ArcoNativeColors.action)
-                                .clipShape(Capsule(style: .continuous))
-                            }
-                            .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
-                            .padding(compact ? 10 : 16)
-                        }
-                    }
-                }
+            if !compact && !meeting.summary.isLive && onLoadRecording != nil {
+                RecordingPlayerBar(playback: playback, translate: translate)
+                if let recordingError { Text(recordingError).font(ArcoTypography.small).foregroundStyle(.red).padding(12) }
             }
-        }
-    }
 
-    private func transcriptLine(_ line: TranscriptLine) -> some View {
-        Group {
-            if compact {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        speakerLabel(line.speaker, compact: true)
-                        Spacer(minLength: 8)
-                        Text(line.timestamp)
-                            .font(ArcoTypography.mono(10))
-                            .foregroundStyle(ArcoNativeColors.inkMuted)
-                            .lineLimit(1)
-                    }
-                    Text(line.text)
-                        .font(layout == .agentOverlay ? ArcoTypography.floatingBody : ArcoTypography.sans(13))
-                        .foregroundStyle(ArcoNativeColors.inkStrong)
-                        .lineSpacing(layout == .agentOverlay ? 2.5 : 3.4)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 10)
+            if !meeting.summary.isLive && !compact {
+                historyTranscript(meeting, summary: generatedSummary)
             } else {
-                HStack(alignment: .top, spacing: 12) {
-                    Text(line.timestamp)
-                        .font(ArcoTypography.mono(12))
-                        .foregroundStyle(ArcoNativeColors.inkMuted)
-                        .frame(width: 64, alignment: .leading)
-                        .padding(.top, 1)
+                GeometryReader { viewport in
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                if !generatedSummary.isEmpty {
+                                    MeetingSummaryDocument(
+                                        summary: generatedSummary,
+                                        compact: compact,
+                                        translate: translate
+                                    )
+                                }
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        speakerLabel(line.speaker, compact: false)
-                        Text(line.text)
-                            .font(ArcoTypography.body)
-                            .foregroundStyle(ArcoNativeColors.inkStrong)
-                            .lineSpacing(5.2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
+                                if meeting.lines.isEmpty {
+                                    emptyTranscriptState(active: active)
+                                } else {
+                                    LazyVStack(spacing: 0) {
+                                        ForEach(meeting.lines) { line in
+                                            TranscriptRowView(line: line, compact: compact, layout: layout, translate: translate, playback: playback)
+                                        }
+
+                                        if active && !compact {
+                                            ListeningIndicator(label: translate("common.listening", [:]))
+                                                .padding(12)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                    .padding(.bottom, compact ? 48 : 0)
+                                }
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("transcript-live-edge")
+                                    .background {
+                                        if active {
+                                            GeometryReader { edge in
+                                                Color.clear.preference(
+                                                    key: TranscriptBottomPreferenceKey.self,
+                                                    value: edge.frame(in: .named("transcript-scroll")).maxY
+                                                )
+                                            }
+                                        }
+                                    }
+                            }
+                            .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                        }
+                        .background(RecordingScrollObserver { if playback.following { playback.following = false } })
+                        .onChange(of: playback.activeLineID) {
+                            if playback.following, let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+                        }
+                        .onChange(of: playback.seekRevision) {
+                            if let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+                        }
+                        .coordinateSpace(name: "transcript-scroll")
+                        .onPreferenceChange(TranscriptBottomPreferenceKey.self) { bottom in
+                            guard active else { return }
+                            let follows = bottom - viewport.size.height < 72
+                            if follows != followingLive { followingLive = follows }
+                        }
+                        .onAppear {
+                            guard active else { return }
+                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                        }
+                        .onChange(of: liveEdgeRevision) {
+                            guard TranscriptLiveFollowPolicy.shouldFollow(
+                                active: active,
+                                followingLive: followingLive
+                            ) else { return }
+                            if reduceMotion {
+                                proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                            } else {
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                }
+                            }
+                        }
+                        .onChange(of: active) {
+                            guard active && followingLive else { return }
+                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            if active && !followingLive {
+                                Button {
+                                    if reduceMotion {
+                                        proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                    } else {
+                                        withAnimation(.easeOut(duration: 0.22)) {
+                                            proxy.scrollTo("transcript-live-edge", anchor: .bottom)
+                                        }
+                                    }
+                                    followingLive = true
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        ArcoLucideIcon(.arrowDown, size: 14)
+                                        Text(translate("transcript.jumpToLive", [:]))
+                                    }
+                                    .font(ArcoTypography.sans(compact ? 10 : 12))
+                                    .foregroundStyle(ArcoNativeColors.actionInk)
+                                    .padding(.horizontal, compact ? 9 : 12)
+                                    .padding(.vertical, compact ? 7 : 8)
+                                    .background(ArcoNativeColors.action)
+                                    .clipShape(Capsule(style: .continuous))
+                                }
+                                .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.97))
+                                .padding(compact ? 10 : 16)
+                            }
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(12)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(TranscriptHoverModifier())
-        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1) }
     }
 
-    private func speakerLabel(_ speaker: String, compact: Bool) -> some View {
-        let label = localizedSpeakerLabel(speaker)
-        let source = speaker.lowercased(with: .current).hasPrefix("remote")
-            ? translate("transcript.systemAudio", [:])
-            : translate("transcript.roomMic", [:])
-
-        return HStack(spacing: 7) {
-            SpeakerAvatarView(index: speakerAvatarIndex(for: speaker), size: compact ? 16 : 18)
-            Text(label)
-                .font(ArcoTypography.sans(compact ? 11 : 12, weight: .medium))
-                .foregroundStyle(ArcoNativeColors.inkStrong)
-                .lineLimit(1)
+    private func historyTranscript(_ meeting: MeetingDetail, summary: String) -> some View {
+        ScrollViewReader { proxy in
+            List {
+                if !summary.isEmpty {
+                    MeetingSummaryDocument(summary: summary, compact: false, translate: translate)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                if meeting.lines.isEmpty {
+                    emptyTranscriptState(active: false)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(meeting.lines) { line in
+                    TranscriptRowView(line: line, compact: false, layout: layout, translate: translate, playback: playback)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .listStyle(.plain)
+            .contentMargins(0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 64)
+            .scrollContentBackground(.hidden)
+            .background(RecordingScrollObserver { if playback.following { playback.following = false } })
+            .onChange(of: playback.activeLineID) {
+                if playback.following, let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+            }
+            .onChange(of: playback.seekRevision) {
+                if let id = playback.activeLineID { proxy.scrollTo(id, anchor: .center) }
+            }
         }
-        .frame(height: compact ? 16 : 18)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label), \(source)")
-    }
-
-    private func localizedSpeakerLabel(_ speaker: String) -> String {
-        let number = speaker.firstMatch(of: /\d+/).map { String($0.output) } ?? "1"
-        let normalized = speaker.lowercased(with: .current)
-        if normalized.hasPrefix("remote") {
-            return translate("transcript.remoteSpeaker", ["number": number])
-        }
-        if normalized.hasPrefix("in room") {
-            return translate("transcript.roomSpeaker", ["number": number])
-        }
-        return speaker
     }
 
     private func emptyTranscriptState(active: Bool) -> some View {
@@ -388,21 +402,146 @@ public struct TranscriptPaneView: View {
     }
 }
 
+private struct TranscriptRowView: View {
+    let line: TranscriptLine
+    let compact: Bool
+    let layout: TranscriptPaneLayout
+    let translate: ArcoTranslate
+    let playback: RecordingPlayback
+    @State private var textCache = RecordingTranscriptTextCache()
+    @State private var hovering = false
+
+    var body: some View {
+        Group {
+            if compact {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        speakerLabel(line.speaker, compact: true)
+                        Spacer(minLength: 8)
+                        Text(line.timestamp)
+                            .font(ArcoTypography.mono(10))
+                            .foregroundStyle(ArcoNativeColors.inkMuted)
+                            .lineLimit(1)
+                    }
+                    Text(line.text)
+                        .font(layout == .agentOverlay ? ArcoTypography.floatingBody : ArcoTypography.sans(13))
+                        .foregroundStyle(ArcoNativeColors.inkStrong)
+                        .lineSpacing(layout == .agentOverlay ? 2.5 : 3.4)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 10)
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    speakerLabel(line.speaker, compact: false)
+                    if playback.duration > 0, line.timing != nil {
+                        let text = playbackText(line)
+                        RecordingTranscriptText(text: text, wordRanges: textCache.wordRanges, onSeek: { url in
+                            guard let ms = Double(url.lastPathComponent) else { return }
+                            playback.seek(ms / 1000)
+                            if !playback.isPlaying { playback.toggle() }
+                        }, onSeekLine: playLine)
+                        .padding(.leading, 23) // Include the native text container's 2pt inset.
+                    } else {
+                        Text(line.text)
+                            .font(ArcoTypography.body)
+                            .foregroundStyle(ArcoNativeColors.inkStrong)
+                            .lineSpacing(5.2)
+                            .padding(.leading, 25)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 76)
+                .overlay(alignment: .topLeading) {
+                    Button(action: playLine) { Text(line.timestamp) }
+                        .buttonStyle(.plain)
+                        .disabled(line.timing == nil || playback.duration == 0)
+                        .help(translate("playback.playFromHere", [:]))
+                        .font(ArcoTypography.mono(12))
+                        .foregroundStyle(ArcoNativeColors.inkMuted)
+                        .frame(width: 64, alignment: .leading)
+                        .padding(.top, 1)
+                }
+                .padding(12)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            // The fallback hit target sits behind text selection and word links,
+            // so a precise word click never also seeks to the sentence start.
+            if !compact, line.timing != nil, playback.duration > 0 {
+                Button(action: playLine) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(translate("playback.playFromHere", [:]))
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(playback.duration > 0 && playback.activeLineID == line.id
+                      ? ArcoNativeColors.surfaceSelected
+                      : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+        }
+        .onHover { if hovering != $0 { hovering = $0 } }
+        .overlay(alignment: .bottom) { ArcoNativeColors.lineThin.frame(height: 1).padding(.horizontal, 12) }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func playLine() {
+        guard let time = line.timing, playback.duration > 0 else { return }
+        playback.seek(Double(time.startMs) / 1000)
+        if !playback.isPlaying { playback.toggle() }
+    }
+
+    private func playbackText(_ line: TranscriptLine) -> AttributedString {
+        let isActive = playback.activeLineID == line.id
+        return textCache.text(for: line, seekable: playback.duration > 0,
+                              positionMs: isActive ? Int64((playback.position * 1000).rounded()) : nil)
+    }
+
+    private func speakerLabel(_ speaker: String, compact: Bool) -> some View {
+        let label = localizedSpeakerLabel(speaker)
+        let source = speaker.lowercased(with: .current).hasPrefix("remote")
+            ? translate("transcript.systemAudio", [:])
+            : translate("transcript.roomMic", [:])
+
+        return HStack(spacing: 7) {
+            SpeakerAvatarView(index: speakerAvatarIndex(for: speaker), size: compact ? 16 : 18)
+            Text(label)
+                .font(ArcoTypography.sans(compact ? 11 : 12, weight: .medium))
+                .foregroundStyle(ArcoNativeColors.inkStrong)
+                .lineLimit(1)
+        }
+        .frame(height: compact ? 16 : 18)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label), \(source)")
+    }
+
+    private func localizedSpeakerLabel(_ speaker: String) -> String {
+        let number = speaker.firstMatch(of: /\d+/).map { String($0.output) } ?? "1"
+        let normalized = speaker.lowercased(with: .current)
+        if normalized.hasPrefix("remote") {
+            return translate("transcript.remoteSpeaker", ["number": number])
+        }
+        if normalized.hasPrefix("in room") {
+            return translate("transcript.roomSpeaker", ["number": number])
+        }
+        return speaker
+    }
+
+}
+
 public typealias TranscriptPane = TranscriptPaneView
 
 private struct TranscriptBottomPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = .infinity
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct TranscriptHoverModifier: ViewModifier {
-    @State private var hovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .background(hovering ? ArcoNativeColors.surfaceHover : Color.clear)
-            .onHover { hovering = $0 }
-    }
 }
 
 private struct ListeningIndicator: View {
@@ -441,12 +580,9 @@ private struct MeetingSummaryDocument: View {
                     summaryBlock(block)
                 }
             }
-            .frame(
-                maxWidth: ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 68),
-                alignment: .leading
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, compact ? 11 : 18)
+        .padding(.horizontal, compact ? 11 : 12)
         .padding(.top, compact ? 12 : 18)
         .padding(.bottom, compact ? 14 : 20)
         .frame(maxWidth: .infinity, alignment: .leading)

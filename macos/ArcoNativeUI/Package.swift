@@ -15,6 +15,11 @@ let package = Package(
     name: "ArcoNativeUI",
     platforms: [.macOS(.v14)],
     products: [
+        .executable(name: "ArcoMeetingManagementContractTests", targets: ["ArcoMeetingManagementContractTests"]),
+        .executable(name: "ArcoMeetingActionsContractTests", targets: ["ArcoMeetingActionsContractTests"]),
+        .executable(name: "ArcoMicrophoneContractTests", targets: ["ArcoMicrophoneContractTests"]),
+        .executable(name: "ArcoRecordingPlaybackContractTests", targets: ["ArcoRecordingPlaybackContractTests"]),
+        .executable(name: "ArcoSettingsControlContractTests", targets: ["ArcoSettingsControlContractTests"]),
         .executable(name: "ArcoAudioArchiveContractTests", targets: ["ArcoAudioArchiveContractTests"]),
         .executable(name: "ArcoProviderPresentationContractTests", targets: ["ArcoProviderPresentationContractTests"]),
         .library(name: "ArcoNativeUI", type: .static, targets: ["ArcoNativeUI"]),
@@ -34,10 +39,16 @@ let package = Package(
         .executable(name: "ArcoMeetingAwarenessContractTests", targets: ["ArcoMeetingAwarenessContractTests"]),
     ],
     targets: [
+        .executableTarget(name: "ArcoMeetingManagementContractTests", dependencies: ["ArcoNativeUI"]),
+        .executableTarget(name: "ArcoMeetingActionsContractTests", dependencies: ["ArcoNativeUI"]),
+        .executableTarget(name: "ArcoMicrophoneContractTests", dependencies: ["ArcoNativeUI"]),
+        .executableTarget(name: "ArcoRecordingPlaybackContractTests", dependencies: ["ArcoNativeUI"]),
+        .executableTarget(name: "ArcoSettingsControlContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoAudioArchiveContractTests", dependencies: ["ArcoNativeUI"]),
         .executableTarget(name: "ArcoProviderPresentationContractTests", dependencies: ["ArcoNativeUI"]),
         .target(
             name: "ArcoNativeUI",
+            resources: [.copy("Resources/Fonts"), .copy("Resources/MeetingAudioGuide"), .copy("Resources/Aura")],
             linkerSettings: [
                 .linkedFramework("Security"),
                 .unsafeFlags(["-L", rustLibraryDirectory, "-larco_core"]),

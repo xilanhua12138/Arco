@@ -8,7 +8,7 @@ use arco_core::gpt_live::{
     sideband_auth_headers,
 };
 use arco_core::gpt_live_oauth::{
-    GptLiveCredentialStorage, GptLiveCredentials, MacOSGptLiveCredentialStorage,
+    FileGptLiveCredentialStorage, GptLiveCredentialStorage, GptLiveCredentials,
     OPENAI_OAUTH_CALLBACK_HOST, TokenResult, UreqOAuthTokenTransport,
     create_default_authorization_flow, exchange_token_with_transport, extract_auth_identity,
     load_credentials_from, parse_callback_url, refresh_token_with_transport, save_credentials_to,
@@ -16,7 +16,7 @@ use arco_core::gpt_live_oauth::{
 use arco_gpt_live::{
     GptLiveWebRtcPeer, LIVE_BETA_ACK, OPUS_FRAME_SAMPLES_PER_CHANNEL, SpeechEnergyGate,
     TranscriptMarkerGate, build_sideband_request, callback_url_from_http_request,
-    finish_live_handshake, require_beta_ack, resolve_https_proxy,
+    finish_live_handshake, require_beta_ack, resolve_sideband_proxy,
 };
 use async_http_proxy::{http_connect_tokio, http_connect_tokio_with_basic_auth};
 use futures_util::{SinkExt, StreamExt};
@@ -28,8 +28,18 @@ const CALLBACK_WAIT: Duration = Duration::from_secs(180);
 const NETWORK_WAIT: Duration = Duration::from_secs(15);
 const LIVE_PROBE_MARKER: &str = "Arco GPT Live transport test OK";
 
+fn main() {
+    if matches!(env::args().nth(1).as_deref(), Some("live" | "login"))
+        && let Err(error) = arco_core::network_environment::inherit_login_shell()
+    {
+        eprintln!("GPT Live Beta probe failed: {error}");
+        std::process::exit(1);
+    }
+    run_async();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_async() {
     if let Err(error) = run().await {
         eprintln!("GPT Live Beta probe failed: {error}");
         std::process::exit(1);
@@ -119,11 +129,11 @@ async fn run_login() -> Result<(), String> {
         now_ms()?,
     );
     let credentials = credentials_from_login_result(token)?;
-    save_credentials_to(&MacOSGptLiveCredentialStorage, &credentials)?;
+    save_credentials_to(&FileGptLiveCredentialStorage, &credentials)?;
     let identity = credentials
         .email()
         .unwrap_or_else(|| credentials.account_id());
-    println!("OpenAI sign-in saved in macOS Keychain for {identity}.");
+    println!("OpenAI sign-in saved in ~/.arco/credentials.json for {identity}.");
     println!(
         "This only enables the Beta credential; GPT Live remains controlled by Arco's Beta toggle."
     );
@@ -232,7 +242,7 @@ fn credentials_from_login_result(result: TokenResult) -> Result<GptLiveCredentia
 }
 
 fn show_status() -> Result<(), String> {
-    let Some(credentials) = load_credentials_from(&MacOSGptLiveCredentialStorage)? else {
+    let Some(credentials) = load_credentials_from(&FileGptLiveCredentialStorage)? else {
         println!("GPT Live Beta: not signed in.");
         return Ok(());
     };
@@ -254,13 +264,13 @@ fn show_status() -> Result<(), String> {
 }
 
 fn logout() -> Result<(), String> {
-    MacOSGptLiveCredentialStorage.delete()?;
-    println!("GPT Live Beta OpenAI sign-in was removed from macOS Keychain.");
+    FileGptLiveCredentialStorage.delete()?;
+    println!("GPT Live Beta OpenAI sign-in was removed from ~/.arco/credentials.json.");
     Ok(())
 }
 
 async fn run_live_handshake() -> Result<(), String> {
-    let storage = MacOSGptLiveCredentialStorage;
+    let storage = FileGptLiveCredentialStorage;
     let credentials = load_credentials_from(&storage)?
         .ok_or_else(|| "run `arco-gpt-live-probe login` first".to_string())?;
     let credentials = refresh_if_needed(credentials)?;
@@ -376,7 +386,7 @@ async fn wait_for_sideband_start(
     config.max_message_size = Some(16 * 1024 * 1024);
     config.max_frame_size = Some(16 * 1024 * 1024);
     let connect = async {
-        if let Some(proxy) = resolve_https_proxy("api.openai.com")? {
+        if let Some(proxy) = resolve_sideband_proxy(sideband_url)? {
             let mut stream = TcpStream::connect((proxy.host(), proxy.port()))
                 .await
                 .map_err(|error| {

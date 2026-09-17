@@ -23,8 +23,6 @@ pub const OPENAI_OAUTH_CALLBACK_HOST: &str = "localhost";
 const TOKEN_ERROR_MAX_CHARS: usize = 500;
 const TOKEN_RESPONSE_MAX_BYTES: usize = 64 * 1024;
 const CREDENTIAL_BLOB_MAX_BYTES: usize = 64 * 1024;
-const KEYCHAIN_SERVICE: &str = "app.arco.desktop.gpt-live-beta.v1";
-const KEYCHAIN_ACCOUNT: &str = "oauth";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizationFlow {
@@ -340,14 +338,16 @@ impl Default for UreqOAuthTokenTransport {
     }
 }
 
-fn build_openai_ureq_agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .redirects(0)
-        .try_proxy_from_env(true)
-        .timeout_connect(timeout)
-        .timeout_read(timeout)
-        .timeout_write(timeout)
-        .build()
+fn build_openai_ureq_agent(timeout: Duration) -> Result<ureq::Agent, String> {
+    Ok(crate::network_proxy::configure_http_agent(
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .timeout_write(timeout),
+        OPENAI_OAUTH_TOKEN_URL,
+    )?
+    .build())
 }
 
 impl OAuthTokenTransport for UreqOAuthTokenTransport {
@@ -355,7 +355,7 @@ impl OAuthTokenTransport for UreqOAuthTokenTransport {
         if request.url != OPENAI_OAUTH_TOKEN_URL {
             return Err("OpenAI OAuth transport refused an unexpected URL".into());
         }
-        let agent = build_openai_ureq_agent(self.timeout);
+        let agent = build_openai_ureq_agent(self.timeout)?;
         let mut outgoing = agent.post(&request.url);
         for (name, value) in &request.headers {
             outgoing = outgoing.set(name, value);
@@ -650,12 +650,14 @@ pub fn load_credentials_from<T: GptLiveCredentialStorage>(
         return Ok(None);
     };
     if bytes.len() > CREDENTIAL_BLOB_MAX_BYTES {
-        return Err("OpenAI OAuth credentials in Keychain are too large".into());
+        return Err("OpenAI OAuth credentials in credentials.json are too large".into());
     }
     let stored = serde_json::from_slice::<StoredGptLiveCredentials>(&bytes)
-        .map_err(|_| "OpenAI OAuth credentials in Keychain are invalid".to_string())?;
+        .map_err(|_| "OpenAI OAuth credentials in credentials.json are invalid".to_string())?;
     if stored.version != 1 {
-        return Err("OpenAI OAuth credentials in Keychain use an unsupported version".into());
+        return Err(
+            "OpenAI OAuth credentials in credentials.json use an unsupported version".into(),
+        );
     }
     GptLiveCredentials::new(
         &stored.access_token,
@@ -669,66 +671,26 @@ pub fn load_credentials_from<T: GptLiveCredentialStorage>(
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MacOSGptLiveCredentialStorage;
+pub struct FileGptLiveCredentialStorage;
 
-impl GptLiveCredentialStorage for MacOSGptLiveCredentialStorage {
+impl GptLiveCredentialStorage for FileGptLiveCredentialStorage {
     fn load(&self) -> Result<Option<Vec<u8>>, String> {
-        #[cfg(target_os = "macos")]
-        {
-            match security_framework::passwords::get_generic_password(
-                KEYCHAIN_SERVICE,
-                KEYCHAIN_ACCOUNT,
-            ) {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(error) if error.code() == -25300 => Ok(None),
-                Err(error) => Err(format!(
-                    "could not read OpenAI OAuth credentials from Keychain: {error}"
-                )),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(None)
-        }
+        crate::credential_store::CredentialStore::discover()?
+            .load::<serde_json::Value>("gptLive")?
+            .map(|value| {
+                serde_json::to_vec(&value).map_err(|_| "Cannot encode OAuth credentials".into())
+            })
+            .transpose()
     }
 
     fn save(&self, value: &[u8]) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        {
-            use security_framework::os::macos::keychain::SecKeychain;
-            let keychain = SecKeychain::default()
-                .map_err(|error| format!("could not open the login Keychain: {error}"))?;
-            keychain
-                .set_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, value)
-                .map_err(|error| {
-                    format!("could not save OpenAI OAuth credentials to Keychain: {error}")
-                })
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = value;
-            Err("Arco stores OpenAI OAuth credentials in macOS Keychain.".into())
-        }
+        let value: serde_json::Value =
+            serde_json::from_slice(value).map_err(|_| "Invalid OAuth credentials")?;
+        crate::credential_store::CredentialStore::discover()?.save("gptLive", &value)
     }
 
     fn delete(&self) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        {
-            match security_framework::passwords::delete_generic_password(
-                KEYCHAIN_SERVICE,
-                KEYCHAIN_ACCOUNT,
-            ) {
-                Ok(()) => Ok(()),
-                Err(error) if error.code() == -25300 => Ok(()),
-                Err(error) => Err(format!(
-                    "could not remove OpenAI OAuth credentials from Keychain: {error}"
-                )),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err("Arco stores OpenAI OAuth credentials in macOS Keychain.".into())
-        }
+        crate::credential_store::remove("gptLive")
     }
 }
 
@@ -859,7 +821,7 @@ mod tests {
         }
         std::env::set_var("HTTPS_PROXY", "http://proxy.example.test:8765");
 
-        let agent = build_openai_ureq_agent(Duration::from_secs(1));
+        let agent = build_openai_ureq_agent(Duration::from_secs(1)).unwrap();
         let debug = format!("{agent:?}");
 
         for (key, value) in previous {

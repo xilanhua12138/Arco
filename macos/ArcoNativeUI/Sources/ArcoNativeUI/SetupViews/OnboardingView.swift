@@ -8,6 +8,7 @@ public struct OnboardingView: View {
 
     private let shortcutTestCount: Int
     private let translate: ArcoTranslate
+    private let meetingAudioSetup: MeetingAudioSetupModel?
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     public init(
@@ -15,12 +16,14 @@ public struct OnboardingView: View {
         shortcutViewModel: ShortcutRecorderViewModel,
         locale: Binding<String>,
         shortcutTestCount: Int,
+        meetingAudioSetup: MeetingAudioSetupModel? = nil,
         translate: @escaping ArcoTranslate = ArcoTranslations.english
     ) {
         self.viewModel = viewModel
         self.shortcutViewModel = shortcutViewModel
         _locale = locale
         self.shortcutTestCount = shortcutTestCount
+        self.meetingAudioSetup = meetingAudioSetup
         self.translate = translate
     }
 
@@ -209,7 +212,9 @@ public struct OnboardingView: View {
                 .frame(height: 72)
 
                 VStack(spacing: 0) {
-                    stepContent
+                    ScrollView {
+                        stepContent
+                    }
                         .frame(maxWidth: .infinity, minHeight: 392, alignment: .topLeading)
 
                     if viewModel.step < 5 {
@@ -438,18 +443,13 @@ public struct OnboardingView: View {
                             .font(ArcoTypography.small)
                             .foregroundStyle(ArcoNativeColors.inkMuted)
                         Spacer()
-                        Picker("", selection: Binding(
-                            get: { viewModel.secondary },
-                            set: { viewModel.selectSecondary($0) }
-                        )) {
-                            Text(translate("common.none", [:])).tag(ProviderID?.none)
-                            ForEach(ProviderID.allCases.filter { $0 != viewModel.primary && viewModel.runtime(for: $0)?.available == true }, id: \.self) { provider in
-                                Text(provider.displayName).tag(Optional(provider))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 160)
-                        .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                        SettingsSelect(title: translate("onboarding.secondary", [:]), noResults: translate("common.noOptions", [:]),
+                            selection: viewModel.secondary?.rawValue ?? "none",
+                            options: [SettingsSelectOption(id: "none", label: translate("common.none", [:]))]
+                                + ProviderID.allCases.filter { $0 != viewModel.primary && viewModel.runtime(for: $0)?.available == true }
+                                    .map { SettingsSelectOption(id: $0.rawValue, label: $0.displayName) },
+                            onSelect: { viewModel.selectSecondary(ProviderID(rawValue: $0)) })
+                            .frame(width: 160)
                     }
                     .padding(.top, 9)
                 }
@@ -472,16 +472,14 @@ public struct OnboardingView: View {
             HStack {
                 Text(translate("settings.language", [:])).font(ArcoTypography.metadata)
                 Spacer()
-                Picker("", selection: Binding(
-                    get: { viewModel.transcription.asr.language },
-                    set: { viewModel.changeLanguage($0) }
-                )) {
-                    Text("简体中文").tag("zh-CN")
-                    Text("English").tag("en-US")
-                    Text(translate("common.automatic", [:])).tag("auto")
-                }
-                .labelsHidden().frame(width: 150)
-                .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                SettingsSelect(title: translate("settings.language", [:]), noResults: translate("common.noOptions", [:]),
+                    selection: viewModel.transcription.asr.language,
+                    options: [
+                        SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                        SettingsSelectOption(id: "en-US", label: "English"),
+                        SettingsSelectOption(id: "auto", label: translate("common.automatic", [:])),
+                    ], onSelect: { viewModel.changeLanguage($0) })
+                    .frame(width: 180)
             }
             .padding(.top, 18)
 
@@ -562,16 +560,11 @@ public struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 12) {
                     Text(translate(titleKey, [:])).font(ArcoTypography.sans(11, weight: .semibold)).frame(width: 142, alignment: .leading)
-                    Picker("", selection: Binding(get: { selectedID }, set: { value in
-                        onSelect(value)
-                    })) {
-                        ForEach(models) { model in
-                            Text([model.label, model.downloadSize].compactMap { $0 }.joined(separator: " · ")).tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(minWidth: 220)
-                    .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 8), interactive: true)
+                    SettingsSelect(title: translate(titleKey, [:]), noResults: translate("common.noOptions", [:]),
+                        selection: selectedID, options: models.map {
+                            SettingsSelectOption(id: $0.id, label: [$0.label, $0.downloadSize].compactMap { $0 }.joined(separator: " · "))
+                        }, onSelect: onSelect)
+                        .frame(minWidth: 220)
                     }
                     Text(translate(selected.detailKey, [:]))
                         .font(ArcoTypography.tiny)
@@ -670,6 +663,11 @@ public struct OnboardingView: View {
                     .font(ArcoTypography.small)
                     .foregroundStyle(ArcoNativeColors.success)
                     .padding(.top, 14)
+            }
+            if let meetingAudioSetup {
+                MeetingAudioSetupView(model: meetingAudioSetup, onboarding: true,
+                    locked: viewModel.workingAudioSource != nil, translate: translate)
+                    .padding(.top, 20)
             }
             if viewModel.audioChecks[.system]?.restartRequired == true {
                 VStack(alignment: .leading, spacing: 0) {
@@ -818,25 +816,18 @@ public struct OnboardingView: View {
                 .scaledToFit()
                 .frame(width: 28, height: 28)
             Text("Arco")
-                .font(ArcoTypography.sans(17, weight: .bold))
-                .tracking(-0.34)
+                .font(ArcoTypography.wordmark(17))
                 .foregroundStyle(Color(red: 21 / 255, green: 23 / 255, blue: 25 / 255))
         }
     }
 
     private var languagePicker: some View {
-        Picker(translate("settings.appLanguage", [:]), selection: $locale) {
-            Text("简体中文").tag("zh-CN")
-            Text("English").tag("en")
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .font(ArcoTypography.sans(12))
-        .frame(minWidth: 112)
-        .frame(minHeight: 34)
-        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 48 / 255, green: 58 / 255, blue: 66 / 255).opacity(0.10)))
-        .arcoLiquidGlass(in: RoundedRectangle(cornerRadius: 9), interactive: true)
+        SettingsSelect(title: translate("settings.appLanguage", [:]), noResults: translate("common.noOptions", [:]),
+            selection: locale,
+            options: [SettingsSelectOption(id: "zh-CN", label: "简体中文"),
+                      SettingsSelectOption(id: "en", label: "English")],
+            onSelect: { locale = $0 })
+            .frame(width: 144)
     }
 
     private var stepKeys: [String] {

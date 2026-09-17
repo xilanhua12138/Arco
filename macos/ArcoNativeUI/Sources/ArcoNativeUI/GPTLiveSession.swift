@@ -13,13 +13,25 @@ public enum GPTLiveSessionPhase: String, Equatable, Sendable {
 public struct GPTLiveSessionStatus: Equatable, Sendable {
     public var phase: GPTLiveSessionPhase
     public var message: String?
+    public var activity: GPTLiveActivity
+    public var audioLevel: Double
+    public var meetingOutput: Bool
 
-    public init(phase: GPTLiveSessionPhase, message: String? = nil) {
+    public init(phase: GPTLiveSessionPhase, message: String? = nil,
+                activity: GPTLiveActivity = .listening, audioLevel: Double = 0,
+                meetingOutput: Bool = false) {
         self.phase = phase
         self.message = message
+        self.activity = activity
+        self.audioLevel = audioLevel.isFinite ? min(1, max(0, audioLevel)) : 0
+        self.meetingOutput = meetingOutput
     }
 
     public static let idle = GPTLiveSessionStatus(phase: .idle)
+}
+
+public enum GPTLiveActivity: String, Equatable, Sendable {
+    case listening, thinking, speaking
 }
 
 public struct GPTLiveSessionRequest: Equatable, Sendable {
@@ -87,16 +99,23 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
         case connecting
         case connected
         case speaking
+        case listening
+        case thinking
         case disconnecting
         case error
     }
 
     public let state: State
     public let message: String?
+    public let audioLevel: Double
+    public let meetingOutput: Bool
 
-    public init(state: State, message: String? = nil) {
+    public init(state: State, message: String? = nil, audioLevel: Double = 0,
+                meetingOutput: Bool = false) {
         self.state = state
         self.message = message
+        self.audioLevel = audioLevel
+        self.meetingOutput = meetingOutput
     }
 
     public static func parse(line: String) -> GPTLiveWorkerStatus? {
@@ -107,23 +126,33 @@ public struct GPTLiveWorkerStatus: Equatable, Sendable {
               let state = State(rawValue: envelope.state),
               envelope.message?.utf8.count ?? 0 <= 1_024
         else { return nil }
-        return GPTLiveWorkerStatus(state: state, message: envelope.message)
+        let level = envelope.audioLevel ?? 0
+        guard level.isFinite, (0...1).contains(level) else { return nil }
+        return GPTLiveWorkerStatus(state: state, message: envelope.message,
+                                  audioLevel: level, meetingOutput: envelope.meetingOutput ?? false)
     }
 
     private struct Envelope: Decodable {
         let type: String
         let state: String
         let message: String?
+        let audioLevel: Double?
+        let meetingOutput: Bool?
     }
 }
 
 /// A connected GPT Live worker owned by Arco. The UI only holds this bounded
-/// lifecycle handle; OAuth credentials remain in Keychain and never cross the
+/// lifecycle handle; OAuth credentials remain in the Rust credential store and never cross the
 /// Swift process boundary.
 @MainActor
 public protocol GPTLiveSessionHandle: AnyObject {
     func waitUntilExit() async throws
     func stop() async
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void)
+}
+
+public extension GPTLiveSessionHandle {
+    func observeStatus(_ handler: @escaping @MainActor (GPTLiveWorkerStatus) -> Void) {}
 }
 
 public enum GPTLiveSessionLaunchError: LocalizedError {
@@ -142,8 +171,8 @@ public enum GPTLiveButtonPresentation {
     public static func labelKey(for phase: GPTLiveSessionPhase) -> String {
         switch phase {
         case .idle: "agent.gptLiveConnect"
-        case .connecting: "agent.gptLiveCancel"
-        case .connected: "agent.gptLiveListening"
+        case .connecting: "agent.voiceJoining"
+        case .connected: "agent.voicePresent"
         case .disconnecting: "agent.gptLiveDisconnecting"
         case .failed: "agent.gptLiveRetry"
         }
@@ -152,10 +181,16 @@ public enum GPTLiveButtonPresentation {
     public static func helpKey(for phase: GPTLiveSessionPhase) -> String {
         switch phase {
         case .idle, .failed: "agent.gptLiveConnectHelp"
-        case .connecting: "agent.gptLiveCancelHelp"
-        case .connected: "agent.gptLiveDisconnectHelp"
+        case .connecting: "agent.voiceShowHelp"
+        case .connected: "agent.voiceShowHelp"
         case .disconnecting: "agent.gptLiveDisconnectingHelp"
         }
+    }
+
+    public static func maximumRevealWidth(translate: ArcoTranslate, compact: Bool = true) -> CGFloat {
+        [GPTLiveSessionPhase.idle, .connecting, .connected, .disconnecting, .failed]
+            .map { ArcoMeetingActionButton.labelRevealWidth(translate(labelKey(for: $0), [:]), compact: compact) }
+            .max() ?? 0
     }
 
     public static func isEnabled(for phase: GPTLiveSessionPhase) -> Bool {
@@ -163,107 +198,41 @@ public enum GPTLiveButtonPresentation {
     }
 }
 
-/// Compact, explicit opt-in control shared by the docked and floating Ask Arco
-/// surfaces. Merely opening either surface never starts a voice session.
+/// The voice entry opens the participant; leaving remains a separate action.
 public struct GPTLiveBetaButton: View {
     public let status: GPTLiveSessionStatus
     public let translate: ArcoTranslate
+    public let compact: Bool
+    public let iconOnly: Bool
+    public let revealLabel: Bool
+    public let onRevealInteraction: (@MainActor (Bool) -> Void)?
     public let action: @MainActor () -> Void
 
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    public init(
-        status: GPTLiveSessionStatus,
-        translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        action: @escaping @MainActor () -> Void
-    ) {
-        self.status = status
-        self.translate = translate
-        self.action = action
+    public init(status: GPTLiveSessionStatus, translate: @escaping ArcoTranslate = ArcoTranslations.english,
+                compact: Bool = false, iconOnly: Bool = false, revealLabel: Bool = false,
+                onRevealInteraction: (@MainActor (Bool) -> Void)? = nil, action: @escaping @MainActor () -> Void) {
+        self.status = status; self.translate = translate; self.compact = compact; self.iconOnly = iconOnly; self.revealLabel = revealLabel
+        self.onRevealInteraction = onRevealInteraction; self.action = action
     }
 
     public var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                if status.phase == .connecting || status.phase == .disconnecting {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(foreground)
-                        .frame(width: 13, height: 13)
-                } else {
-                    ArcoLucideIcon(.audioLines, size: 13, strokeWidth: 2.2)
-                        .frame(width: 13, height: 13)
-                }
-                Text(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]))
-                    .font(ArcoTypography.sans(11, weight: .semibold))
-                    .lineLimit(1)
-                Text(translate("settings.betaBadge", [:]))
-                    .font(ArcoTypography.sans(8, weight: .bold))
-                    .tracking(0.45)
-                    .opacity(status.phase == .connected ? 0.86 : 0.68)
-            }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(border, lineWidth: 0.75)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(ArcoPressFeedbackButtonStyle(pressedScale: 0.96))
+        ArcoMeetingActionButton(
+            title: translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]),
+            symbol: "person.wave.2",
+            active: status.phase == .connected,
+            busy: status.phase == .connecting || status.phase == .disconnecting,
+            failed: status.phase == .failed, compact: compact, iconOnly: iconOnly,
+            statusBadge: status.phase == .connected ? "checkmark.circle.fill"
+                : (status.phase == .failed ? "exclamationmark.circle.fill" : nil),
+            revealLabel: revealLabel, revealWidth: GPTLiveButtonPresentation.maximumRevealWidth(translate: translate, compact: compact),
+            onRevealInteraction: onRevealInteraction, action: action
+        )
         .disabled(!GPTLiveButtonPresentation.isEnabled(for: status.phase))
-        .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovering)
-        .animation(reduceMotion ? nil : ArcoMotion.state, value: status.phase)
-        .accessibilityLabel(
-            translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:])
-        )
-        .accessibilityHint(
-            status.message
-                ?? translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:])
-        )
-        .help(
-            status.message
-                ?? translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:])
-        )
-    }
-
-    private var foreground: Color {
-        switch status.phase {
-        case .connected:
-            ArcoNativeColors.actionInk
-        case .failed:
-            ArcoNativeColors.warning
-        case .idle, .connecting, .disconnecting:
-            ArcoNativeColors.inkStrong
-        }
-    }
-
-    private var background: Color {
-        switch status.phase {
-        case .connected:
-            hovering ? ArcoNativeColors.actionHover : ArcoNativeColors.action
-        case .failed:
-            ArcoNativeColors.warning.opacity(hovering ? 0.15 : 0.10)
-        case .connecting, .disconnecting:
-            ArcoNativeColors.brandSoft.opacity(hovering ? 1.0 : 0.78)
-        case .idle:
-            hovering ? ArcoNativeColors.surfaceHover : ArcoNativeColors.surfaceSubtle
-        }
-    }
-
-    private var border: Color {
-        switch status.phase {
-        case .connected:
-            Color.clear
-        case .failed:
-            ArcoNativeColors.warning.opacity(0.28)
-        case .idle, .connecting, .disconnecting:
-            ArcoNativeColors.line
-        }
+        .accessibilityIdentifier("arco-voice-entry")
+        .accessibilityLabel(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]))
+        .accessibilityHint(translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
+        .help(translate(GPTLiveButtonPresentation.labelKey(for: status.phase), [:]) + "\n"
+            + translate(GPTLiveButtonPresentation.helpKey(for: status.phase), [:]))
     }
 }
 
@@ -319,7 +288,8 @@ public final class GPTLiveSessionModel: ObservableObject {
         status = .idle
     }
 
-    private func connect(request: GPTLiveSessionRequest) async {
+    public func connect(request: GPTLiveSessionRequest) async {
+        guard status.phase == .idle || status.phase == .failed else { return }
         generation += 1
         let requestGeneration = generation
         status = GPTLiveSessionStatus(phase: .connecting)
@@ -331,6 +301,16 @@ public final class GPTLiveSessionModel: ObservableObject {
             }
             handle = nextHandle
             status = GPTLiveSessionStatus(phase: .connected)
+            nextHandle.observeStatus { [weak self] update in
+                guard let self, self.generation == requestGeneration,
+                      self.status.phase == .connected else { return }
+                let activity = GPTLiveActivity(rawValue: update.state.rawValue) ?? .listening
+                let nextStatus = GPTLiveSessionStatus(
+                    phase: .connected, activity: activity,
+                    audioLevel: update.audioLevel, meetingOutput: update.meetingOutput
+                )
+                if self.status != nextStatus { self.status = nextStatus }
+            }
             monitorTask?.cancel()
             monitorTask = Task { @MainActor [weak self] in
                 do {

@@ -1,13 +1,7 @@
-use serde::Serialize;
-use std::sync::{Mutex, OnceLock};
+use serde::{Deserialize, Serialize};
 
-const KEYCHAIN_SERVICE: &str = "app.arco.desktop.doubao.v1";
-const APP_ID_ACCOUNT: &str = "app-id";
-const ACCESS_TOKEN_ACCOUNT: &str = "access-token";
-
-static SESSION_CREDENTIALS: OnceLock<Mutex<Option<DoubaoCredentials>>> = OnceLock::new();
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DoubaoCredentials {
     pub app_id: String,
     pub access_token: String,
@@ -78,7 +72,6 @@ pub async fn save_verified_credentials(
     let credentials = normalize_credentials(app_id, access_token)?;
     crate::doubao::verify_credentials(&credentials.app_id, &credentials.access_token).await?;
     store_credentials(&credentials)?;
-    cache_credentials(Some(credentials))?;
     Ok(DoubaoCredentialStatus {
         configured: true,
         verified: true,
@@ -87,119 +80,16 @@ pub async fn save_verified_credentials(
 }
 
 pub fn remove_credentials() -> Result<DoubaoCredentialStatus, String> {
-    cache_credentials(None)?;
-    #[cfg(target_os = "macos")]
-    {
-        for account in [APP_ID_ACCOUNT, ACCESS_TOKEN_ACCOUNT] {
-            match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account)
-            {
-                Ok(()) => {}
-                Err(error) if error.code() == -25300 => {}
-                Err(error) => {
-                    return Err(format!(
-                        "could not remove Doubao credentials from Keychain: {error}"
-                    ));
-                }
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        return Err("Arco stores Doubao credentials in macOS Keychain.".into());
-    }
+    crate::credential_store::remove("doubao")?;
     Ok(DoubaoCredentialStatus::missing())
 }
 
 pub fn load_credentials() -> Result<Option<DoubaoCredentials>, String> {
-    let mut cache = session_credentials()
-        .lock()
-        .map_err(|_| "the in-memory Doubao credential cache is unavailable".to_string())?;
-    if cache.is_some() {
-        return Ok(cache.clone());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let app_id = read_keychain(APP_ID_ACCOUNT)?;
-        let access_token = read_keychain(ACCESS_TOKEN_ACCOUNT)?;
-        let loaded = match (app_id, access_token) {
-            (Some(app_id), Some(access_token)) => Some(DoubaoCredentials {
-                app_id,
-                access_token,
-            }),
-            (None, None) => None,
-            _ => {
-                return Err("Doubao credentials in Keychain are incomplete. Remove them and configure Doubao again.".into());
-            }
-        };
-        if loaded.is_some() {
-            *cache = loaded.clone();
-        }
-        Ok(loaded)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(None)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn read_keychain(account: &str) -> Result<Option<String>, String> {
-    match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| "a Doubao credential in Keychain is not valid UTF-8".into()),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(error) => Err(format!(
-            "could not read Doubao credentials from Keychain: {error}"
-        )),
-    }
+    crate::credential_store::CredentialStore::discover()?.load("doubao")
 }
 
 fn store_credentials(credentials: &DoubaoCredentials) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use security_framework::os::macos::keychain::SecKeychain;
-        let keychain = SecKeychain::default()
-            .map_err(|error| format!("could not open the login Keychain: {error}"))?;
-        keychain
-            .set_generic_password(
-                KEYCHAIN_SERVICE,
-                APP_ID_ACCOUNT,
-                credentials.app_id.as_bytes(),
-            )
-            .map_err(|error| format!("could not save the Doubao App ID to Keychain: {error}"))?;
-        if let Err(error) = keychain.set_generic_password(
-            KEYCHAIN_SERVICE,
-            ACCESS_TOKEN_ACCOUNT,
-            credentials.access_token.as_bytes(),
-        ) {
-            let _ = security_framework::passwords::delete_generic_password(
-                KEYCHAIN_SERVICE,
-                APP_ID_ACCOUNT,
-            );
-            return Err(format!(
-                "could not save the Doubao Access Token to Keychain: {error}"
-            ));
-        }
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = credentials;
-        Err("Arco stores Doubao credentials in macOS Keychain.".into())
-    }
-}
-
-fn session_credentials() -> &'static Mutex<Option<DoubaoCredentials>> {
-    SESSION_CREDENTIALS.get_or_init(|| Mutex::new(None))
-}
-
-fn cache_credentials(value: Option<DoubaoCredentials>) -> Result<(), String> {
-    let mut cache = session_credentials()
-        .lock()
-        .map_err(|_| "the in-memory Doubao credential cache is unavailable".to_string())?;
-    *cache = value;
-    Ok(())
+    crate::credential_store::CredentialStore::discover()?.save("doubao", credentials)
 }
 
 #[cfg(test)]

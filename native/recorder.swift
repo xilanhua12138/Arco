@@ -1,5 +1,5 @@
 // Arco native recorder. ScreenCaptureKit captures system audio and
-// AVAudioEngine captures the microphone. Audio is emitted as standard
+// a monitored Core Audio device captures the microphone. Audio is emitted as standard
 // interleaved 16 kHz / signed 16-bit / stereo PCM on stdout:
 // channel 0 (left) = system audio, channel 1 (right) = microphone.
 //
@@ -22,9 +22,89 @@ private let realtimeBufferDuration = 0.5 // Bound stale raw capture to 500 ms.
 private let maxBufferedFrames = sampleRate * 3 // Hard 3-second FIFO per source.
 private let qualityLogIntervalTicks = 100 // 10 seconds at the 100 ms mix cadence.
 
-guard ["both", "system", "mic", "--self-test"].contains(mode) else {
+guard ["both", "system", "mic", "--self-test", "--check-microphone"].contains(mode) else {
     FileHandle.standardError.write(Data("invalid capture mode: \(mode)\n".utf8))
     exit(2)
+}
+
+private struct MicrophoneCandidate {
+    let id: AudioDeviceID
+    let uid: String
+    let transport: UInt32
+    let hasInput: Bool
+
+    var usable: Bool {
+        hasInput && uid != "BlackHole2ch_UID"
+            && transport != kAudioDeviceTransportTypeVirtual
+            && transport != kAudioDeviceTransportTypeAggregate
+    }
+}
+
+private func chooseMicrophone(preferredUIDs: [String], devices: [MicrophoneCandidate]) -> MicrophoneCandidate? {
+    let available = devices.filter(\.usable)
+    for uid in preferredUIDs where !uid.isEmpty {
+        if let match = available.first(where: { $0.uid == uid }) { return match }
+    }
+    return available.first(where: { $0.transport == kAudioDeviceTransportTypeBuiltIn }) ?? available.first
+}
+
+/// No-data is a transport failure; zero-valued frames are valid silence.
+/// All timestamps are monotonic, so sleep/wake and wall-clock changes cannot
+/// produce a negative timeout. Owned by the ordinary audio processing queue.
+private struct MicrophoneHealth {
+    var lastFramesAt: TimeInterval = 0
+    var streamStartedAt: TimeInterval = 0
+    var hasFrames = false
+
+    mutating func started(at now: TimeInterval) {
+        streamStartedAt = now
+        lastFramesAt = now
+        hasFrames = false
+    }
+
+    mutating func received(frames: Int, at now: TimeInterval) {
+        guard frames > 0 else { return }
+        lastFramesAt = now
+        hasFrames = true
+    }
+
+    func stalled(at now: TimeInterval) -> Bool { now - lastFramesAt >= 3 }
+    func stable(at now: TimeInterval) -> Bool {
+        hasFrames && !stalled(at: now) && now - streamStartedAt >= 5
+    }
+
+    static func retryDelay(failures: Int) -> TimeInterval {
+        [5.0, 10.0, 30.0][min(2, max(0, failures - 1))]
+    }
+}
+
+private enum MicrophoneRecoveryAction {
+    case keep
+    case reopen(MicrophoneCandidate?, reason: String)
+}
+
+private func microphoneRecoveryAction(
+    devices: [MicrophoneCandidate], preferredUIDs: [String], currentID: AudioDeviceID,
+    currentUID: String, hasStream: Bool, health: MicrophoneHealth,
+    formatChanged: Bool, cooldowns: inout [String: TimeInterval], now: TimeInterval
+) -> MicrophoneRecoveryAction {
+    // An enumeration glitch must not tear down a stream still sending data.
+    if devices.isEmpty, hasStream, !health.stalled(at: now) { return .keep }
+    let current = devices.first { $0.id == currentID && $0.uid == currentUID }
+    let stalled = hasStream && health.stalled(at: now)
+    if stalled, current != nil, !formatChanged { cooldowns[currentUID] = now + 30 }
+    let eligible = devices.filter { (cooldowns[$0.uid] ?? 0) <= now }
+    let desired = chooseMicrophone(preferredUIDs: preferredUIDs, devices: eligible)
+    let running = hasStream && current != nil && !stalled && !formatChanged
+    if running, desired?.id == currentID || desired == nil { return .keep }
+    return .reopen(desired, reason: stalled ? "no_frames" : formatChanged ? "format_changed" : "device_changed")
+}
+
+private func sameAudioFormat(_ a: AudioStreamBasicDescription, _ b: AudioStreamBasicDescription) -> Bool {
+    a.mSampleRate == b.mSampleRate && a.mFormatID == b.mFormatID
+        && a.mFormatFlags == b.mFormatFlags && a.mBytesPerPacket == b.mBytesPerPacket
+        && a.mFramesPerPacket == b.mFramesPerPacket && a.mBytesPerFrame == b.mBytesPerFrame
+        && a.mChannelsPerFrame == b.mChannelsPerFrame && a.mBitsPerChannel == b.mBitsPerChannel
 }
 
 private struct AudioQualitySnapshot {
@@ -116,12 +196,10 @@ private struct AudioQualityAccumulator {
 private enum EchoCancellationPolicy {
     static func shouldEnable(mode: String, setting: String?) -> Bool {
         guard mode == "both" else { return false }
-        // AVAudioEngine voice processing makes this process a system audio
-        // "ducker" on macOS, which can reduce meeting playback from other
-        // apps to near silence. Keep AEC available for explicit experiments,
-        // but never enable that system-wide side effect by default.
+        // Use software AEC3 with the system channel as reference. Never enable
+        // AVAudioEngine voice processing: it also ducks other apps' playback.
         return setting?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "on"
+            .lowercased() != "off"
     }
 }
 
@@ -290,7 +368,20 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var systemAudioConsumer: OpaquePointer?
     private var microphoneAudioProducer: OpaquePointer?
     private var microphoneAudioConsumer: OpaquePointer?
-    private var micEngine: AVAudioEngine?
+    private var microphoneDeviceID = AudioDeviceID(kAudioObjectUnknown)
+    private var microphoneIOProcID: AudioDeviceIOProcID?
+    private var microphoneFormat = AudioStreamBasicDescription()
+    private var microphoneUID = ""
+    private var microphoneMonitor: DispatchSourceTimer?
+    private let microphoneLifecycleLock = NSRecursiveLock()
+    private var microphoneListeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    private var microphoneRetryAt: TimeInterval = 0
+    private var microphoneFailures = 0
+    private var microphoneCooldowns: [String: TimeInterval] = [:]
+    // HAL may reject unregistering an already-vanished Bluetooth device. Keep
+    // its callback context alive until process exit, with a strict upper bound.
+    private var retiredMicrophoneRuntimes: [(OpaquePointer?, OpaquePointer?)] = []
+    private var microphoneHealth = MicrophoneHealth() // processing queue only
     private var mixTimer: DispatchSourceTimer?
     private var parentMonitor: DispatchSourceTimer?
     private var terminationSignalSources: [DispatchSourceSignal] = []
@@ -304,8 +395,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var interleavedOutput = [Int16](repeating: 0, count: frameSize * 2)
     private var systemQuality = AudioQualityAccumulator()
     private var microphoneQuality = AudioQualityAccumulator()
+    private var rawMicrophoneQuality = AudioQualityAccumulator()
     private var qualityTick = 0
     private var microphoneAECEnabled = false
+    private var echoCanceller: OpaquePointer?
     private var loggedFormats = Set<String>()
     private var systemCaptureStarted = !useSystem
     private var microphoneCaptureStarted = !useMic
@@ -313,8 +406,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     private var hasStopped = false
     private let archive = AsyncMeetingAudioArchive(environment: ProcessInfo.processInfo.environment)
     private let output = FileHandle.standardOutput
-    private let outputQueue = DispatchQueue(label: "app.arco.recorder.stdout")
-    private let outputWriteGate = DispatchSemaphore(value: 1)
+    private var pcmOutput: RecorderPCMOutput?
 
     override init() {
         super.init()
@@ -323,10 +415,23 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
     func start() {
         installTerminationHandlers()
+        do {
+            pcmOutput = try RecorderPCMOutput(descriptor: output.fileDescriptor) { [weak self] reason in
+                self?.lifecycleQueue.async { [weak self] in
+                    self?.stopAndExit(1, reason: reason)
+                }
+            }
+        } catch {
+            stopAndExit(1, reason: "could not initialize audio output: \(error)")
+        }
         startParentMonitor()
+        configureEchoCancellation()
         startMixTimer()
         if useMic {
-            startMicrophoneCapture()
+            lifecycleQueue.sync {
+                startMicrophoneCapture()
+                startMicrophoneMonitor()
+            }
         }
         if useSystem {
             startSystemCapture()
@@ -652,68 +757,190 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         markSystemCaptureStarted()
     }
 
-    private func startMicrophoneCapture() {
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        configureMicrophone(input)
-        let aecSetting = ProcessInfo.processInfo.environment["ARCO_MIC_ECHO_CANCELLATION"]
-        if EchoCancellationPolicy.shouldEnable(mode: mode, setting: aecSetting) {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                // Platform AEC is useful for speaker leakage; avoid adding a
-                // second gain/noise-processing stage before Deepgram.
-                input.isVoiceProcessingAGCEnabled = false
-                microphoneAECEnabled = true
-                log("microphone platform echo cancellation enabled (AGC disabled)")
-            } catch {
-                microphoneAECEnabled = false
-                log("microphone echo cancellation unavailable; continuing raw: \(error)")
-            }
-        } else {
+    private func configureEchoCancellation() {
+        let setting = ProcessInfo.processInfo.environment["ARCO_MIC_ECHO_CANCELLATION"]
+        guard EchoCancellationPolicy.shouldEnable(mode: mode, setting: setting) else {
             log("microphone echo cancellation bypassed (mode=\(mode))")
+            return
         }
-        let format = input.outputFormat(forBus: 0)
-        let channelCount = max(1, Int(format.channelCount))
-        log(
-            "microphone format sampleRate=\(format.sampleRate) "
-                + "channels=\(channelCount)"
-        )
-        let streamDescription = format.streamDescription
-        let audioRuntime = createAudioRuntime(
-            format: streamDescription.pointee,
-            source: "microphone"
-        )
-        microphoneAudioProducer = audioRuntime.producer
-        microphoneAudioConsumer = audioRuntime.consumer
-        let producer = audioRuntime.producer
-        input.installTap(
-            onBus: 0,
-            bufferSize: 4_800,
-            format: format
-        ) { buffer, _ in
-            guard let channelData = buffer.floatChannelData else {
+        let status = arco_aec_create(&echoCanceller)
+        microphoneAECEnabled = status == 0 && echoCanceller != nil
+        if microphoneAECEnabled {
+            log("microphone software echo cancellation enabled (WebRTC AEC3; playback unchanged)")
+        } else {
+            log("echo cancellation unavailable; continuing raw: \(status)")
+        }
+    }
+
+    // Called only from the normal processing queue, or after it has stopped.
+    private func applyEchoCancellation(to samples: inout [Int16]) {
+        guard let echoCanceller else { return }
+        let status = samples.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return Int32(0) }
+            return arco_aec_process(echoCanceller, base, UInt32(buffer.count / 2))
+        }
+        if status != 0 {
+            log("echo cancellation failed; continuing raw: \(status)")
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+            microphoneAECEnabled = false
+        }
+    }
+
+    private func resetEchoCancellation() {
+        guard let echoCanceller else { return }
+        if arco_aec_reset(echoCanceller) != 0 {
+            log("echo cancellation reset failed; continuing raw")
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+            microphoneAECEnabled = false
+        }
+    }
+
+    private func startMicrophoneCapture() {
+        var devices = Self.microphoneCandidates()
+        let preferred = preferredMicrophoneUIDs()
+        guard chooseMicrophone(preferredUIDs: preferred, devices: devices) != nil else {
+            fail("no physical microphone is connected; choose a microphone in macOS")
+        }
+        while let device = chooseMicrophone(preferredUIDs: preferred, devices: devices) {
+            if openMicrophone(device.id, waitForFormat: true) {
+                markMicrophoneCaptureStarted()
                 return
             }
-            let frames = Int(buffer.frameLength)
-            guard frames > 0 else { return }
-            let channels = UnsafeRawPointer(channelData)
-                .assumingMemoryBound(to: UnsafePointer<Float>.self)
-            _ = arco_audio_rt_push_planar_f32(
-                producer,
-                channels,
-                UInt32(channelCount),
-                UInt32(frames)
-            )
+            microphoneCooldowns[device.uid] = ProcessInfo.processInfo.systemUptime + 30
+            devices.removeAll { $0.id == device.id }
         }
+        fail("could not start any connected physical microphone")
+    }
 
-        do {
-            engine.prepare()
-            try engine.start()
-            micEngine = engine
-            log("microphone capture started")
-            markMicrophoneCaptureStarted()
-        } catch {
-            fail("could not start microphone capture: \(error)")
+    /// Control queue only. A failed reopen must not terminate the system stream.
+    private func openMicrophone(_ device: AudioDeviceID, waitForFormat: Bool = false) -> Bool {
+        guard var format = waitForFormat ? Self.waitForStreamFormat(for: device) : Self.streamFormat(for: device),
+              format.mSampleRate > 0, format.mChannelsPerFrame > 0 else { return false }
+        var producer: OpaquePointer?
+        var consumer: OpaquePointer?
+        let status = arco_audio_rt_source_create(&format, Double(sampleRate),
+            UInt32(max(4096, Int(ceil(format.mSampleRate * realtimeBufferDuration)))), &producer, &consumer)
+        guard status == 0, let producer, let consumer else {
+            log("microphone runtime creation failed: \(status)")
+            return false
+        }
+        // Publish before starting callbacks, under the consumer's queue.
+        queue.sync {
+            microphoneAudioProducer = producer
+            microphoneAudioConsumer = consumer
+            micBuffer.removeAll()
+            microphoneHealth.started(at: ProcessInfo.processInfo.systemUptime)
+            resetEchoCancellation()
+        }
+        microphoneDeviceID = device
+        microphoneUID = Self.stringProperty(kAudioDevicePropertyDeviceUID, device: device) ?? ""
+        microphoneFormat = format
+        var callback: AudioDeviceIOProcID?
+        let created = AudioDeviceCreateIOProcID(device, arco_audio_rt_io_proc,
+            UnsafeMutableRawPointer(producer), &callback)
+        guard created == noErr, let callback else {
+            log("microphone callback registration failed: \(created)")
+            closeMicrophoneForRecovery()
+            return false
+        }
+        microphoneIOProcID = callback
+        let started = AudioDeviceStart(device, callback)
+        guard started == noErr else {
+            log("microphone start failed: \(started)")
+            closeMicrophoneForRecovery()
+            return false
+        }
+        let name = Self.stringProperty(kAudioObjectPropertyName, device: device) ?? microphoneUID
+        log("ARCO_MICROPHONE_STATE state=starting device=\(name) sampleRate=\(format.mSampleRate) channels=\(format.mChannelsPerFrame)")
+        return true
+    }
+
+    private func closeMicrophoneForRecovery() {
+        var quiesced = true
+        if let callback = microphoneIOProcID {
+            _ = AudioDeviceStop(microphoneDeviceID, callback)
+            let destroyed = AudioDeviceDestroyIOProcID(microphoneDeviceID, callback)
+            quiesced = destroyed == noErr
+            microphoneIOProcID = nil
+        }
+        let handles = queue.sync { () -> (OpaquePointer?, OpaquePointer?) in
+            let result = (microphoneAudioProducer, microphoneAudioConsumer)
+            microphoneAudioProducer = nil
+            microphoneAudioConsumer = nil
+            micBuffer.removeAll()
+            resetEchoCancellation()
+            return result
+        }
+        if quiesced {
+            if let producer = handles.0 { arco_audio_rt_producer_destroy(producer) }
+            if let consumer = handles.1 { arco_audio_rt_consumer_destroy(consumer) }
+        } else {
+            retiredMicrophoneRuntimes.append(handles)
+            log("retaining vanished microphone callback context until process exit")
+            if retiredMicrophoneRuntimes.count >= 8 {
+                fail("microphone recovery could not release repeated device callbacks; restart recording")
+            }
+        }
+        microphoneDeviceID = AudioDeviceID(kAudioObjectUnknown)
+    }
+
+    private func startMicrophoneMonitor() {
+        // Notifications accelerate hot-plug/default changes; the timer also
+        // catches a device that stays enumerated but stops delivering frames.
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice] {
+            var address = AudioObjectPropertyAddress(mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            let callback: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                self?.checkMicrophoneHealth()
+            }
+            let object = AudioObjectID(kAudioObjectSystemObject)
+            if AudioObjectAddPropertyListenerBlock(object, &address, lifecycleQueue, callback) == noErr {
+                microphoneListeners.append((object, address, callback))
+            }
+        }
+        let timer = DispatchSource.makeTimerSource(queue: lifecycleQueue)
+        timer.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in self?.checkMicrophoneHealth() }
+        microphoneMonitor = timer
+        timer.resume()
+    }
+
+    private func checkMicrophoneHealth() {
+        microphoneLifecycleLock.lock()
+        defer { microphoneLifecycleLock.unlock() }
+        lock.lock()
+        let stopped = hasStopped
+        lock.unlock()
+        guard !stopped else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= microphoneRetryAt else { return }
+        let health = queue.sync { microphoneHealth }
+        let candidates = Self.microphoneCandidates()
+        let current = candidates.first { $0.id == microphoneDeviceID && $0.uid == microphoneUID }
+        let format = current.flatMap { Self.streamFormat(for: $0.id) }
+        let formatChanged = format.map { !sameAudioFormat($0, microphoneFormat) } ?? false
+        let action = microphoneRecoveryAction(devices: candidates, preferredUIDs: preferredMicrophoneUIDs(),
+            currentID: microphoneDeviceID, currentUID: microphoneUID, hasStream: microphoneIOProcID != nil,
+            health: health, formatChanged: formatChanged, cooldowns: &microphoneCooldowns, now: now)
+        guard case let .reopen(desired, reason) = action else {
+            if health.stable(at: now), microphoneFailures > 0 {
+                microphoneFailures = 0
+                log("ARCO_MICROPHONE_STATE state=healthy device=\(microphoneUID)")
+            }
+            return
+        }
+        log("ARCO_MICROPHONE_STATE state=recovering reason=\(reason)")
+        closeMicrophoneForRecovery()
+        microphoneFailures += 1
+        microphoneRetryAt = now + MicrophoneHealth.retryDelay(failures: microphoneFailures)
+        guard let desired else {
+            log("ARCO_MICROPHONE_STATE state=unavailable; waiting for a physical microphone")
+            return
+        }
+        if !openMicrophone(desired.id) {
+            microphoneCooldowns[desired.uid] = now + 30
         }
     }
 
@@ -760,39 +987,46 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         }
     }
 
-    private func configureMicrophone(_ input: AVAudioInputNode) {
+    func selectMicrophoneDevice() -> AudioDeviceID {
+        guard let microphone = chooseMicrophone(preferredUIDs: preferredMicrophoneUIDs(), devices: Self.microphoneCandidates()) else {
+            fail("no physical microphone is connected; choose a microphone in macOS")
+        }
+        let label = Self.stringProperty(kAudioObjectPropertyName, device: microphone.id) ?? microphone.uid
+        log("using physical microphone: \(label)")
+        return microphone.id
+    }
+
+    private func preferredMicrophoneUIDs() -> [String] {
         let environment = ProcessInfo.processInfo.environment
         let requestedID = (environment["ARCO_MIC_DEVICE_ID"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestedName = (environment["ARCO_MIC_DEVICE_NAME"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !requestedID.isEmpty else {
-            if let device = AVCaptureDevice.default(for: .audio) {
-                log("using default microphone: \(device.localizedName)")
-            }
-            return
-        }
-        guard var deviceID = Self.audioDeviceID(forUID: requestedID) else {
-            log("configured microphone was not found; using system default")
-            return
-        }
-        guard let audioUnit = input.audioUnit else {
-            log("microphone audio unit unavailable; using system default")
-            return
-        }
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &deviceID,
-            UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        if status == noErr {
-            let label = requestedName.isEmpty ? requestedID : requestedName
-            log("using configured microphone: \(label)")
-        } else {
-            log("could not select configured microphone; using system default")
+        let savedRoute = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".arco/meeting-audio-route.json")
+        let savedUID = (try? Data(contentsOf: savedRoute))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["originalUID"] as? String
+        let selectionURL = environment["ARCO_MICROPHONE_SELECTION_FILE"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Arco/microphone.json")
+        let selectedUID = (try? Data(contentsOf: selectionURL))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["id"] as? String
+        return [requestedID, selectedUID, AVCaptureDevice.default(for: .audio)?.uniqueID, savedUID].compactMap { $0 }
+    }
+
+    private static func microphoneCandidates() -> [MicrophoneCandidate] {
+        Self.audioDevices().compactMap { device -> MicrophoneCandidate? in
+            guard let uid = Self.stringProperty(kAudioDevicePropertyDeviceUID, device: device),
+                  let transport = Self.audioDeviceTransport(device) else { return nil }
+            var aliveAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive,
+                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var alive: UInt32 = 0
+            var aliveSize = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(device, &aliveAddress, 0, nil, &aliveSize, &alive) == noErr,
+                  alive != 0 else { return nil }
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+            var size: UInt32 = 0
+            let hasInput = AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr && size > 0
+            return MicrophoneCandidate(id: device, uid: uid, transport: transport, hasInput: hasInput)
         }
     }
 
@@ -802,6 +1036,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             systemQuality.recordDropped(result.droppedFrames)
             if result.discontinuity {
                 systemBuffer.removeAll()
+                resetEchoCancellation()
             } else if result.count > 0 {
                 let dropped = processingScratch.withUnsafeBufferPointer { samples in
                     systemBuffer.append(
@@ -813,9 +1048,12 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         }
         if let consumer = microphoneAudioConsumer {
             let result = drainAudioRuntimeSource(consumer)
+            microphoneHealth.received(frames: result.discontinuity ? 0 : result.count,
+                at: ProcessInfo.processInfo.systemUptime)
             microphoneQuality.recordDropped(result.droppedFrames)
             if result.discontinuity {
                 micBuffer.removeAll()
+                resetEchoCancellation()
             } else if result.count > 0 {
                 let dropped = processingScratch.withUnsafeBufferPointer { samples in
                     micBuffer.append(
@@ -880,6 +1118,12 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 maxFrames: frameSize
             )
             : 0
+        let rawPayload = interleavedOutput.withUnsafeBytes { Data($0) }
+        if useMic {
+            rawMicrophoneQuality.observeInterleaved(samples: interleavedOutput,
+                channel: 1, actualFrames: micCount, paddedFrames: frameSize - micCount)
+        }
+        applyEchoCancellation(to: &interleavedOutput)
         if useSystem {
             systemQuality.observeInterleaved(
                 samples: interleavedOutput,
@@ -912,6 +1156,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             logQuality(source: "system", snapshot: systemSnapshot, aec: false)
         }
         if let microphoneSnapshot {
+            logQuality(source: "microphone_raw", snapshot: rawMicrophoneQuality.takeSnapshot(), aec: false)
             logQuality(
                 source: "microphone",
                 snapshot: microphoneSnapshot,
@@ -921,28 +1166,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
 
         // Emit even during silence so channel alignment remains stable from
         // process start through permission prompts and transient device gaps.
-        guard outputWriteGate.wait(timeout: .now()) == .success else {
-            stopAndExit(
-                1,
-                reason: "audio consumer stopped draining; stopping native recorder"
-            )
-        }
-        let payload = interleavedOutput.withUnsafeBytes { Data($0) }
-        outputQueue.async { [weak self] in
-            guard let self else { return }
-            let emitted = payload.withUnsafeBytes { bytes in
-                self.writeAll(bytes)
-            }
-            self.archive?.append(payload)
-            self.outputWriteGate.signal()
-            guard !emitted else { return }
-            self.lifecycleQueue.async { [weak self] in
-                self?.stopAndExit(
-                    0,
-                    reason: "audio consumer closed; stopping native recorder"
-                )
-            }
-        }
+        // Archive on the capture clock, independently of stdout backpressure.
+        archive?.append(rawPayload)
+        pcmOutput?.enqueue(interleavedOutput.withUnsafeBytes { Data($0) })
     }
 
     private func logQuality(
@@ -964,25 +1190,6 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 aec ? "on" : "off"
             )
         )
-    }
-
-    private func writeAll(_ bytes: UnsafeRawBufferPointer) -> Bool {
-        guard var pointer = bytes.baseAddress else { return true }
-        var remaining = bytes.count
-        let descriptor = output.fileDescriptor
-        while remaining > 0 {
-            let written = Darwin.write(descriptor, pointer, remaining)
-            if written > 0 {
-                remaining -= written
-                pointer = pointer.advanced(by: written)
-                continue
-            }
-            if written < 0, errno == EINTR {
-                continue
-            }
-            return false
-        }
-        return true
     }
 
     func stream(
@@ -1068,7 +1275,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         )
     }
 
-    private static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+    private static func audioDevices() -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -1081,7 +1288,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             0,
             nil,
             &size
-        ) == noErr else { return nil }
+        ) == noErr else { return [] }
         let count = Int(size) / MemoryLayout<AudioDeviceID>.size
         var devices = [AudioDeviceID](repeating: 0, count: count)
         guard AudioObjectGetPropertyData(
@@ -1091,10 +1298,17 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             nil,
             &size,
             &devices
-        ) == noErr else { return nil }
-        return devices.first { device in
-            stringProperty(kAudioDevicePropertyDeviceUID, device: device) == uid
-        }
+        ) == noErr else { return [] }
+        return devices
+    }
+
+    private static func audioDeviceTransport(_ device: AudioDeviceID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr else { return nil }
+        return transport
     }
 
     @available(macOS 14.2, *)
@@ -1247,17 +1461,27 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         hasStopped = true
         lock.unlock()
 
+        microphoneLifecycleLock.lock()
+        defer { microphoneLifecycleLock.unlock() }
+        microphoneMonitor?.cancel()
+        microphoneMonitor = nil
+        for (object, var address, callback) in microphoneListeners {
+            AudioObjectRemovePropertyListenerBlock(object, &address, lifecycleQueue, callback)
+        }
+        microphoneListeners.removeAll()
+
         // Stop every real-time producer before releasing its opaque Rust
         // producer handle. The Rust consumer worker is released last so it can
         // finish its bounded tail flush without racing either callback.
-        let microphoneCallbacksQuiesced: Bool
-        if let engine = micEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            micEngine = nil
-            microphoneCallbacksQuiesced = true
-        } else {
-            microphoneCallbacksQuiesced = true
+        var microphoneCallbacksQuiesced = true
+        if let callback = microphoneIOProcID {
+            let stopped = AudioDeviceStop(microphoneDeviceID, callback)
+            let destroyed = AudioDeviceDestroyIOProcID(microphoneDeviceID, callback)
+            microphoneCallbacksQuiesced = stopped == noErr && destroyed == noErr
+            microphoneIOProcID = nil
+            if !microphoneCallbacksQuiesced {
+                log("microphone callback stop incomplete; retaining handles for process exit")
+            }
         }
 
         var systemCallbacksQuiesced = true
@@ -1306,6 +1530,10 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             microphoneCallbacksQuiesced: microphoneCallbacksQuiesced
                 && processingQueueQuiesced
         )
+        if processingQueueQuiesced, let echoCanceller {
+            arco_aec_destroy(echoCanceller)
+            self.echoCanceller = nil
+        }
         archive?.finish()
     }
 
@@ -1321,11 +1549,6 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
         microphoneAudioProducer = nil
         systemAudioConsumer = nil
         microphoneAudioConsumer = nil
-
-        let ownsOutputGate = outputWriteGate.wait(timeout: .now() + 1) == .success
-        if !ownsOutputGate {
-            log("could not acquire stdout for the recorder shutdown tail")
-        }
 
         if !systemCallbacksQuiesced {
             log("leaving Rust audio runtime handles for system to process teardown")
@@ -1367,11 +1590,11 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
             }
         }
 
-        if ownsOutputGate {
-            if !emitRemainingPCM() {
-                log("recorder shutdown tail output was incomplete")
-            }
-            outputWriteGate.signal()
+        if !emitRemainingPCM() {
+            log("recorder shutdown tail output was incomplete; raw audio was submitted to the archive")
+        }
+        if pcmOutput?.finish() == false {
+            log("audio output did not drain before shutdown; transcription tail may be incomplete")
         }
 
         if systemCallbacksQuiesced {
@@ -1432,6 +1655,7 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     private func emitRemainingPCM() -> Bool {
+        var complete = true
         while let chunk = drainAlignedPCMChunk(
             systemBuffer: &systemBuffer,
             microphoneBuffer: &micBuffer,
@@ -1456,15 +1680,13 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
                 )
             }
             archive?.append(chunk.samples.withUnsafeBytes { Data($0) })
-            let emitted = chunk.samples.withUnsafeBytes { bytes in
-                writeAll(bytes)
-            }
-            guard emitted else {
-                log("could not write recorder shutdown tail to stdout: errno=\(errno)")
-                return false
+            var processedSamples = chunk.samples
+            applyEchoCancellation(to: &processedSamples)
+            if pcmOutput?.enqueue(processedSamples.withUnsafeBytes { Data($0) }) != true {
+                complete = false
             }
         }
-        return true
+        return complete
     }
 
     @available(macOS 14.2, *)
@@ -1507,6 +1729,9 @@ final class Recorder: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     private func fail(_ message: String) -> Never {
+        if let path = ProcessInfo.processInfo.environment["ARCO_RECORDER_ERROR_FILE"], !path.isEmpty {
+            try? Data(message.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
         log(message)
         stop()
         exit(1)
@@ -1648,6 +1873,77 @@ private func exerciseRustAudioRuntime() throws {
 
 private func runRecorderSelfTests() throws {
     try exerciseRustAudioRuntime()
+    var health = MicrophoneHealth()
+    health.started(at: 100)
+    try selfTestRequire(!health.stalled(at: 102.9), "microphone startup grace was lost")
+    try selfTestRequire(health.stalled(at: 103), "no callback frames did not trigger recovery")
+    health.received(frames: 1600, at: 104) // Includes an entirely silent buffer.
+    try selfTestRequire(!health.stalled(at: 106), "valid silence triggered device recovery")
+    try selfTestRequire(health.stable(at: 106), "real frames did not establish recovery")
+    health.received(frames: 0, at: 107)
+    try selfTestRequire(health.stalled(at: 107), "zero padding hid a dead microphone")
+    health.started(at: 108)
+    try selfTestRequire(!health.stable(at: 114), "opening a device without frames reported healthy")
+    try selfTestRequire([1, 2, 3, 99].map { MicrophoneHealth.retryDelay(failures: $0) } == [5, 10, 30, 30], "recovery retry backoff is unbounded")
+    var formatA = AudioStreamBasicDescription()
+    formatA.mSampleRate = 24000
+    formatA.mChannelsPerFrame = 1
+    var formatB = formatA
+    try selfTestRequire(sameAudioFormat(formatA, formatB), "unchanged format restarted microphone")
+    formatB.mSampleRate = 48000
+    try selfTestRequire(!sameAudioFormat(formatA, formatB), "Bluetooth sample rate change was missed")
+    formatB = formatA
+    formatB.mFormatFlags = kAudioFormatFlagIsFloat
+    try selfTestRequire(!sameAudioFormat(formatA, formatB), "PCM representation change was missed")
+    let physical = MicrophoneCandidate(id: 1, uid: "built-in", transport: kAudioDeviceTransportTypeBuiltIn, hasInput: true)
+    let usb = MicrophoneCandidate(id: 2, uid: "usb", transport: kAudioDeviceTransportTypeUSB, hasInput: true)
+    let virtual = MicrophoneCandidate(id: 3, uid: "BlackHole2ch_UID", transport: kAudioDeviceTransportTypeVirtual, hasInput: true)
+    let output = MicrophoneCandidate(id: 4, uid: "speaker", transport: kAudioDeviceTransportTypeBuiltIn, hasInput: false)
+    try selfTestRequire(chooseMicrophone(preferredUIDs: ["gone", virtual.uid], devices: [virtual, output, usb, physical])?.id == physical.id, "virtual default must fall back to built-in microphone")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [usb.uid], devices: [physical, usb])?.id == usb.id, "explicit physical microphone must win")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [virtual.uid, usb.uid], devices: [virtual, usb, physical])?.id == usb.id, "saved physical route must beat generic fallback")
+    try selfTestRequire(chooseMicrophone(preferredUIDs: [], devices: [virtual, output]) == nil, "outputs and virtual devices must not qualify as microphones")
+
+    // Exercise a whole unplug/reconnect sequence without touching real devices.
+    var cooldowns: [String: TimeInterval] = [:]
+    var liveHealth = MicrophoneHealth()
+    liveHealth.started(at: 0)
+    liveHealth.received(frames: 1600, at: 10)
+    func action(_ devices: [MicrophoneCandidate], current: MicrophoneCandidate, now: TimeInterval,
+                changed: Bool = false, hasStream: Bool = true) -> MicrophoneRecoveryAction {
+        microphoneRecoveryAction(devices: devices, preferredUIDs: [usb.uid, virtual.uid],
+            currentID: current.id, currentUID: current.uid, hasStream: hasStream, health: liveHealth,
+            formatChanged: changed, cooldowns: &cooldowns, now: now)
+    }
+    if case .keep = action([usb, physical], current: usb, now: 11) {} else {
+        throw RecorderSelfTestError.failed("healthy pinned microphone changed devices")
+    }
+    if case let .reopen(target, _) = action([virtual, physical], current: usb, now: 11) {
+        try selfTestRequire(target?.id == physical.id, "disconnected preferred mic did not fall back to built-in")
+    } else { throw RecorderSelfTestError.failed("unplugged microphone was kept") }
+    if case let .reopen(target, _) = action([usb, physical], current: physical, now: 11) {
+        try selfTestRequire(target?.id == usb.id, "reconnected preferred microphone was not restored")
+    } else { throw RecorderSelfTestError.failed("preferred reconnect was missed") }
+    if case .keep = action([], current: usb, now: 11) {} else {
+        throw RecorderSelfTestError.failed("transient empty enumeration killed a healthy stream")
+    }
+    if case let .reopen(target, reason) = action([usb, physical], current: usb, now: 14) {
+        try selfTestRequire(target?.id == physical.id && reason == "no_frames", "present but stalled device did not fail over")
+    } else { throw RecorderSelfTestError.failed("stalled microphone was kept") }
+    liveHealth.received(frames: 1600, at: 15)
+    if case .keep = action([usb, physical], current: physical, now: 16) {} else {
+        throw RecorderSelfTestError.failed("stalled preferred device caused immediate switch-back")
+    }
+    liveHealth.received(frames: 1600, at: 45)
+    if case let .reopen(target, _) = action([usb, physical], current: physical, now: 45) {
+        try selfTestRequire(target?.id == usb.id, "cooldown never allowed preferred device to recover")
+    } else { throw RecorderSelfTestError.failed("cooldown did not expire") }
+    if case let .reopen(target, reason) = action([usb, physical], current: usb, now: 45, changed: true) {
+        try selfTestRequire(target?.id == usb.id && reason == "format_changed", "Bluetooth format switch did not rebuild same device")
+    } else { throw RecorderSelfTestError.failed("format change ignored") }
+    if case let .reopen(target, _) = action([virtual, output], current: usb, now: 45, hasStream: false) {
+        try selfTestRequire(target == nil, "unavailable state opened a virtual loopback device")
+    } else { throw RecorderSelfTestError.failed("no-device recovery was skipped") }
 
     try selfTestRequire(
         ParentAudioExclusionPolicy.parentPID(environment: [
@@ -1772,13 +2068,16 @@ private func runRecorderSelfTests() throws {
         "expanded shutdown FIFO changed frame order"
     )
 
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "both mode enabled ducking AEC without explicit opt-in")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: nil), "mixed capture must cancel speaker playback echo by default")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: nil), "mic-only mode enabled AEC")
     try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "off"), "explicit AEC off was ignored")
     try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "on"), "explicit AEC on was ignored")
     try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: " ON "), "normalized AEC opt-in was ignored")
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: ""), "empty AEC setting enabled ducking AEC")
-    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting enabled ducking AEC")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: ""), "empty AEC setting must use the mixed capture default")
+    try selfTestRequire(EchoCancellationPolicy.shouldEnable(mode: "both", setting: "unexpected"), "unknown AEC setting must use the mixed capture default")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "both", setting: " OFF "), "normalized explicit AEC off was ignored")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "system", setting: "on"), "system-only capture must not enable microphone AEC")
+    try selfTestRequire(!EchoCancellationPolicy.shouldEnable(mode: "mic", setting: "on"), "microphone-only capture must not enable playback-reference AEC")
 
     FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_OK\n".utf8))
 }
@@ -1791,6 +2090,10 @@ if isSelfTest {
         FileHandle.standardError.write(Data("ARCO_RECORDER_SELF_TEST_FAILED: \(error)\n".utf8))
         exit(1)
     }
+} else if mode == "--check-microphone" {
+    let recorder = Recorder()
+    let selected = recorder.selectMicrophoneDevice()
+    print("ARCO_MICROPHONE_CHECK_OK device=\(selected)")
 } else {
     let recorder = Recorder()
     recorder.start()

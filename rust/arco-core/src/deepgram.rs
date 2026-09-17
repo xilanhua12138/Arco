@@ -605,29 +605,38 @@ impl TranscriptWriter {
             "**[{timestamp}] {}:** {}\n",
             segment.label, segment.text
         )
+        .and_then(|_| {
+            writeln!(
+                file,
+                "<!-- arco channel={} speaker={} stream={} start={:.3} end={:.3} -->\n",
+                segment.channel,
+                segment
+                    .speaker
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                segment
+                    .connection_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                segment.start,
+                segment.end,
+            )
+        })
+        .and_then(|_| {
+            writeln!(
+                file,
+                "{}",
+                crate::transcript_timing::comment(
+                    segment.start,
+                    segment.end,
+                    &segment.words,
+                    self.session_started_at
+                )
+            )
+        })
         .map_err(|error| format!("could not append live transcript: {error}"))?;
         file.flush()
             .map_err(|error| format!("could not flush live transcript: {error}"))
-            .and_then(|_| self.append_timing_to_file(segment))?;
-        Ok(())
-    }
-
-    fn append_timing_to_file(&mut self, segment: &Segment) -> Result<(), String> {
-        let raw_markdown = fs::read_to_string(&self.path)
-            .map_err(|error| format!("could not count transcript lines: {error}"))?;
-        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
-            .len()
-            .checked_sub(1)
-            .ok_or("could not identify the appended transcript line")?;
-        crate::transcript_timing::append_line(
-            &crate::transcript_timing::sidecar_path(&self.path),
-            line_index,
-            segment.start,
-            segment.end,
-            &segment.words,
-            self.session_started_at,
-        )
-        .map_err(|error| format!("could not append Deepgram timing sidecar: {error}"))
     }
 
     fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {

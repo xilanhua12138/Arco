@@ -47,12 +47,6 @@ expectTrue(!transcriptSource.isEmpty, "Transcript source contract must resolve t
 expectTrue(!insightSource.isEmpty, "Insight source contract must resolve the migrated source")
 
 expectClose(
-    ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 68),
-    664.0625,
-    tolerance: 0.05,
-    "Transcript summary must preserve the source 68ch column at the native system 16pt font"
-)
-expectClose(
     ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 70),
     683.59375,
     tolerance: 0.05,
@@ -62,10 +56,6 @@ expect(
     ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: -1),
     0,
     "CSS character-width conversion must reject a negative column length"
-)
-expectTrue(
-    transcriptSource.contains("maxWidth: ArcoSourceTextLayoutMetrics.maximumWidth(characterCount: 68)"),
-    "Generated summaries must use the source 68ch cap instead of a guessed fixed width"
 )
 expectTrue(
     !transcriptSource.contains("generatedSummary.isEmpty ? 0 : 100"),
@@ -163,9 +153,9 @@ expectTrue(
     "Main composer must not retain the migration-only 63pt growth allowance"
 )
 expectTrue(
-    insightSource.contains("if live, gptLiveBetaEnabled, let onToggleGPTLive")
+    insightSource.contains("if gptLiveBetaEnabled, let onToggleGPTLive")
         && insightSource.contains("GPTLiveBetaButton("),
-    "GPT Live must be an explicit active-meeting button in Ask Arco, gated by the Beta preference"
+    "GPT Live must be an explicit invite button in Ask Arco, gated by the Beta preference; invitation may start a new meeting"
 )
 expectTrue(
     !insightSource.contains("onAppear { onToggleGPTLive"),

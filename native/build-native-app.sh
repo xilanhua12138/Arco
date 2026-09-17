@@ -43,6 +43,7 @@ cp "$BIN_DIR/Arco" "$MACOS/Arco"
 cp "$SWIFT_PACKAGE/App/Info.plist" "$CONTENTS/Info.plist"
 cp "$SWIFT_PACKAGE/App/Resources/Arco.icns" "$RESOURCES/Arco.icns"
 cp "$SWIFT_PACKAGE/App/Resources/ArcoStatusTemplate.png" "$RESOURCES/ArcoStatusTemplate.png"
+ditto "$BIN_DIR/ArcoNativeUI_ArcoNativeUI.bundle" "$RESOURCES/ArcoNativeUI_ArcoNativeUI.bundle"
 if [ -d "$ROOT/native/runtime" ]; then
   ditto "$ROOT/native/runtime" "$RESOURCES/native"
 fi

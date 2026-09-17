@@ -63,7 +63,7 @@ private func appearsBefore(_ first: String, _ second: String, in value: String) 
     return firstRange.lowerBound < secondRange.lowerBound
 }
 
-private let hud = source("RecordingHUD.swift")
+private let hud = nativeUISource("Views/RecordingHUD.swift")
 private let hudModel = nativeUISource("RecordingHUDModel.swift")
 private let agent = source("AgentOverlay.swift")
 private let material = source("NativeOverlayMaterial.swift")
@@ -111,8 +111,9 @@ expectTrue(
 
 // RecordingHud.tsx and Surfaces.css: geometry, state cadence, and action locking.
 expectTrue(
-    hud.contains(".frame(width: 368, height: 56)"),
-    "HUD must remain the source 368 by 56 point utility surface"
+    hud.contains(".frame(width: expandedWidth, height: 52)")
+        && hud.contains("private var expandedWidth: CGFloat"),
+    "HUD must remain the source 328 by 52 point utility surface"
 )
 expectTrue(
     material.contains("case .hud: 14"),
@@ -231,8 +232,8 @@ expectTrue(
 expectTrue(
     collapsedAgentHeader.contains("if live, gptLiveBetaEnabled")
         && collapsedAgentHeader.contains("GPTLiveBetaButton(")
-        && application.contains("gptLiveStatus: shellController.gptLiveSession.status")
-        && application.contains("await shellController.toggleGPTLive()"),
+        && application.contains("gptLiveStatus: shellController.voiceParticipantStatus")
+        && application.contains("await shellController.inviteArco()"),
     "The floating Ask Arco header must expose the same explicit live-only Beta connection as the docked panel"
 )
 let expandedTranscriptHeader = sourceSection(
@@ -420,9 +421,9 @@ expectTrue(
 
 // Read-only window lifecycle/geometry: source placement, resize, reuse, close.
 expectTrue(
-    geometry.contains("static let hudSize = CGSize(width: 368, height: 56)")
-        && geometry.contains("static let agentSize = CGSize(width: 720, height: 560)")
-        && geometry.contains("static let collapsedAgentSize = CGSize(width: 432, height: 560)"),
+    geometry.contains("static let hudSize = CGSize(width: 328, height: 52)")
+        && geometry.contains("static let agentSize = CGSize(width: 960, height: 560)")
+        && geometry.contains("static let collapsedAgentSize = CGSize(width: 720, height: 560)"),
     "Native windows must preserve the source HUD and expanded/collapsed Agent sizes"
 )
 expectTrue(

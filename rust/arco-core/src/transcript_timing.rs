@@ -1,8 +1,5 @@
 use crate::models::{TimedWord, TranscriptTiming};
-use serde_json::{json, Value};
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use serde_json::Value;
 
 pub fn words(value: Option<&Value>, milliseconds: bool) -> Vec<TimedWord> {
     let scale = if milliseconds { 1.0 } else { 1000.0 };
@@ -62,83 +59,6 @@ pub fn comment(start: f64, end: f64, words: &[TimedWord], origin: f64) -> String
     format!("<!-- arco-timing {json} -->\n")
 }
 
-pub fn sidecar_path(path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.timing.json", path.display()))
-}
-
-pub fn sidecar_line(
-    line_index: usize,
-    start: f64,
-    end: f64,
-    words: &[TimedWord],
-    origin: f64,
-) -> String {
-    let timing = TranscriptTiming {
-        start_ms: (start * 1000.0).round() as i64,
-        end_ms: (end * 1000.0).round() as i64,
-        words: words.to_vec(),
-        origin_ms: Some((origin * 1000.0).round() as i64),
-    };
-    let record = json!({"line": line_index, "timing": timing});
-    format!("{}\n", serde_json::to_string(&record).unwrap_or_default())
-}
-
-pub fn append_line(
-    path: &Path,
-    line_index: usize,
-    start: f64,
-    end: f64,
-    words: &[TimedWord],
-    origin: f64,
-) -> io::Result<()> {
-    use std::io::Write;
-
-    let line = sidecar_line(line_index, start, end, words, origin);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(line.as_bytes())?;
-    file.flush()
-}
-
-pub fn read_sidecar(path: &Path) -> Vec<Option<TranscriptTiming>> {
-    let Ok(raw) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut records = Vec::new();
-    for line in raw.lines() {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            records.push(None);
-            continue;
-        };
-        let index = record["line"].as_u64().unwrap_or_default() as usize;
-        if usize::try_from(index + 1).is_err() {
-            continue;
-        }
-        let timing = serde_json::from_value::<TranscriptTiming>(record["timing"].clone()).ok();
-        if index >= records.len() {
-            records.resize(index + 1, None);
-        }
-        records[index] = timing;
-    }
-    records
-}
-
-pub fn valid(timing: &TranscriptTiming) -> Option<TranscriptTiming> {
-    if timing.start_ms < 0 || timing.end_ms < timing.start_ms {
-        return None;
-    }
-    let mut timing = timing.clone();
-    timing.words.retain(|word| {
-        !word.text.trim().is_empty()
-            && word.start_ms >= timing.start_ms
-            && word.end_ms >= timing.start_ms
-            && word.end_ms <= timing.end_ms
-    });
-    Some(timing)
-}
-
 /// Word alignment is for playback, not part of the meeting's spoken content.
 pub fn without_word_metadata(markdown: &str) -> String {
     markdown
@@ -192,18 +112,6 @@ mod tests {
         let timing = lines[0].timing.as_ref().unwrap();
         assert_eq!(timing.words, vec![word]);
         assert_eq!(timing.origin_ms, Some(1000250));
-    }
-
-    #[test]
-    fn sidecar_timing_roundtrips_by_line_index() {
-        let root = tempfile::tempdir().unwrap();
-        let path = sidecar_path(&root.path().join("transcript.md"));
-        append_line(&path, 0, 1.0, 2.0, &[], 1_000.25).unwrap();
-        append_line(&path, 1, 3.0, 4.0, &[], 1_000.25).unwrap();
-        let records = read_sidecar(&path);
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].as_ref().unwrap().start_ms, 1000);
-        assert_eq!(records[1].as_ref().unwrap().start_ms, 3000);
     }
 
     #[test]

@@ -34,6 +34,70 @@ public enum MeetingTitleRefreshPolicy {
 @MainActor
 @Observable
 public final class ArcoStore {
+    public func recording(for id: String) async throws -> MeetingRecording {
+        try await backend.call("meeting_recording", arguments: ["id": .string(id)])
+    }
+
+
+    private var archivedMeetingsRequest = 0
+    private var meetingManagementGeneration = 0
+    public private(set) var archivedMeetings: [MeetingSummary] = []
+    public private(set) var archivedMeetingsLoading = false
+    public private(set) var meetingManagementBusy = false
+    public private(set) var meetingManagementError: String?
+
+    public func loadArchivedMeetings() async {
+        archivedMeetingsRequest += 1
+        let request = archivedMeetingsRequest
+        archivedMeetingsLoading = true
+        defer { if archivedMeetingsRequest == request { archivedMeetingsLoading = false } }
+        do {
+            let loaded: [MeetingSummary] = try await backend.call("list_archived_meetings")
+            guard archivedMeetingsRequest == request else { return }
+            archivedMeetings = loaded
+            meetingManagementError = nil
+        } catch { if archivedMeetingsRequest == request { meetingManagementError = error.localizedDescription } }
+    }
+
+    @discardableResult
+    public func manageMeeting(_ id: String, archived: Bool? = nil) async -> Bool {
+        guard !meetingManagementBusy else { return false }
+        meetingManagementBusy = true
+        meetingManagementError = nil
+        error = nil
+        defer { meetingManagementBusy = false }
+        do {
+            if let archived {
+                try await backend.callVoid("set_meeting_archived", arguments: ["id": .string(id), "archived": .bool(archived)])
+            } else {
+                try await backend.callVoid("delete_meeting", arguments: ["id": .string(id)])
+                agentTurnsByMeeting[id] = nil
+                attachmentsByMeeting[id] = nil
+            }
+            meetingManagementGeneration += 1
+            if archived != false {
+                selectionRequest += 1
+                meetings.removeAll { $0.id == id }
+                if selectedMeetingId == id {
+                    selectedReference = nil
+                    meetingReference = nil
+                    selectedMeetingId = nil
+                    meeting = nil
+                }
+                if completedMeetingId == id { completedMeetingId = nil }
+            }
+            archivedMeetings.removeAll { $0.id == id }
+            await refreshMeetings(meetingQuery)
+            await loadArchivedMeetings()
+            return true
+        } catch {
+            let message = error.localizedDescription
+            meetingManagementError = message
+            self.error = message
+            return false
+        }
+    }
+
     public private(set) var meetings: [MeetingSummary] = []
     public private(set) var activeMeeting: MeetingSummary?
     public private(set) var selectedMeetingId: String?
@@ -196,6 +260,9 @@ public final class ArcoStore {
               !agentRunning else { return }
         selectionRequest += 1
         noteRequest += 1
+        archivedMeetingsRequest += 1
+        archivedMeetings.removeAll()
+        archivedMeetingsLoading = false
         meetings.removeAll(keepingCapacity: false)
         activeMeeting = nil
         selectedMeetingId = nil
@@ -861,12 +928,14 @@ public final class ArcoStore {
         _ query: String,
         preferredActive: PreferredActiveMeeting
     ) async {
+        let generation = meetingManagementGeneration
         do {
             meetingQuery = query
             let nextMeetings: [MeetingSummary] = try await backend.call(
                 "list_meetings",
                 arguments: ["query": .string(query)]
             )
+            guard generation == meetingManagementGeneration else { return }
             meetings = nextMeetings
             let activeId: String? = switch preferredActive {
             case .current: capture.activeMeetingId

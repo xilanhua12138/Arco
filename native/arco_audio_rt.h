@@ -12,6 +12,16 @@ CF_ASSUME_NONNULL_BEGIN
 
 typedef struct ArcoAudioRtProducer ArcoAudioRtProducer;
 typedef struct ArcoAudioRtConsumer ArcoAudioRtConsumer;
+typedef struct ArcoEchoCanceller ArcoEchoCanceller;
+
+/* Worker-queue-only WebRTC AEC3. Input: 16 kHz stereo i16, left=system,
+ * right=microphone. Only the microphone is modified. Maximum 1600 frames.
+ * Use multiples of 160 frames except for the final shutdown tail.
+ * On failure input is unchanged. Handles must not be used concurrently. */
+int32_t arco_aec_create(ArcoEchoCanceller * _Nullable * _Nonnull output);
+int32_t arco_aec_process(ArcoEchoCanceller *aec, int16_t *samples, uint32_t frames);
+int32_t arco_aec_reset(ArcoEchoCanceller *aec);
+void arco_aec_destroy(ArcoEchoCanceller * _Nullable aec);
 
 enum {
     ARCO_AUDIO_RT_OK = 0,

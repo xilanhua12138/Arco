@@ -169,28 +169,11 @@ public struct MeetingOutputSettingsView: View {
 
     private func detailView(_ detail: MeetingOutputRuleKey) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Button { viewModel.suspend() } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "chevron.left").font(.system(size: 14))
-                    Text(translate("settings.output", [:]))
-                }
-                    .font(ArcoTypography.small)
-            }
-            .buttonStyle(
-                MeetingOutputTextButtonStyle(
-                    color: ArcoNativeColors.inkMuted,
-                    hoverColor: ArcoNativeColors.inkStrong
-                )
-            )
-            .accessibilityLabel(translate("output.back", [:]))
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(title(for: detail))
                     .font(ArcoTypography.sans(18, weight: .semibold))
                     .foregroundStyle(ArcoNativeColors.inkStrong)
-                Text(description(for: detail))
-                    .font(ArcoTypography.sans(12))
-                    .foregroundStyle(ArcoNativeColors.inkMuted)
+
             }
 
             VStack(spacing: 0) {
@@ -247,14 +230,14 @@ public struct MeetingOutputSettingsView: View {
     }
 
     private func controlRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(ArcoTypography.bodyStrong).foregroundStyle(ArcoNativeColors.inkStrong)
                 Text(detail).font(ArcoTypography.small).foregroundStyle(ArcoNativeColors.inkMuted)
             }
+            Spacer()
+            Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch)
         }
-        .toggleStyle(ArcoCompactSwitchStyle())
-        .accessibilityLabel(title)
         .frame(minHeight: 58)
         .contentShape(Rectangle())
         .overlay(alignment: .bottom) { Rectangle().fill(ArcoNativeColors.lineThin).frame(height: 1) }
@@ -321,15 +304,8 @@ public struct MeetingOutputSettingsView: View {
     }
 
     private func outputActionButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(ArcoTypography.sans(12, weight: .medium))
-                .foregroundStyle(prominent ? ArcoNativeColors.actionInk : ArcoNativeColors.ink)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .frame(minHeight: 32)
-        }
-        .buttonStyle(MeetingOutputActionButtonStyle(prominent: prominent))
+        Button(title, action: action)
+            .buttonStyle(MeetingOutputActionButtonStyle(prominent: prominent))
     }
 
     private func title(for rule: MeetingOutputRuleKey) -> String {
@@ -354,30 +330,7 @@ private struct MeetingOutputActionButtonStyle: ButtonStyle {
     let prominent: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        MeetingOutputActionButton(configuration: configuration, prominent: prominent)
-    }
-}
-
-private struct MeetingOutputActionButton: View {
-    let configuration: ButtonStyleConfiguration
-    let prominent: Bool
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovered = false
-
-    var body: some View {
-        let fill = prominent ? ArcoNativeColors.action : Color.clear
-        let hoverFill = prominent ? ArcoNativeColors.actionHover : ArcoNativeColors.surfaceHover
-        configuration.label
-            .background(
-                hovered && isEnabled ? hoverFill : fill,
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
-            .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
-            .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovered)
-            .onHover { hovered = $0 }
+        SettingsActionButtonStyle(prominent: prominent).makeBody(configuration: configuration)
     }
 }
 
@@ -410,29 +363,5 @@ private struct MeetingOutputTextButton: View {
             .animation(reduceMotion ? nil : ArcoMotion.press, value: configuration.isPressed)
             .animation(reduceMotion ? nil : ArcoMotion.hover, value: hovered)
             .onHover { hovered = $0 }
-    }
-}
-
-private struct ArcoCompactSwitchStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Button { configuration.isOn.toggle() } label: {
-            HStack(spacing: 20) {
-                configuration.label
-                Spacer()
-                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-                    Capsule()
-                        .fill(configuration.isOn ? ArcoNativeColors.action : ArcoNativeColors.surfaceSelected)
-                        .overlay(Capsule().stroke(configuration.isOn ? ArcoNativeColors.action : ArcoNativeColors.line))
-                        .frame(width: 30, height: 18)
-                    Circle()
-                        .fill(ArcoNativeColors.surfaceRaised)
-                        .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
-                        .frame(width: 12, height: 12)
-                        .padding(3)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }

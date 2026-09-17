@@ -20,6 +20,10 @@ public struct HistoryPageView: View {
     public var now: Date
     public var viewportWidth: CGFloat
 
+    public var onArchiveMeeting: (String) -> Void
+    public var onDeleteMeeting: (String) -> Void
+    public var managementBusy: Bool
+    @State private var deletionCandidate: MeetingSummary?
     @FocusState private var searchFocused: Bool
 
     public init(
@@ -30,7 +34,10 @@ public struct HistoryPageView: View {
         locale: Locale = .current,
         now: Date = Date(),
         translate: @escaping ArcoTranslate = ArcoTranslations.english,
-        onSelectMeeting: @escaping (String) -> Void
+        onSelectMeeting: @escaping (String) -> Void,
+        managementBusy: Bool = false,
+        onArchiveMeeting: @escaping (String) -> Void = { _ in },
+        onDeleteMeeting: @escaping (String) -> Void = { _ in }
     ) {
         self.meetings = meetings
         self.selectedMeetingID = selectedMeetingID
@@ -40,6 +47,9 @@ public struct HistoryPageView: View {
         self.now = now
         self.translate = translate
         self.onSelectMeeting = onSelectMeeting
+        self.managementBusy = managementBusy
+        self.onArchiveMeeting = onArchiveMeeting
+        self.onDeleteMeeting = onDeleteMeeting
     }
 
     public var body: some View {
@@ -63,14 +73,44 @@ public struct HistoryPageView: View {
                 emptyState
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(meetingGroups) { group in
-                            meetingGroup(group)
+                List {
+                    ForEach(meetingGroups) { group in
+                        Section {
+                            ForEach(group.meetings) { meeting in
+                                meetingRow(meeting, showsDivider: meeting.id != group.meetings.last?.id)
+                                    .overlay {
+                                        HistoryContextMenu(
+                                            archiveTitle: translate("history.archive", [:]),
+                                            deleteTitle: translate("history.delete", [:]),
+                                            enabled: !meeting.isLive && !managementBusy,
+                                            archive: { onArchiveMeeting(meeting.id) },
+                                            delete: { deletionCandidate = meeting }
+                                        )
+                                        .accessibilityHidden(true)
+                                    }
+                                    .accessibilityAction(named: translate("history.archive", [:])) {
+                                        if !meeting.isLive && !managementBusy { onArchiveMeeting(meeting.id) }
+                                    }
+                                    .accessibilityAction(named: translate("history.delete", [:])) {
+                                        if !meeting.isLive && !managementBusy { deletionCandidate = meeting }
+                                    }
+                                    .listRowInsets(EdgeInsets())
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(ArcoNativeColors.surfaceDocument)
+                            }
+                        } header: {
+                            Text(translate(group.translationKey, [:]))
+                                .font(ArcoTypography.metadata)
+                                .foregroundStyle(ArcoNativeColors.ink)
+                                .frame(height: 42, alignment: .leading)
+                                .textCase(nil)
                         }
                     }
-                    .frame(maxWidth: .infinity)
                 }
+                .listStyle(.plain)
+                .contentMargins(0, for: .scrollContent)
+                .environment(\.defaultMinListRowHeight, 64)
+                .scrollContentBackground(.hidden)
                 .scrollIndicators(.automatic)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .accessibilityLabel(translate("history.results", [:]))
@@ -84,6 +124,19 @@ public struct HistoryPageView: View {
         .padding(.bottom, 16)
         .frame(maxWidth: 1080, maxHeight: .infinity)
         .background(Color.clear)
+        .alert(translate("history.deleteTitle", [:]), isPresented: Binding(
+            get: { deletionCandidate != nil },
+            set: { if !$0 { deletionCandidate = nil } }
+        ), presenting: deletionCandidate) { meeting in
+            Button(translate("common.cancel", [:]), role: .cancel) { deletionCandidate = nil }
+            Button(translate("history.delete", [:]), role: .destructive) {
+                onDeleteMeeting(meeting.id)
+                deletionCandidate = nil
+            }
+        } message: { meeting in
+            Text(translate("history.deleteMessage", ["title": meetingTitle(meeting)]))
+        }
+
     }
 
     private var searchField: some View {
@@ -149,45 +202,25 @@ public struct HistoryPageView: View {
         .multilineTextAlignment(.center)
     }
 
-    @ViewBuilder
-    private func meetingGroup(_ group: MeetingGroup) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(translate(group.translationKey, [:]))
-                .font(ArcoTypography.metadata)
-                .foregroundStyle(ArcoNativeColors.ink)
-                .frame(height: 42, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
-
-            LazyVStack(spacing: 0) {
-                ForEach(group.meetings) { meeting in
-                    HistoryMeetingRow(
-                        meeting: meeting,
-                        isSelected: meeting.id == selectedMeetingID,
-                        time: meetingTime(meeting.startedAt),
-                        date: meetingDate(meeting.startedAt),
-                        duration: formattedDuration(meeting.durationLabel),
-                        lineCount: translate(
-                            meeting.utteranceCount == 1 ? "history.lineCountOne" : "history.lineCount",
-                            ["count": String(meeting.utteranceCount)]
-                        ),
-                        title: meetingTitle(meeting),
-                        preview: meeting.preview.isEmpty
-                            ? translate("history.previewFallback", [:])
-                            : meeting.preview,
-                        showMetadata: !compactLayout,
-                        showsDivider: meeting.id != group.meetings.last?.id,
-                        onSelect: { onSelectMeeting(meeting.id) }
-                    )
-                }
-            }
-            .background(ArcoNativeColors.surfaceDocument)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(ArcoNativeColors.lineThin, lineWidth: 1)
-            }
-        }
-        .padding(.bottom, 16)
+    private func meetingRow(_ meeting: MeetingSummary, showsDivider: Bool) -> some View {
+        HistoryMeetingRow(
+            meeting: meeting,
+            isSelected: meeting.id == selectedMeetingID,
+            time: meetingTime(meeting.startedAt),
+            date: meetingDate(meeting.startedAt),
+            duration: formattedDuration(meeting.durationLabel),
+            lineCount: translate(
+                meeting.utteranceCount == 1 ? "history.lineCountOne" : "history.lineCount",
+                ["count": String(meeting.utteranceCount)]
+            ),
+            title: meetingTitle(meeting),
+            preview: meeting.preview.isEmpty
+                ? translate("history.previewFallback", [:])
+                : meeting.preview,
+            showMetadata: !compactLayout,
+            showsDivider: showsDivider,
+            onSelect: { onSelectMeeting(meeting.id) }
+        )
     }
 
     private var groups: [MeetingGroup] {
@@ -285,8 +318,6 @@ private struct HistoryMeetingRow: View {
     var onSelect: () -> Void
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 12) {
@@ -337,21 +368,22 @@ private struct HistoryMeetingRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .frame(minHeight: 64)
+            .frame(maxWidth: .infinity, minHeight: 64)
             .contentShape(Rectangle())
-            .background(
-                isSelected
-                    ? ArcoNativeColors.surfaceSelected
-                    : hovering ? ArcoNativeColors.surfaceHover : Color.clear
-            )
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected
+                          ? ArcoNativeColors.surfaceSelected
+                          : hovering ? ArcoNativeColors.surfaceHover : Color.clear)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+            }
             .overlay(alignment: .bottom) {
-                if showsDivider { ArcoNativeColors.lineThin.frame(height: 1) }
+                if showsDivider { ArcoNativeColors.lineThin.frame(height: 1).padding(.horizontal, 12) }
             }
         }
         .buttonStyle(HistoryMeetingRowButtonStyle())
-        .onHover { hovering = $0 }
-        .animation(accessibilityReduceMotion ? nil : ArcoMotion.hover, value: hovering)
-        .animation(accessibilityReduceMotion ? nil : ArcoMotion.state, value: isSelected)
+        .onHover { if hovering != $0 { hovering = $0 } }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

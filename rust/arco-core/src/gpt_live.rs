@@ -700,13 +700,15 @@ impl GptLiveCallTransport for UreqGptLiveCallTransport {
         if request.url != CHATGPT_GPT_LIVE_CALL_URL {
             return Err("GPT-Live call transport refused an unexpected URL".into());
         }
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .try_proxy_from_env(true)
-            .timeout_connect(self.timeout)
-            .timeout_read(self.timeout)
-            .timeout_write(self.timeout)
-            .build();
+        let agent = crate::network_proxy::configure_http_agent(
+            ureq::AgentBuilder::new()
+                .redirects(0)
+                .timeout_connect(self.timeout)
+                .timeout_read(self.timeout)
+                .timeout_write(self.timeout),
+            &request.url,
+        )?
+        .build();
         let mut outgoing = agent.post(&request.url);
         for (name, value) in &request.headers {
             outgoing = outgoing.set(name, value);

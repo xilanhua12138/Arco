@@ -147,31 +147,17 @@ impl MeetingStore {
         Ok((revision, Some(parse_meeting(&path, &source, active_path)?)))
     }
 
-    pub fn deletion_paths(
-        &self,
-        id: &str,
-        active_path: Option<&Path>,
-    ) -> Result<Vec<PathBuf>, String> {
+    pub fn deletion_paths(&self, id: &str, active_path: Option<&Path>) -> Result<Vec<PathBuf>, String> {
         let (_, path) = self.resolve_path(id)?;
         if active_path.is_some_and(|active| paths_refer_to_same_file(active, &path)) {
             return Err("Stop recording before deleting this meeting".into());
         }
-        if fs::symlink_metadata(&path)
-            .map_err(|e| e.to_string())?
-            .file_type()
-            .is_symlink()
-        {
+        if fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_symlink() {
             return Err("Linked transcripts cannot be deleted from Arco".into());
         }
         let mut paths = Vec::new();
         let live = live_transcript_path(&path);
-        if live.symlink_metadata().is_ok() {
-            paths.push(live);
-        }
-        let timing = crate::transcript_timing::sidecar_path(&path);
-        if timing.symlink_metadata().is_ok() {
-            paths.push(timing);
-        }
+        if live.symlink_metadata().is_ok() { paths.push(live); }
         // Keep the transcript until all associated files have moved successfully.
         paths.push(path);
         Ok(paths)
@@ -231,9 +217,6 @@ fn transcript_revision(path: &Path, active_path: Option<&Path>) -> Result<String
         .map(|value| (value.as_secs(), value.subsec_nanos()))
         .unwrap_or((0, 0));
     let mut revision = format!("{}:{seconds}:{nanos}", metadata.len());
-    if let Some(timing) = timing_sidecar_revision(path) {
-        revision.push_str(&format!(":timing:{}:{}:{}", timing.0, timing.1, timing.2));
-    }
     if active_path.is_some_and(|active| paths_refer_to_same_file(active, path)) {
         let live_path = live_transcript_path(path);
         match fs::metadata(&live_path) {
@@ -261,19 +244,6 @@ fn transcript_revision(path: &Path, active_path: Option<&Path>) -> Result<String
     Ok(revision)
 }
 
-fn timing_sidecar_revision(path: &Path) -> Option<(u64, u64, u64)> {
-    let metadata = fs::metadata(crate::transcript_timing::sidecar_path(path)).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())?;
-    Some((
-        metadata.len(),
-        modified.as_secs(),
-        u64::from(modified.subsec_nanos()),
-    ))
-}
-
 pub fn live_transcript_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.live.json", path.display()))
 }
@@ -293,13 +263,6 @@ pub fn parse_meeting(
 ) -> Result<MeetingDetail, String> {
     let raw_markdown = read_transcript(path)?;
     let mut lines = parse_transcript_lines(&raw_markdown);
-    let sidecar =
-        crate::transcript_timing::read_sidecar(&crate::transcript_timing::sidecar_path(path));
-    for (line, timing) in lines.iter_mut().zip(sidecar) {
-        if line.timing.is_none() {
-            line.timing = timing.and_then(|value| crate::transcript_timing::valid(&value));
-        }
-    }
     let started = parse_started_at(&raw_markdown)
         .or_else(|| parse_started_from_filename(path))
         .or_else(|| modified_at(path))
@@ -649,42 +612,6 @@ mod tests {
         assert_eq!(lines[0].timestamp, "25:99:99");
         assert_eq!(lines[0].speaker, "Speaker 2");
         assert_eq!(lines[0].text, "syntactically shaped");
-    }
-
-    #[test]
-    fn timing_sidecar_supplements_a_pure_markdown_transcript() {
-        let root = tempfile::tempdir().unwrap();
-        let local = root.path().join("transcripts");
-        fs::create_dir_all(&local).unwrap();
-        let path = local.join("transcript-20260917-120000.md");
-        fs::write(
-            &path,
-            "# Meeting\n\n**[12:00:00] Speaker 1:** first\n\n**[12:00:02] Speaker 2:** second\n",
-        )
-        .unwrap();
-        let started = chrono::DateTime::parse_from_rfc3339("2026-09-17T12:00:00+08:00")
-            .unwrap()
-            .with_timezone(&chrono::Local);
-        let sidecar = crate::transcript_timing::sidecar_path(&path);
-        crate::transcript_timing::append_line(
-            &sidecar,
-            1,
-            2.0,
-            3.0,
-            &[],
-            started.timestamp() as f64,
-        )
-        .unwrap();
-
-        let meeting = parse_meeting(&path, "local", None).unwrap();
-        let expected_start = 2000;
-        assert!(meeting.raw_markdown.contains("Speaker 2"));
-        assert!(!meeting.raw_markdown.contains("arco-timing"));
-        assert_eq!(meeting.lines[0].timing, None);
-        assert_eq!(
-            meeting.lines[1].timing.as_ref().unwrap().start_ms,
-            expected_start
-        );
     }
 
     #[test]

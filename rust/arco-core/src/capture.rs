@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 const MAX_RECORDER_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(3);
+// Cover capture shutdown, two resampler drains, the bounded PCM flush and
+// archive finalization before resorting to SIGKILL.
+const RECORDER_TERMINATION_GRACE: Duration = Duration::from_secs(6);
 const TRANSCRIBER_FINALIZATION_GRACE: Duration = Duration::from_secs(6);
 const STARTUP_CANCELLED: &str = "capture startup cancelled";
 
@@ -380,6 +382,7 @@ impl PipelineReadySignals {
 
     fn clear(&self) {
         let _ = fs::remove_file(&self.recorder);
+        let _ = fs::remove_file(self.recorder.with_extension("error.signal"));
         for transcriber in &self.transcribers {
             let _ = fs::remove_file(transcriber);
         }
@@ -948,7 +951,12 @@ impl CaptureManager {
             .env("ARCO_SESSION_ID", &suffix)
             .env("ARCO_MEETING_ID", &active_meeting_id)
             .env("ARCO_TRANSCRIPT_PATH", &transcript)
-            .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder);
+            .env("ARCO_SESSION_STARTED_AT_UNIX", &session_started_at_unix)
+            .env("ARCO_RECORDER_READY_FILE", &ready_signals.recorder)
+            .env(
+                "ARCO_RECORDER_ERROR_FILE",
+                ready_signals.recorder.with_extension("error.signal"),
+            );
         configure_process_group(&mut recorder_command)
             .map_err(|error| format!("could not isolate native recorder process: {error}"))?;
         let mut recorder = match recorder_command.spawn() {
@@ -1340,6 +1348,19 @@ fn interrupt_active_capture(inner: &mut CaptureInner) {
     inner.state = CaptureState::idle(Some("Capture interrupted because Arco closed".into()));
 }
 
+fn recorder_startup_error(ready_file: &Path) -> Option<String> {
+    let message = fs::read_to_string(ready_file.with_extension("error.signal")).ok()?;
+    let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+    if message.starts_with("no physical microphone is connected") {
+        Some("No physical microphone is available. Connect a microphone or choose System audio only.".into())
+    } else {
+        Some(format!("Native recorder could not start: {message}"))
+    }
+}
+
 fn wait_for_pipeline_ready(
     children: &mut CaptureChildren,
     recorder_ready_file: &Path,
@@ -1358,9 +1379,15 @@ fn wait_for_pipeline_ready(
         if startup_cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
             return Err(STARTUP_CANCELLED.into());
         }
+        if let Some(error) = recorder_startup_error(recorder_ready_file) {
+            return Err(error);
+        }
         for transcriber in &mut children.transcribers {
             match transcriber.child.try_wait() {
                 Ok(Some(status)) => {
+                    if let Some(error) = recorder_startup_error(recorder_ready_file) {
+                        return Err(error);
+                    }
                     return Err(format!(
                         "transcriber exited before readiness: {} ({status})",
                         transcriber.label,
@@ -1543,6 +1570,7 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                         .unwrap()
                         .join("AudioArchive.swift")
                         .as_path(),
+                    source.parent().unwrap().join("RecorderOutput.swift").as_path(),
                     audio_runtime_archive.as_path(),
                     audio_runtime_header.as_path(),
                 ]
@@ -1576,9 +1604,11 @@ fn ensure_recorder(spec: &RecorderSpec) -> Result<PathBuf, String> {
                     .map_err(|e| format!("Could not stage recorder source: {e}"))?;
                 let archive_source = source.parent().unwrap().join("AudioArchive.swift");
                 let combined = format!(
-                    "{}\n{}",
+                    "{}\n{}\n{}",
                     fs::read_to_string(source).map_err(|e| e.to_string())?,
-                    fs::read_to_string(archive_source).map_err(|e| e.to_string())?
+                    fs::read_to_string(archive_source).map_err(|e| e.to_string())?,
+                    fs::read_to_string(source.parent().unwrap().join("RecorderOutput.swift"))
+                        .map_err(|e| e.to_string())?
                 );
                 fs::write(combined_source.path(), combined).map_err(|e| e.to_string())?;
                 let mut build_command = Command::new(swiftc);
@@ -1848,6 +1878,7 @@ fn load_capture_environment(paths: &AppPaths) -> HashMap<String, String> {
         "ARCO_AUDIO_BUFFER_SECONDS",
         "ARCO_MIC_DEVICE_ID",
         "ARCO_MIC_DEVICE_NAME",
+        "ARCO_MICROPHONE_SELECTION_FILE",
         "ARCO_MIC_ECHO_CANCELLATION",
         "HTTPS_PROXY",
         "HTTP_PROXY",
@@ -1927,8 +1958,8 @@ mod tests {
     #[test]
     fn recorder_grace_covers_screen_capture_kit_shutdown() {
         assert!(
-            RECORDER_TERMINATION_GRACE >= Duration::from_secs(3),
-            "the host must cover ScreenCaptureKit's one-second stop wait plus stdout and two resampler-tail drains"
+            RECORDER_TERMINATION_GRACE >= Duration::from_secs(6),
+            "the host must cover capture shutdown, PCM flush, resampler tails and archive finalization"
         );
     }
 
@@ -2007,15 +2038,15 @@ mod tests {
         );
         let microphone_callback = source_between(
             source,
-            "input.installTap(",
-            "do {\n            engine.prepare()",
+            "let created = AudioDeviceCreateIOProcID(",
+            "guard created == noErr",
         );
 
         assert!(source.contains("arco_audio_rt_io_proc"));
         assert!(io_callback.contains("arco_audio_rt_io_proc"));
         assert!(io_callback.contains("UnsafeMutableRawPointer(audioRuntime.producer)"));
         assert!(!io_callback.contains("Unmanaged"));
-        assert!(microphone_callback.contains("arco_audio_rt_push_planar_f32"));
+        assert!(microphone_callback.contains("arco_audio_rt_io_proc"));
         for callback in [io_callback, microphone_callback] {
             assert!(!callback.contains("Array("));
             assert!(!callback.contains("resampler"));
@@ -2060,8 +2091,9 @@ mod tests {
         assert!(!mixer.contains("lock.lock()"));
         assert!(!mixer.contains("removeFirst"));
         assert!(!mixer.contains("var interleaved = [Int16]("));
-        assert!(mixer.contains("outputWriteGate.wait(timeout: .now())"));
-        assert!(mixer.contains("outputQueue.async"));
+        assert!(mixer.find("archive?.append(rawPayload)").unwrap()
+            < mixer.find("pcmOutput?.enqueue").unwrap());
+        assert!(!mixer.contains("outputWriteGate"));
         assert!(mixer.contains("drainAudioRuntime()"));
     }
 
@@ -2074,7 +2106,7 @@ mod tests {
             "@available(macOS 14.2, *)\n    private func stopCoreAudioTapCapture()",
         );
 
-        let microphone_stop = stop.find("removeTap(onBus: 0)").unwrap();
+        let microphone_stop = stop.find("AudioDeviceStop(microphoneDeviceID, callback)").unwrap();
         let system_stop = stop.find("stopCoreAudioTapCapture()").unwrap();
         let stream_stop = stop.find("stream.stopCapture").unwrap();
         let runtime_stop = stop.find("stopAudioRuntime(").unwrap();
@@ -2117,8 +2149,8 @@ mod tests {
         assert!(runtime.contains("fifo: &systemBuffer"));
         assert!(runtime.contains("fifo: &micBuffer"));
         assert!(runtime.contains("emitRemainingPCM()"));
-        assert!(runtime.contains("outputWriteGate.wait(timeout: .now() + 1)"));
-        assert!(runtime.contains("writeAll(bytes)"));
+        assert!(runtime.contains("pcmOutput?.finish()"));
+        assert!(runtime.contains("pcmOutput?.enqueue"));
         assert!(runtime.contains("Rust audio runtime drain failed during shutdown"));
         assert!(runtime.contains("shutdown PCM FIFO overflow"));
         assert!(
@@ -2207,8 +2239,9 @@ mod tests {
     fn native_aec_contract_degrades_without_stopping_capture() {
         let source = include_str!("../../../native/recorder.swift");
 
-        assert!(source.contains("try input.setVoiceProcessingEnabled(true)"));
-        assert!(source.contains("input.isVoiceProcessingAGCEnabled = false"));
+        assert!(!source.contains("setVoiceProcessingEnabled(true)"));
+        assert!(source.contains("arco_aec_create(&echoCanceller)"));
+        assert!(source.contains("arco_aec_process(echoCanceller"));
         assert!(source.contains("echo cancellation unavailable; continuing raw"));
         assert!(source.contains("EchoCancellationPolicy.shouldEnable(mode: mode"));
     }
