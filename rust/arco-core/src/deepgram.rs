@@ -33,6 +33,7 @@ const REMOTE_FINALIZATION_GRACE: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
+    pub words: Vec<crate::models::TimedWord>,
     pub channel: usize,
     pub speaker: Option<i64>,
     pub label: String,
@@ -302,6 +303,25 @@ pub fn segments_from_result(payload: &Value) -> Vec<Segment> {
         let text = join_words(words);
         if !text.is_empty() {
             segments.push(Segment {
+                words: {
+                    let provider_words = Value::Array(
+                        alternative
+                            .get("words")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter(|w| w.get("speaker").and_then(Value::as_i64) == speaker)
+                            .cloned()
+                            .collect(),
+                    );
+                    crate::transcript_timing::words(Some(&provider_words), false)
+                        .into_iter()
+                        .filter(|w| {
+                            w.start_ms >= (start * 1000.0).round() as i64
+                                && w.end_ms <= (end * 1000.0).round() as i64
+                        })
+                        .collect()
+                },
                 channel,
                 speaker,
                 label: participant_label(channel, speaker),
@@ -366,6 +386,7 @@ pub fn segments_from_result(payload: &Value) -> Vec<Segment> {
         return Vec::new();
     }
     vec![Segment {
+        words: Vec::new(),
         channel,
         speaker: None,
         label: participant_label(channel, None),
@@ -391,6 +412,7 @@ fn tentative_segment_from_result(payload: &Value) -> Option<Segment> {
     let start = number(payload.get("start"), 0.0);
     let end = start + number(payload.get("duration"), 0.0);
     Some(Segment {
+        words: Vec::new(),
         channel,
         speaker: None,
         label: participant_label(channel, None),
@@ -583,26 +605,29 @@ impl TranscriptWriter {
             "**[{timestamp}] {}:** {}\n",
             segment.label, segment.text
         )
-        .and_then(|_| {
-            writeln!(
-                file,
-                "<!-- arco channel={} speaker={} stream={} start={:.3} end={:.3} -->\n",
-                segment.channel,
-                segment
-                    .speaker
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "unknown".into()),
-                segment
-                    .connection_id
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "unknown".into()),
-                segment.start,
-                segment.end,
-            )
-        })
         .map_err(|error| format!("could not append live transcript: {error}"))?;
         file.flush()
             .map_err(|error| format!("could not flush live transcript: {error}"))
+            .and_then(|_| self.append_timing_to_file(segment))?;
+        Ok(())
+    }
+
+    fn append_timing_to_file(&mut self, segment: &Segment) -> Result<(), String> {
+        let raw_markdown = fs::read_to_string(&self.path)
+            .map_err(|error| format!("could not count transcript lines: {error}"))?;
+        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
+            .len()
+            .checked_sub(1)
+            .ok_or("could not identify the appended transcript line")?;
+        crate::transcript_timing::append_line(
+            &crate::transcript_timing::sidecar_path(&self.path),
+            line_index,
+            segment.start,
+            segment.end,
+            &segment.words,
+            self.session_started_at,
+        )
+        .map_err(|error| format!("could not append Deepgram timing sidecar: {error}"))
     }
 
     fn update_live(&mut self, channel: usize, segments: &[Segment]) -> Result<(), String> {
@@ -839,6 +864,7 @@ async fn stream_connection(
                         let shifted: Vec<_> = segments_from_result(&payload).into_iter().map(|mut segment| {
                             segment.start += origin;
                             segment.end += origin;
+                            crate::transcript_timing::shift(&mut segment.words, origin);
                             segment
                         }).collect();
                         if !shifted.is_empty() {
@@ -1138,6 +1164,7 @@ mod tests {
         assert_eq!(
             tentative_segment_from_result(&interim),
             Some(Segment {
+                words: Vec::new(),
                 channel: 0,
                 speaker: None,
                 label: "Remote".into(),

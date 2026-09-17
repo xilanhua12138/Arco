@@ -34,6 +34,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
+    pub words: Vec<crate::models::TimedWord>,
     pub channel: usize,
     pub speaker: i64,
     pub label: String,
@@ -309,6 +310,7 @@ pub fn segments_from_realtime(payload: &Value, channel: usize) -> Vec<Segment> {
         .find_map(|word| word.get("end").and_then(Value::as_f64))
         .unwrap_or(start);
     vec![Segment {
+        words: crate::transcript_timing::words(payload.get("words"), false),
         channel,
         speaker: 0,
         label: source_label(channel),
@@ -388,15 +390,23 @@ impl TranscriptWriter {
             "**[{timestamp}] {}:** {}\n",
             segment.label, segment.text
         )
-        .and_then(|_| {
-            writeln!(
-                file,
-                "<!-- arco channel={} speaker={} stream=elevenlabs-realtime start={:.3} end={:.3} -->\n",
-                segment.channel, segment.speaker, segment.start, segment.end,
-            )
-        })
         .and_then(|_| file.flush())
-        .map_err(|error| format!("could not write live ElevenLabs transcript: {error}"))
+        .map_err(|error| format!("could not write live ElevenLabs transcript: {error}"))?;
+        let raw_markdown = fs::read_to_string(&self.path)
+            .map_err(|error| format!("could not count transcript lines: {error}"))?;
+        let line_index = crate::meetings::parse_transcript_lines(&raw_markdown)
+            .len()
+            .checked_sub(1)
+            .ok_or("could not identify the appended transcript line")?;
+        crate::transcript_timing::append_line(
+            &crate::transcript_timing::sidecar_path(&self.path),
+            line_index,
+            segment.start,
+            segment.end,
+            &segment.words,
+            self.session_started_at,
+        )
+        .map_err(|error| format!("could not append ElevenLabs timing sidecar: {error}"))
     }
 }
 
@@ -658,6 +668,7 @@ async fn stream_connected_channel(
                         for mut segment in segments_from_realtime(&payload, state.channel) {
                             segment.start += origin;
                             segment.end += origin;
+                            crate::transcript_timing::shift(&mut segment.words, origin);
                             let segment = attribute_segment(segment, timeline_path).await;
                             writer.lock().await.append(&segment)?;
                             state.recent_text = segment.text;
@@ -1098,6 +1109,7 @@ mod tests {
             )
             .unwrap();
         let segment = Segment {
+            words: Vec::new(),
             channel: 1,
             speaker: 0,
             label: "In room 1".into(),
