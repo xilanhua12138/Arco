@@ -1,5 +1,5 @@
 import AppKit
-import ArcoNativeUI
+@_spi(Packaging) import ArcoNativeUI
 import SwiftUI
 
 @main
@@ -20,6 +20,9 @@ private final class ArcoApplicationDelegate: NSObject, NSApplicationDelegate {
     private var runtime: NativeApplicationRuntime?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--self-test-resources") {
+            exit(arcoResourceSelfTest() ? 0 : 1)
+        }
         ArcoProcessSignalPolicy.install()
         NSApp.setActivationPolicy(.regular)
         do {

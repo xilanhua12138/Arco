@@ -168,6 +168,7 @@ fi
 hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$OUTPUT" >/dev/null
 MOUNTED=1
 codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Arco.app"
+"$MOUNT_POINT/Arco.app/Contents/MacOS/Arco" --self-test-resources
 ARCO_BOUNDARY_SKIP_CODESIGN=0 \
   "$ROOT/native/verify-native-boundaries.sh" "$MOUNT_POINT/Arco.app"
 if [ ! -x "$MOUNT_POINT/Arco.app/Contents/Resources/native/arco-elevenlabs-transcriber" ]; then
