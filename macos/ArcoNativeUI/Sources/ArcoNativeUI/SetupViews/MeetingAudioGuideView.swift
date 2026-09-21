@@ -48,7 +48,7 @@ public struct MeetingAudioGuideView: View {
     }
     private func screenshot(_ name: String, crop: CGRect, highlight: CGRect) -> some View {
         GeometryReader { geometry in
-            if let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "MeetingAudioGuide"),
+            if let url = ArcoResources.bundle?.url(forResource: name, withExtension: "png", subdirectory: "MeetingAudioGuide"),
                let image = NSImage(contentsOf: url) {
                 let width = geometry.size.width / crop.width
                 let height = width * image.size.height / image.size.width

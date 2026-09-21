@@ -76,4 +76,6 @@ else
   ARCO_BOUNDARY_SKIP_CODESIGN=1 "$ROOT/native/verify-native-boundaries.sh" "$APP"
 fi
 
+"$MACOS/Arco" --self-test-resources
+
 echo "Built $APP"

@@ -527,12 +527,7 @@ public enum ArcoTypography {
     }
 
     private static let wordmarkFontAvailable: Bool = {
-        // A packaged app must resolve its own resources, not SwiftPM's build directory.
-        let packagedBundle = Bundle.main.resourceURL
-            .map { $0.appendingPathComponent("ArcoNativeUI_ArcoNativeUI.bundle") }
-            .flatMap { Bundle(url: $0) }
-        let resources = packagedBundle ?? Bundle.module
-        guard let url = resources.url(forResource: "Syne", withExtension: "ttf", subdirectory: "Fonts") else {
+        guard let url = ArcoResources.bundle?.url(forResource: "Syne", withExtension: "ttf", subdirectory: "Fonts") else {
             return false
         }
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)

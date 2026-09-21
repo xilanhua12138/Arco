@@ -32,6 +32,7 @@ struct LiveKitAuraView: NSViewRepresentable {
         let device = MTLCreateSystemDefaultDevice()
         private var pipeline: MTLRenderPipelineState?
         private var queue: MTLCommandQueue?
+        var isReady: Bool { pipeline != nil && queue != nil }
         private var lastFrame = CACurrentMediaTime()
         private var time: Float = 0
         private var speed: Float = 10
@@ -44,7 +45,7 @@ struct LiveKitAuraView: NSViewRepresentable {
 
         override init() {
             super.init()
-            guard let device, let url = Bundle.module.url(forResource: "LiveKitAura.metal", withExtension: "txt", subdirectory: "Aura") else { return }
+            guard let device, let url = ArcoResources.bundle?.url(forResource: "LiveKitAura.metal", withExtension: "txt", subdirectory: "Aura") else { return }
             do {
                 let source = try String(contentsOf: url, encoding: .utf8)
                 let library = try device.makeLibrary(source: source, options: nil)
