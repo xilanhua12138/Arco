@@ -44,6 +44,7 @@ COMBINED_SOURCE=$(mktemp "${TMPDIR:-/tmp}/arco-recorder.XXXXXX.swift")
 trap 'rm -f "$COMBINED_SOURCE"' EXIT HUP INT TERM
 cat "$NATIVE_DIR/recorder.swift" "$NATIVE_DIR/AudioArchive.swift" "$NATIVE_DIR/RecorderOutput.swift" > "$COMBINED_SOURCE"
 swiftc -O "$COMBINED_SOURCE" \
+  -no-stdlib-rpath \
   -import-objc-header "$AUDIO_RUNTIME_HEADER" \
   "$AUDIO_RUNTIME_ARCHIVE" \
   -o "$OUTPUT" \
