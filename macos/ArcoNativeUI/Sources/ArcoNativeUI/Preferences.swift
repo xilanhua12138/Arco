@@ -42,6 +42,8 @@ public enum ArcoPreferenceKey {
     public static let onboardingDraft = "arco.onboarding.draft.v1"
     public static let audioMode = "arco.audioMode"
     public static let agentWorkspace = "arco.agentWorkspace"
+    public static let agentContextScope = "arco.agentContextScope.v1"
+    public static let agentScopes = "arco.agentScopes.v1"
     public static let agentTranscriptVisible = "arco.agentTranscriptVisible"
     public static let gptLiveBetaEnabled = "arco.gptLiveBeta.enabled.v1"
     public static let locale = "arco.locale"
@@ -320,6 +322,33 @@ public final class ArcoPreferences {
             workspace.trimmingCharacters(in: .whitespacesAndNewlines),
             forKey: ArcoPreferenceKey.agentWorkspace
         )
+    }
+
+    public func loadAgentContextScope() -> InsightContextScope {
+        if let raw = store.string(forKey: ArcoPreferenceKey.agentContextScope) {
+            if raw == "workspace" { return .personal }
+            if let scope = InsightContextScope(rawValue: raw) { return scope }
+        }
+        return .personal
+    }
+
+    public func saveAgentContextScope(_ scope: InsightContextScope) {
+        store.set(scope.rawValue, forKey: ArcoPreferenceKey.agentContextScope)
+    }
+
+    public func loadAgentScopes() -> [String: InsightContextScope] {
+        guard let raw = store.string(forKey: ArcoPreferenceKey.agentScopes),
+              let data = raw.data(using: .utf8),
+              let values = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return values.compactMapValues { $0 == "workspace" ? .personal : InsightContextScope(rawValue: $0) }
+    }
+
+    public func saveAgentScopes(_ scopes: [String: InsightContextScope]) {
+        if let data = try? JSONEncoder().encode(scopes.mapValues(\.rawValue)),
+           let raw = String(data: data, encoding: .utf8) {
+            store.set(raw, forKey: ArcoPreferenceKey.agentScopes)
+        }
     }
 
     public func loadGPTLiveBetaEnabled() -> Bool {

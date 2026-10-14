@@ -38,11 +38,16 @@ public struct GPTLiveSessionRequest: Equatable, Sendable {
     public let mode: AudioMode
     public let transcriptPath: String
     public let provider: ProviderID
+    public let contextScope: InsightContextScope
+    public let workspace: String?
 
-    public init(mode: AudioMode, transcriptPath: String, provider: ProviderID) {
+    public init(mode: AudioMode, transcriptPath: String, provider: ProviderID,
+                contextScope: InsightContextScope = .personal, workspace: String? = nil) {
         self.mode = mode
         self.transcriptPath = transcriptPath
         self.provider = provider
+        self.contextScope = contextScope
+        self.workspace = contextScope == .transcript ? nil : workspace
     }
 }
 

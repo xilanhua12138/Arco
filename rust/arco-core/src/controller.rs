@@ -748,7 +748,7 @@ impl Controller {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
-        let context_scope = context_scope.as_deref().unwrap_or("transcript");
+        let context_scope = context_scope.as_deref().unwrap_or("personal");
         let canonical_cwd = self
             .agent
             .working_directory(context_scope, workspace.as_deref())?;

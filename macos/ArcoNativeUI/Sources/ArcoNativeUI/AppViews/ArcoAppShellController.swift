@@ -140,7 +140,20 @@ public final class ArcoAppShellController: ObservableObject {
     @Published public private(set) var agentFocusRequest = 0
     @Published public var agentDrafts: [String: String] = [:]
     @Published public var agentRequestErrors: [String: Bool] = [:]
-    @Published public var agentScopes: [String: InsightContextScope] = [:]
+    @Published public var agentScopes: [String: InsightContextScope] = [:] {
+        didSet { preferences.saveAgentScopes(agentScopes) }
+    }
+    @Published public private(set) var defaultAgentScope: InsightContextScope = .personal
+
+    public func agentContextScope(for meetingID: String) -> InsightContextScope {
+        agentScopes[meetingID] ?? defaultAgentScope
+    }
+
+    public func setAgentContextScope(_ scope: InsightContextScope, for meetingID: String) {
+        agentScopes[meetingID] = scope
+        defaultAgentScope = scope
+        preferences.saveAgentContextScope(scope)
+    }
 
     public func setAgentPanelExpanded(_ expanded: Bool) {
         guard expanded != agentPanelExpanded else { return }
@@ -241,6 +254,8 @@ public final class ArcoAppShellController: ObservableObject {
         gptLiveBetaEnabled = preferences.loadGPTLiveBetaEnabled()
         locale = preferences.loadLocale()
         agentWorkspace = preferences.loadAgentWorkspace()
+        defaultAgentScope = preferences.loadAgentContextScope()
+        agentScopes = preferences.loadAgentScopes()
         let onboarding = preferences.loadOnboardingState()
         providerSetupOpen = !initialProviderConfiguration.setupComplete && !onboarding.completed
 
@@ -613,7 +628,9 @@ public final class ArcoAppShellController: ObservableObject {
             ?? providerConfiguration.primary ?? .codex
         voiceInvitationPreparing = false
         await gptLiveSession.connect(request: GPTLiveSessionRequest(
-            mode: displayedAudioMode, transcriptPath: transcriptPath, provider: provider
+            mode: displayedAudioMode, transcriptPath: transcriptPath, provider: provider,
+            contextScope: agentContextScope(for: store.capture.activeMeetingId ?? ""),
+            workspace: agentWorkspace
         ))
     }
 

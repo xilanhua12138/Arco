@@ -3,7 +3,7 @@ import SwiftUI
 
 public enum InsightContextScope: String, Sendable {
     case transcript
-    case workspace
+    case personal
 }
 
 public enum InsightPanelLayout: Sendable {
@@ -122,7 +122,7 @@ public struct InsightPanelView: View {
     private var externalQuestion: Binding<String>?
     @State private var localQuestion: String
     private var externalScope: Binding<InsightContextScope>?
-    @State private var localScope: InsightContextScope = .transcript
+    @State private var localScope: InsightContextScope = .personal
     private var scope: InsightContextScope {
         get { externalScope?.wrappedValue ?? localScope }
         nonmutating set {
@@ -531,7 +531,7 @@ public struct InsightPanelView: View {
     }
 
     private var actionsDisabled: Bool {
-        running || pendingQuestion != nil || runtime?.available != true || workspaceMissing
+        running || pendingQuestion != nil || runtime?.available != true
     }
 
     private var usableWorkspace: String? {
@@ -539,7 +539,6 @@ public struct InsightPanelView: View {
         return workspace
     }
 
-    private var workspaceMissing: Bool { scope == .workspace && usableWorkspace == nil }
 
     private var bodyHorizontalInset: CGFloat { layout == .agentOverlay ? 16 : 24 }
     private var bodyTopInset: CGFloat { layout == .agentOverlay ? 14 : 12 }
@@ -781,7 +780,12 @@ public struct InsightPanelView: View {
                 fixed: true,
                 action: nil
             )
-            if scope == .workspace, let workspace = usableWorkspace {
+            if scope == .personal {
+                contextChip(label: translate("agent.scope.personal", [:]), icon: .folderOpen,
+                    fixed: true, action: nil)
+                    .help(translate("agent.localContextHelp", [:]))
+            }
+            if scope != .transcript, let workspace = usableWorkspace {
                 contextChip(
                     label: workspaceName(workspace),
                     icon: .folderOpen,
@@ -896,16 +900,13 @@ public struct InsightPanelView: View {
 
     private var composerContextMenu: some View {
         VStack(spacing: 0) {
-            if let workspace = usableWorkspace, scope == .transcript {
-                InsightContextMenuItem(
-                    icon: .folderOpen,
-                    label: translate("agent.useWorkspace", ["workspace": workspaceName(workspace)])
-                ) {
-                    scope = .workspace
+            if scope != .personal {
+                InsightContextMenuItem(icon: .folderOpen, label: translate("agent.useLocalContext", [:])) {
+                    scope = .personal
                     contextMenuOpen = false
                 }
             }
-            if scope == .workspace {
+            if scope != .transcript {
                 InsightContextMenuItem(
                     icon: .bookOpenText,
                     label: translate("agent.useTranscriptOnly", [:])
@@ -931,7 +932,7 @@ public struct InsightPanelView: View {
                     : translate("agent.chooseAnotherWorkspace", [:])
             ) {
                 Task { @MainActor in
-                    if await onChooseWorkspace() != nil { scope = .workspace }
+                    if await onChooseWorkspace() != nil { scope = .personal }
                     contextMenuOpen = false
                 }
             }
@@ -967,7 +968,6 @@ public struct InsightPanelView: View {
             || pendingQuestion != nil
             || meeting == nil
             || runtime?.available != true
-            || workspaceMissing
     }
 
     private var sendButtonForeground: Color {
@@ -986,8 +986,7 @@ public struct InsightPanelView: View {
         guard !visibleQuestion.isEmpty,
               !running,
               pendingQuestion == nil,
-              runtime?.available == true,
-              !workspaceMissing
+              runtime?.available == true
         else { return }
 
         requestError = false
@@ -1001,7 +1000,7 @@ public struct InsightPanelView: View {
             agentPrompt: normalizedPrompt?.nilIfEmpty,
             meetingID: meeting.summary.id,
             contextScope: scope,
-            workspace: scope == .workspace ? workspace : nil
+            workspace: scope != .transcript ? workspace : nil
         )
 
         do {

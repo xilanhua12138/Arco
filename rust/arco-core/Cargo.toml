@@ -1,6 +1,6 @@
 [package]
 name = "arco-core"
-version = "0.4.3"
+version = "0.4.4"
 description = "Framework-independent backend for the native Arco macOS app"
 authors = ["Arco contributors"]
 license = "MIT"
@@ -58,3 +58,6 @@ serial_test = "3.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 trash = { version = "5.2", default-features = false }
+
+[profile.release.build-override]
+strip = "none"

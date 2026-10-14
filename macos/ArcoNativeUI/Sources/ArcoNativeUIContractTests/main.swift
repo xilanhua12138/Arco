@@ -1011,7 +1011,7 @@ private func testAgentPanelPreservesMeetingDraftsAndScope() {
     expect(controller.agentPanelExpanded, false, "The initial reading workspace does not reserve Agent space")
     expect(controller.agentFocusRequest, 0, "The initial collapsed workspace does not steal keyboard focus")
     controller.agentDrafts["meeting-a"] = "还没有确定谁负责？"
-    controller.agentScopes["meeting-a"] = .workspace
+    controller.agentScopes["meeting-a"] = .personal
     controller.agentDrafts["meeting-b"] = "另一场会议的草稿"
     controller.setAgentPanelExpanded(true)
     expect(controller.agentFocusRequest, 1, "Opening the Agent requests focus once")
@@ -1019,7 +1019,7 @@ private func testAgentPanelPreservesMeetingDraftsAndScope() {
     expect(controller.agentFocusRequest, 1, "An idempotent open does not steal focus again")
     controller.setAgentPanelExpanded(false)
     expect(controller.agentDrafts["meeting-a"], "还没有确定谁负责？", "Collapse keeps the exact draft")
-    expect(controller.agentScopes["meeting-a"], .workspace, "Collapse keeps the selected context scope")
+    expect(controller.agentScopes["meeting-a"], .personal, "Collapse keeps the selected context scope")
     controller.page = .history
     controller.setAgentPanelExpanded(true)
     expect(controller.agentDrafts["meeting-b"], "另一场会议的草稿", "Each meeting keeps its own draft across navigation")

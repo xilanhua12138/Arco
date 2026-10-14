@@ -543,8 +543,8 @@ public struct ArcoMainShellView: View {
                 set: { controller.agentDrafts[meeting?.summary.id ?? ""] = $0 }
             ),
             contextScope: Binding(
-                get: { controller.agentScopes[meeting?.summary.id ?? ""] ?? .transcript },
-                set: { controller.agentScopes[meeting?.summary.id ?? ""] = $0 }
+                get: { controller.agentContextScope(for: meeting?.summary.id ?? "") },
+                set: { controller.setAgentContextScope($0, for: meeting?.summary.id ?? "") }
             ),
             requestError: Binding(
                 get: { controller.agentRequestErrors[meeting?.summary.id ?? ""] ?? false },
