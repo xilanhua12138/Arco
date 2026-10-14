@@ -14,6 +14,7 @@ struct AgentOverlaySnapshot: Equatable, Sendable {
     var streamingTurn: AgentStreamingTurn?
     var loading: Bool
     var workspace: String?
+    var contextScope: InsightContextScope = .personal
     var attachments: [MeetingAttachment]
 
     static let empty = AgentOverlaySnapshot(
@@ -43,6 +44,7 @@ final class AgentOverlayModel {
     private let loadActiveSnapshot: () async throws -> AgentOverlaySnapshot
     private let runAsk: (InsightAskRequest) async throws -> Bool
     private let chooseWorkspaceAction: () async -> String?
+    private let contextScopeAction: (InsightContextScope, String) -> Void
     private let attachDocumentAction: (String) async -> Bool
     private let removeAttachmentAction: (String, String) async -> Void
     private var refreshGeneration = 0
@@ -52,6 +54,7 @@ final class AgentOverlayModel {
         loadActiveSnapshot: @escaping () async throws -> AgentOverlaySnapshot,
         runAsk: @escaping (InsightAskRequest) async throws -> Bool,
         chooseWorkspace: @escaping () async -> String?,
+        setContextScope: @escaping (InsightContextScope, String) -> Void = { _, _ in },
         attachDocument: @escaping (String) async -> Bool = { _ in false },
         removeAttachment: @escaping (String, String) async -> Void = { _, _ in }
     ) {
@@ -59,6 +62,7 @@ final class AgentOverlayModel {
         self.loadActiveSnapshot = loadActiveSnapshot
         self.runAsk = runAsk
         self.chooseWorkspaceAction = chooseWorkspace
+        self.contextScopeAction = setContextScope
         self.attachDocumentAction = attachDocument
         self.removeAttachmentAction = removeAttachment
     }
@@ -98,6 +102,11 @@ final class AgentOverlayModel {
         let succeeded = try await runAsk(request)
         if succeeded { await refresh() }
         return succeeded
+    }
+
+    func setContextScope(_ scope: InsightContextScope) {
+        snapshot.contextScope = scope
+        contextScopeAction(scope, snapshot.meeting?.summary.id ?? "")
     }
 
     func chooseWorkspace() async -> String? {
@@ -344,6 +353,10 @@ struct AgentOverlaySurfaceView: View {
                 primaryProvider: model.snapshot.providerConfiguration.primary ?? route.provider,
                 isFailover: route.isFailover,
                 running: model.snapshot.running,
+                contextScope: Binding(
+                    get: { model.snapshot.contextScope },
+                    set: { model.setContextScope($0) }
+                ),
                 workspace: model.snapshot.workspace,
                 attachments: model.snapshot.attachments,
                 live: live,

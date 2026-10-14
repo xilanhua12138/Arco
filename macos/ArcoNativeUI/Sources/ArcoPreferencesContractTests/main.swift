@@ -309,8 +309,28 @@ private func testMissingAndDamagedLegacyDatabase() throws {
     }
 }
 
+private func testAgentContextPersistenceAndMigration() throws {
+    let store = MemoryKeyValueStore()
+    let preferences = ArcoPreferences(store: store)
+    try expect(InsightContextScope(rawValue: "workspace") == nil, "Workspace mode is removed")
+    try expect(preferences.loadAgentContextScope() == .personal, "Local context is the default")
+    preferences.saveAgentContextScope(.transcript)
+    preferences.saveAgentScopes(["meeting-a": .transcript, "meeting-b": .personal])
+    let reopened = ArcoPreferences(store: store)
+    try expect(reopened.loadAgentContextScope() == .transcript, "Explicit transcript-only selection survives restart")
+    try expect(reopened.loadAgentScopes()["meeting-a"] == .transcript, "Meeting selection survives restart")
+    try expect(reopened.loadAgentScopes()["meeting-b"] == .personal, "Local selection survives restart")
+    store.set("workspace", forKey: ArcoPreferenceKey.agentContextScope)
+    store.set("{\"old-meeting\":\"workspace\"}", forKey: ArcoPreferenceKey.agentScopes)
+    try expect(reopened.loadAgentContextScope() == .personal, "Legacy workspace mode migrates to local context")
+    try expect(reopened.loadAgentScopes()["old-meeting"] == .personal, "Legacy meeting scope migrates to local context")
+    store.set("invalid", forKey: ArcoPreferenceKey.agentContextScope)
+    try expect(reopened.loadAgentContextScope() == .personal, "Unknown scope uses the local default")
+}
+
 do {
     try testDefaultsAndRoundTrips()
+    try testAgentContextPersistenceAndMigration()
     try testUserDefaultsAdapter()
     try testMalformedAndInvalidStorage()
     try testLegacyNormalization()

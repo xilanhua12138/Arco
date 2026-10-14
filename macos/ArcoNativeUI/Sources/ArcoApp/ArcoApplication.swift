@@ -342,6 +342,7 @@ private final class NativeApplicationRuntime {
                     streamingTurn: store.agentStreamingTurn,
                     loading: false,
                     workspace: shellController.agentWorkspace,
+                    contextScope: shellController.agentContextScope(for: meeting?.summary.id ?? ""),
                     attachments: attachments
                 )
             },
@@ -357,6 +358,9 @@ private final class NativeApplicationRuntime {
                 ))
             },
             chooseWorkspace: { await shellController.chooseWorkspace() },
+            setContextScope: { scope, meetingID in
+                shellController.setAgentContextScope(scope, for: meetingID)
+            },
             attachDocument: { meetingID in
                 await shellController.attachDocument(to: meetingID)
             },
@@ -540,6 +544,12 @@ private struct AgentOverlayHostView: View {
             Task { await model.refresh() }
         }
         .onChange(of: shellController.providerConfiguration) { _, _ in
+            Task { await model.refresh() }
+        }
+        .onChange(of: shellController.agentScopes) { _, _ in
+            Task { await model.refresh() }
+        }
+        .onChange(of: shellController.defaultAgentScope) { _, _ in
             Task { await model.refresh() }
         }
         .onChange(of: shellController.agentWorkspace) { _, _ in

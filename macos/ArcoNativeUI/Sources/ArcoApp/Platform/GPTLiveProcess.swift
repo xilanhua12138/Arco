@@ -80,6 +80,10 @@ final class GPTLiveProcessLauncher {
             "--transcript", request.transcriptPath,
             "--provider", request.provider.rawValue,
         ]
+        process.arguments?.append(contentsOf: ["--context-scope", request.contextScope.rawValue])
+        if let workspace = request.workspace {
+            process.arguments?.append(contentsOf: ["--workspace", workspace])
+        }
         process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errors

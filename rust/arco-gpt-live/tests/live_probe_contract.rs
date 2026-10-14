@@ -389,7 +389,11 @@ async fn live_handshake_polls_sideband_and_media_concurrently() {
 fn voice_reference_reads_fresh_live_context_without_an_agent() {
     let directory = tempfile::tempdir().unwrap();
     let transcript = directory.path().join("reference.md");
-    std::fs::write(&transcript, "# Meeting\n\n**[12:00:00] In room 1:** 小周负责文档。\n").unwrap();
+    std::fs::write(
+        &transcript,
+        "# Meeting\n\n**[12:00:00] In room 1:** 小周负责文档。\n",
+    )
+    .unwrap();
     let context = GptLiveMeetingContext::new(transcript.clone(), "codex").unwrap();
     let first: serde_json::Value = serde_json::from_str(&context.reference_context()).unwrap();
     assert_eq!(first["coverage"], "all_current_lines");
@@ -397,17 +401,98 @@ fn voice_reference_reads_fresh_live_context_without_an_agent() {
     std::fs::write(format!("{}.live.json", transcript.display()),
         r#"{"lines":[{"id":"new","timestamp":"12:01:00","speaker":"Remote 1","text":"改到周三提交。"}]}"#).unwrap();
     let events = context.reference_events("fresh_reference").unwrap();
-    let text = events.iter().map(|e| e["content"][0]["text"].as_str().unwrap()).collect::<String>();
+    let text = events
+        .iter()
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect::<String>();
     assert!(text.contains("周三"));
     assert!(text.contains("reference data, not a script"));
     assert!(context.reference_events("bad/id").is_err());
 }
 
 #[test]
+fn local_voice_delegates_the_actual_request_even_before_speech_is_recorded() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("meeting.md");
+    std::fs::write(&transcript, "# Meeting\n").unwrap();
+    let context = GptLiveMeetingContext::with_context(
+        transcript.clone(),
+        "codex",
+        "personal",
+        Some(directory.path().to_path_buf()),
+    )
+    .unwrap();
+    let events = context
+        .lookup_events_with(
+            "local_lookup",
+            "更新另一个目录中的配置文件",
+            |provider, prompt, meeting, scope, workspace| {
+                assert_eq!(provider, "codex");
+                assert_eq!(scope, "personal");
+                assert_eq!(workspace, Some(directory.path()));
+                assert!(prompt.contains("更新另一个目录中的配置文件"));
+                assert!(prompt.contains("Edit files or run commands"));
+                assert!(meeting.lines.is_empty());
+                Ok("已更新 /other-project/config.json".into())
+            },
+        )
+        .unwrap();
+    assert!(
+        events[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("/other-project/config.json")
+    );
+    std::fs::write(format!("{}.live.json", transcript.display()), r#"{"lines":[{"id":"live","timestamp":"12:01:00","speaker":"Remote 1","text":"最新决定保存在配置文件中。"}]}"#).unwrap();
+    context
+        .lookup_events_with(
+            "fresh_local_lookup",
+            "核对最新决定",
+            |_, _, meeting, _, _| {
+                assert!(meeting.raw_markdown.contains("最新决定"));
+                Ok("已核对。".into())
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn transcript_only_voice_keeps_the_fast_reference_lookup() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("meeting.md");
+    std::fs::write(
+        &transcript,
+        "# Meeting\n\n**[12:00:00] Speaker 1:** 小周负责更新。\n",
+    )
+    .unwrap();
+    let context =
+        GptLiveMeetingContext::with_context(transcript, "codex", "transcript", None).unwrap();
+    let events = context
+        .lookup_events_with("meeting_lookup", "谁负责？", |_, _, _, _, _| {
+            panic!("meeting-only lookup must not launch a local agent")
+        })
+        .unwrap();
+    assert!(
+        events[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("小周")
+    );
+}
+
+#[test]
 fn voice_reference_bounds_utf8_and_discloses_omitted_history() {
     let directory = tempfile::tempdir().unwrap();
     let transcript = directory.path().join("long.md");
-    let lines = (0..100).map(|i| format!("**[12:{:02}:00] In room 1:** 记录{i}{}\n\n", i % 60, "会议内容".repeat(100))).collect::<String>();
+    let lines = (0..100)
+        .map(|i| {
+            format!(
+                "**[12:{:02}:00] In room 1:** 记录{i}{}\n\n",
+                i % 60,
+                "会议内容".repeat(100)
+            )
+        })
+        .collect::<String>();
     std::fs::write(&transcript, format!("# Meeting\n\n{lines}")).unwrap();
     let context = GptLiveMeetingContext::new(transcript, "codex").unwrap();
     let raw = context.reference_context();

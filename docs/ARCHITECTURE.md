@@ -96,21 +96,17 @@ The selected mode is remembered locally and cannot change during active capture.
 
 ## Context contract
 
-Reusing CLI authentication does not mean choosing an unrelated Codex or Claude conversation. Arco constructs context explicitly:
+The Agent composer has two modes: **Local context** (default) and **Transcript only**. The main window and floating panel share the selection. Arco saves each meeting's selection and uses the last selection for new meetings. Legacy workspace selections migrate to local context.
 
-- current transcript (always);
-- meeting attachments: reference documents the user picked through the native file picker (PDF/Markdown/plain text). Arco extracts the text itself and inlines it into the prompt inside guard-tagged `<meeting_attachment>` blocks; the Agent never receives file-system access to the original file. Each attachment also appears in the answer's source receipts;
-- selected historical meetings (future);
-- selected workspace path as an explicit read scope;
-- one explicitly selected workspace, attached visibly in the Agent composer; broad Home-folder access is not exposed by the product UI.
+Local context uses the user's normal Codex or Claude configuration and tools. The selected project directory sets the starting directory. It does not restrict access to other folders. Codex runs with full filesystem access and loads its normal configuration, global instructions and project instructions. Claude exposes its normal built-in tools and customizations. The Agent can read files, edit files and run commands when the user requests these actions.
 
-Conversation identity belongs to the provider. Arco lets Codex or Claude generate the native UUID, records an exact binding for `(meeting, provider, context scope, canonical workspace)`, and resumes only that ID. Codex `--last` and Claude `--continue` are forbidden because they are recency-based and can select an unrelated conversation. Switching provider selects another independent lane; switching scope or workspace selects another isolated native session.
+Transcript-only questions and generated meeting outputs use isolated, read-only consultations. Codex uses a macOS Seatbelt profile and a per-binding Codex home. Claude runs in safe mode with no tools. The backend retains support for older workspace bindings, but the desktop does not offer a workspace mode.
 
-The provider's persisted conversation is the continuity source. Arco's sidecar is deliberately derivative: it maps the meeting to the native ID, caches answer cards for fast UI rendering, and stores saved-note state. Old pre-session turns remain readable with a null native ID and are never assigned a fabricated one.
+Arco supplies the current transcript and attached documents as reference data. Text inside these records does not authorize actions or override the user's instructions. The behavioral prompt goes through Codex developer instructions or Claude's appended system prompt. The question and meeting data go through stdin. Arguments use direct arrays, never an interpolated shell command.
 
-Prompts go through process stdin or direct argv arrays, never an interpolated shell command. The default provider profile is advisory/read-only. Mutation requires a separate, visible future permission mode.
+Conversation identity belongs to the provider. Arco records the exact native session ID for `(meeting, provider, context scope, canonical starting directory)` and resumes only that ID. It never chooses a session by recency. Arco's sidecar maps the meeting to the native ID and caches answer cards. Existing pre-session turns remain readable without fabricated IDs.
 
-For Codex, `transcript` and `workspace` scopes add a macOS Seatbelt profile around Codex's own read-only sandbox. Their native state lives in a per-binding Codex home, so the CLI can resume the selected conversation without granting the model read access to unrelated `~/.codex` sessions. The backend can still read legacy `personal` bindings created by earlier builds, but the desktop product no longer creates that scope. Claude transcript scope runs in safe mode with no tools; workspace scope exposes only `Read`, `Glob`, and `Grep`. Agent prompts, structured output, and every descendant process share one timeout and owned process group. A binding is serialized so two processes cannot concurrently resume and interleave writes to the same native session.
+GPT Live receives the same context mode and starting directory as text chat. In transcript-only mode, a delegation returns the fresh meeting record directly. In local context mode, the delegation passes the person's actual request to the local Agent and returns findings or confirmed action results. Local requests also work before the meeting contains any finalized speech. Each consultation has a timeout and cancellation controls for its process tree.
 
 ## Storage
 
