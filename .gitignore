@@ -26,6 +26,7 @@ artifacts/
 .cargo/*
 !.cargo/config.toml
 tmp/
+/tmp_agent_output/
 
 # Editor directories and files
 .vscode/*

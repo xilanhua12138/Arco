@@ -36,7 +36,7 @@ import ArcoNativeUI
         blocked.refresh(); blocked.select(usb.id)
         precondition(blocked.saveFailed && blocked.selected == nil)
         precondition(ArcoTranslations.text("settings.microphone.next", locale: .simplifiedChinese,
-            parameters: ["name": "USB"]) == "下次录音使用 USB。")
+            parameters: ["name": "USB"]) == "下次录音使用 USB")
         let live = MicrophoneSettingsModel(selectionURL: root.appendingPathComponent("live.json"))
         live.refresh()
         print("Available microphones: \(live.devices.map(\.name).joined(separator: ", "))")

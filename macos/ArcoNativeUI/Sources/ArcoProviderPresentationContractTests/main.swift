@@ -49,7 +49,7 @@ import ArcoNativeUI
         try await Task.sleep(for: .milliseconds(150))
         host.layoutSubtreeIfNeeded()
         func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
-        guard let primary = buttons(host).first(where: { $0.title == "Codex" }), let secondary = buttons(host).first(where: { $0.title == "无" }) else { fatalError("Provider selectors must be mounted") }
+        guard let primary = buttons(host).first(where: { $0.title == "Codex" }), let secondary = buttons(host).first(where: { $0.title == ArcoTranslations.simplifiedChinese("common.none", [:]) }) else { fatalError("Provider selectors must be mounted") }
         func choose(_ field: NSButton, _ title: String) {
             field.performClick(nil)
             guard let popup = window.childWindows?.first, let content = popup.contentView,

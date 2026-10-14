@@ -110,7 +110,7 @@ import ArcoNativeUI
         let popup = openMenu()
         let surface = popup.contentView!
         let rows = descendants(surface).compactMap { $0 as? NSButton }
-        precondition(rows.map(\.title) == ["归档", "删除…"], "Menu labels must stay localized")
+        precondition(rows.map(\.title) == ["归档", "删除会议"], "Menu labels must stay localized")
         precondition(popup.frame.width >= 240 && descendants(surface).allSatisfy { !($0 is NSVisualEffectView) })
         func bitmap(_ view: NSView) -> NSBitmapImageRep {
             let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!

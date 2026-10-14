@@ -355,7 +355,7 @@ public final class TranscriptWriter: @unchecked Sendable {
 
     private static func appendedLineIndex(at path: URL) throws -> Int {
         let transcript = try String(contentsOf: path, encoding: .utf8)
-        let pattern = try NSRegularExpression(pattern: #"^\s*\*\*\[\d{2}:\d{2}:\d{2}\]\s*([^:*]+?):\*\*\s*(.*)\s*$"#)
+        let pattern = try NSRegularExpression(pattern: #"^\s*\*\*\[\d{2}:\d{2}:\d{2}\]\s*([^:*]+?):\*\*\s*(.*)\s*$"#, options: .anchorsMatchLines)
         let range = NSRange(transcript.startIndex..., in: transcript)
         let count = pattern.numberOfMatches(in: transcript, range: range)
         return max(count - 1, 0)
