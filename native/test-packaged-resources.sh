@@ -18,7 +18,14 @@ expect_resource_failure() {
     [ "$result" -eq 1 ] || { echo "Expected graceful resource failure, got $result" >&2; exit 1; }
     grep -q 'Resource check failed:' "$STAGING/result.txt"
 }
-rm "$TEST_APP/Contents/Resources/ArcoNativeUI_ArcoNativeUI.bundle/Aura/LiveKitAura.metal.txt"
+BUNDLE="$TEST_APP/Contents/Resources/ArcoNativeUI_ArcoNativeUI.bundle"
+RESOURCE_ROOT="$BUNDLE"
+if [ -d "$BUNDLE/Contents/Resources" ]; then
+    RESOURCE_ROOT="$BUNDLE/Contents/Resources"
+fi
+SHADER="$RESOURCE_ROOT/Aura/LiveKitAura.metal.txt"
+[ -f "$SHADER" ] || { echo "Packaged Aura shader is missing" >&2; exit 1; }
+rm "$SHADER"
 expect_resource_failure
 rm -rf "$TEST_APP/Contents/Resources/ArcoNativeUI_ArcoNativeUI.bundle"
 expect_resource_failure
