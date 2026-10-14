@@ -38,10 +38,6 @@ cd "$ROOT"
 if [ "${ARCO_PACKAGE_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT/native/build-recorder.sh"
   "$ROOT/native/build-gpt-live.sh"
-  "$ROOT/native/build-deepgram-transcriber.sh"
-  "$ROOT/native/build-elevenlabs-transcriber.sh"
-  "$ROOT/native/build-doubao-transcriber.sh"
-  "$ROOT/native/build-local-transcriber.sh"
   "$ROOT/native/build-native-app.sh"
 fi
 

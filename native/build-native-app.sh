@@ -37,6 +37,13 @@ BIN_DIR=$(ARCO_RUST_PROFILE="$PROFILE" swift build \
   -c "$SWIFT_CONFIGURATION" \
   --show-bin-path)
 
+# The desktop executable and transcription workers share the transcript format.
+# Rebuild workers here so direct app builds cannot bundle stale runtime files.
+for provider in deepgram elevenlabs doubao local
+do
+  "$ROOT/native/build-$provider-transcriber.sh"
+done
+
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES/native"
 cp "$BIN_DIR/Arco" "$MACOS/Arco"

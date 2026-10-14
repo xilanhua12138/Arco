@@ -170,7 +170,7 @@ public struct HistoryPageView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
+                .accessibilityLabel(translate("history.clearSearch", [:]))
             }
         }
         .padding(.horizontal, 12)

@@ -222,6 +222,9 @@ struct ArcoTranscriptionSelfTest {
         try Data("# Meeting\n\n".utf8).write(to: transcript)
         let writer = TranscriptWriter(path: transcript, sessionStartedAt: Date(timeIntervalSince1970: 43_200))
         try writer.append(TranscriptSegment(channel: 1, speaker: 2, text: "  hello  ", start: 2, end: 3.5, words: [TranscriptWord(text: "hello", startMs: 2000, endMs: 3500)]))
+        try writer.append(TranscriptSegment(channel: 0, speaker: 0, text: "second turn", start: 4, end: 5))
+        let resumedWriter = TranscriptWriter(path: transcript, sessionStartedAt: Date(timeIntervalSince1970: 43_800))
+        try resumedWriter.append(TranscriptSegment(channel: 1, speaker: 0, text: "resumed turn", start: 1, end: 2))
         let output = try String(contentsOf: transcript, encoding: .utf8)
         try require(!output.contains("arco-timing"), "word timing must stay out of Markdown")
         try require(!output.contains("<!-- arco "), "provider timing must stay out of Markdown")
@@ -232,6 +235,16 @@ struct ArcoTranscriptionSelfTest {
             "word timing sidecar persistence"
         )
         try require(output.contains("In room 3:** hello"), "location speaker label")
+        let records = try timingOutput.split(separator: "\n").map { line -> [String: Any] in
+            guard let record = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+                throw RuntimeError("Invalid timing sidecar record.")
+            }
+            return record
+        }
+        try require(records.compactMap { $0["line"] as? Int } == [0, 1, 2], "timing records must follow transcript order across append and resume")
+        let savedTimings = records.compactMap { $0["timing"] as? [String: Any] }
+        try require(savedTimings.compactMap { $0["startMs"] as? Int } == [2000, 4000, 1000], "each utterance must retain its own timing")
+        try require(savedTimings.compactMap { $0["originMs"] as? Int } == [43_200_000, 43_200_000, 43_800_000], "resumed capture must retain its own clock origin")
     }
 
     private static func testSlidingWindowDiarizer() throws {

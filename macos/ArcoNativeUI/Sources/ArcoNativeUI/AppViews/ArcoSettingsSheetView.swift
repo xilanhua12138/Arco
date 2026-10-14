@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct ArcoSettingsSheetView: View {
     @StateObject private var microphones = MicrophoneSettingsModel()
+    @StateObject private var launchAtLogin = LaunchAtLoginSettingsModel()
     @Environment(\.openURL) private var openURL
     @ObservedObject private var viewModel: SettingsSheetViewModel
     private let translate: ArcoTranslate
@@ -217,6 +218,7 @@ public struct ArcoSettingsSheetView: View {
                 }
             }
             SettingsSection(title: translate("settings.group.application", [:]), symbol: "slider.horizontal.3") {
+                LaunchAtLoginSettingsView(model: launchAtLogin, translate: translate)
                 meetingPromptRow
                 updateRow
             }

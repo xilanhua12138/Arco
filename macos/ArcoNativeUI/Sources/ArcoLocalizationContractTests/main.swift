@@ -27,9 +27,9 @@ private struct ArcoLocalizationContractTests {
 
         let englishKeys = Set(ArcoTranslations.englishMessages.keys)
         let chineseKeys = Set(ArcoTranslations.simplifiedChineseMessages.keys)
-        try expect(englishKeys.count == 772, "English must include all current product copy")
-        try expect(chineseKeys.count == 772, "zh-CN must include all current product copy")
-        try expect(ArcoTranslations.simplifiedChinese("audioArchive.usage", ["used": "1.50", "limit": "10", "hours": "333"]) == "已用 1.50 / 10 GB，约可保存 333 小时", "Audio storage estimates interpolate all values")
+        try expect(englishKeys.count == 788, "English must include all current product copy")
+        try expect(chineseKeys.count == 788, "zh-CN must include all current product copy")
+        try expect(ArcoTranslations.simplifiedChinese("audioArchive.usage", ["used": "1.50", "limit": "10", "hours": "333"]) == "已用 1.50 / 10 GB\n总容量约 333 小时", "Audio storage estimates interpolate all values")
         try expect(ArcoTranslations.simplifiedChinese("audioArchive.used", ["size": "30 MB"]) == "已用 30 MB", "Compact storage usage preserves its interpolated value")
         try expect(englishKeys == chineseKeys, "en and zh-CN key sets must be identical")
 
@@ -53,7 +53,7 @@ private struct ArcoLocalizationContractTests {
             ArcoTranslations.simplifiedChinese(
                 "agent.failover",
                 ["primary": "Codex", "provider": "Claude"]
-            ) == "Codex 当前不可用，正在使用 Claude。",
+            ) == "Codex 不可用，改用 Claude",
             "all named parameters must be interpolated"
         )
         try expect(

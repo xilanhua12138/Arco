@@ -30,3 +30,8 @@ webrtc = "=0.20.4"
 
 [dev-dependencies]
 tempfile = "3.15"
+
+# macOS rejects some proc-macro dylibs after rustc strips their debug info.
+# https://github.com/rust-lang/rust/issues/157750
+[profile.release.build-override]
+strip = "none"
